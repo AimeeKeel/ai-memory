@@ -281,9 +281,10 @@ haystacks). Nothing is mocked:
 3. the question runs through MCP `tools/call memory_query` with
    explicit workspace/project scoping;
 4. results are scored session-level: `hit@k` (any evidence session in
-   the top k — the "Recall@k" most systems publish) and `recall@k`
-   (fraction of evidence sessions found). The 30 abstention questions
-   are excluded and reported separately.
+   the top k), `recall@k` (fraction of evidence sessions found), and
+   `recall-all@k` (all evidence sessions found). Duplicate session hits
+   count once. The 30 abstention questions are excluded and reported
+   separately.
 
 The dataset (278 MB) is NOT committed; it downloads to
 `evals/datasets/` (gitignored) with a pinned sha256 that fails loudly
@@ -306,7 +307,7 @@ When publishing a baseline, copy the markdown into `docs/benchmarks/`.
 Every run — single-config or A/B — reports three things per slice, not
 just accuracy:
 
-- **accuracy** — `hit@k` / `recall@k` (unchanged);
+- **accuracy** — `hit@k` / `recall@k` / `recall-all@k`;
 - **latency** — `memory_query` MCP round-trip **p50 / p95** in ms;
 - **context tokens** — the context an agent would ingest from the result,
   estimated as **chars / 4** over each returned hit's `title` + `snippet`
@@ -346,6 +347,12 @@ Output: `evals/runs/<timestamp>-retrieval/report.{json,md}` — the JSON is
 `{ baseline, candidate, delta }`; the markdown carries both per-slice
 triples and an `overall` delta table. Publish full-dataset A/B numbers in
 `docs/benchmarks/retrieval-ab-r2.md`.
+
+Strict `recall-all@k` scores each question as 1 only when every evidence
+session appears in the top k distinct retrieved sessions, otherwise 0.
+Slice scores average those per-question values. Finding one of two required
+sessions gives `hit@k = 1`, `recall@k = 0.5`, and `recall-all@k = 0`.
+JSON reports use `recall_all_at` for per-question, slice and A/B delta values.
 
 ### `retrieval` QA-accuracy mode (R2b, opt-in, live LLM)
 

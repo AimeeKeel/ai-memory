@@ -2,8 +2,8 @@
 //!
 //! Per question: replay its haystack sessions through `POST /hook/batch`
 //! (production hook cadence), query with `memory_query` over MCP, and
-//! score session-level hit@k / recall@k against the dataset's evidence
-//! labels. See `docs/benchmarks/` for published baselines and
+//! score session-level hit@k / recall@k / recall-all@k against the dataset's
+//! evidence labels. See `docs/benchmarks/` for published baselines and
 //! `evals/README.md` for how to run.
 //!
 //! ## R2: A/B + the accuracy/latency/context triple
@@ -12,8 +12,9 @@
 //! the same question set runs through TWO server configs — a baseline and
 //! a candidate — and the report gains a baseline→candidate delta. Every
 //! run, single or A/B, now reports a triple per slice: retrieval accuracy
-//! (hit@k / recall@k), `memory_query` latency (p50/p95), and the context
-//! tokens a result would cost the agent (chars/4 over returned snippets).
+//! (hit@k / recall@k / recall-all@k), `memory_query` latency (p50/p95), and
+//! the context tokens a result would cost the agent (chars/4 over returned
+//! snippets).
 //! Without a candidate config the single-config path is unchanged.
 //!
 //! ## Decomposing the retrieval gap
@@ -101,7 +102,7 @@ pub struct RetrievalArgs {
     #[arg(long)]
     reachability: bool,
 
-    /// Cutoffs for hit@k / recall@k.
+    /// Cutoffs for hit@k / recall@k / recall-all@k.
     #[arg(long, value_delimiter = ',', default_values_t = vec![1, 3, 5, 10])]
     ks: Vec<usize>,
 
