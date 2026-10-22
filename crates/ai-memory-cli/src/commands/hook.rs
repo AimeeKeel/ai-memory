@@ -1064,8 +1064,10 @@ fn hermes_profile_marker_cwd(runtime_env: &RuntimeEnv, profile: Option<&str>) ->
     if !hermes_in_gateway(runtime_env) || runtime_env.ignore_marker() {
         return None;
     }
-    let profile = profile
-        .filter(|name| *name != HERMES_GATEWAY_HOST_PROFILE && is_hermes_profile_id(name))?;
+    let profile = profile.filter(|name| {
+        *name != HERMES_GATEWAY_HOST_PROFILE
+            && crate::commands::path_util::is_hermes_profile_id(name)
+    })?;
     let hermes_home = crate::commands::path_util::agent_config_home(
         runtime_env.var_os("HERMES_HOME"),
     )
@@ -1088,18 +1090,6 @@ fn hermes_profile_marker_cwd(runtime_env: &RuntimeEnv, profile: Option<&str>) ->
         return None;
     }
     dir.to_str().map(str::to_owned)
-}
-
-/// `^[a-z0-9][a-z0-9_-]{0,63}$`, Hermes' `PROFILE_ID_RE`.
-fn is_hermes_profile_id(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    bytes.len() <= 64
-        && bytes
-            .first()
-            .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_' || *b == b'-')
 }
 
 /// Run a single hook end-to-end. Always returns Ok and always writes a JSON
@@ -8816,8 +8806,12 @@ mod tests {
                 "{name}"
             );
         }
-        assert!(is_hermes_profile_id(&"a".repeat(64)));
-        assert!(!is_hermes_profile_id(&"a".repeat(65)));
+        assert!(crate::commands::path_util::is_hermes_profile_id(
+            &"a".repeat(64)
+        ));
+        assert!(!crate::commands::path_util::is_hermes_profile_id(
+            &"a".repeat(65)
+        ));
         // Control: the valid id still routes.
         assert!(hermes_profile_marker_cwd(&gateway, Some("sc-seo")).is_some());
     }

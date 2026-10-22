@@ -63,8 +63,8 @@ pub(crate) fn reports(root: &Path) -> Vec<HermesProfileReport> {
             .filter(|entry| entry.path().is_dir())
             .filter_map(|entry| {
                 let name = entry.file_name().into_string().ok()?;
-                // `.deleted` holds tombstones, not a profile.
-                (!name.starts_with('.')).then(|| (name, entry.path()))
+                crate::commands::path_util::is_hermes_profile_id(&name)
+                    .then(|| (name, entry.path()))
             })
             .collect();
         profiles.sort();
@@ -268,10 +268,17 @@ fn is_ai_memory_hermes_hook(command: &str) -> bool {
 pub(crate) fn render(reports: &[HermesProfileReport]) -> String {
     let mut out = String::new();
     for report in reports {
+        let profile = crate::commands::show::terminal_text(&report.profile);
+        let home = crate::commands::show::terminal_text(&report.home);
+        let events = report
+            .not_allowlisted
+            .iter()
+            .map(|event| crate::commands::show::terminal_text(event))
+            .collect::<Vec<_>>();
         let flag = if report.profile == "default" {
             String::new()
         } else {
-            format!(" -p {}", report.profile)
+            format!(" -p {profile}")
         };
         let hooks = report.hook_events.len();
         let state = if hooks == 0 {
@@ -286,10 +293,7 @@ pub(crate) fn render(reports: &[HermesProfileReport]) -> String {
                 report.not_allowlisted.len()
             )
         };
-        out.push_str(&format!(
-            "  hermes ({}): {} ({state})\n",
-            report.profile, report.home
-        ));
+        out.push_str(&format!("  hermes ({}): {} ({state})\n", profile, home));
         if hooks > 0 && !report.auto_accept && !report.not_allowlisted.is_empty() {
             out.push_str(&format!(
                 "⚠ Hermes profile {profile}: {events} not in {home}/{ALLOWLIST_FILENAME}, so \
@@ -297,9 +301,9 @@ pub(crate) fn render(reports: &[HermesProfileReport]) -> String {
                  logs \"not allowlisted — skipped\"). Approve them once with `hermes{flag} \
                  --accept-hooks chat`, or run `hermes{flag}` and accept the prompt; a running \
                  gateway picks the approval up. `hermes{flag} hooks doctor` shows each hook.\n",
-                profile = report.profile,
-                events = report.not_allowlisted.join(", "),
-                home = report.home,
+                profile = profile,
+                events = events.join(", "),
+                home = home,
             ));
         }
     }
@@ -494,6 +498,7 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir_all(bots.join("empty")).unwrap();
+        write_home(&bots.join("bad;profile"), &wired, &[]);
 
         let reports = reports(root.path());
         let summary: Vec<(&str, usize, Vec<&str>, bool)> = reports
@@ -537,6 +542,20 @@ mod tests {
         assert!(text.contains("approved by hooks_auto_accept"), "{text}");
         assert!(text.contains("hermes (plain)"), "{text}");
         assert!(!text.contains("--server-url"), "commands stay out: {text}");
+    }
+
+    #[test]
+    fn human_report_strips_terminal_controls_from_paths_and_events() {
+        let report = HermesProfileReport {
+            profile: "default".into(),
+            home: "/tmp/unsafe\u{1b}[31m".into(),
+            hook_events: vec!["event\u{1b}[31m".into()],
+            not_allowlisted: vec!["event\u{1b}[31m".into()],
+            auto_accept: false,
+        };
+
+        let text = render(&[report]);
+        assert!(!text.contains('\u{1b}'), "{text:?}");
     }
 
     /// A missing or unreadable allowlist approves nothing, as in Hermes; no
