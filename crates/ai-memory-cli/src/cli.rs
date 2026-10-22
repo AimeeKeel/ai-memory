@@ -2582,6 +2582,10 @@ pub enum AgentChoice {
     /// Qwen's own `SessionEnd` closes the session.
     #[value(name = "qwen-code", alias = "qwen", alias = "qwencode")]
     QwenCode,
+    /// Qoder CLI and IDE — lifecycle hooks merged into the `hooks` key of
+    /// `~/.qoder/settings.json`. Qoder sends Claude Code-shaped JSON on stdin
+    /// and consumes `SessionStart` additional context.
+    Qoder,
 }
 
 impl AgentChoice {
@@ -2620,6 +2624,7 @@ impl AgentChoice {
             Self::Dsh => AgentKind::Dsh,
             Self::Cline => AgentKind::Cline,
             Self::QwenCode => AgentKind::QwenCode,
+            Self::Qoder => AgentKind::Qoder,
         }
     }
 
@@ -2645,6 +2650,7 @@ impl AgentChoice {
             | Self::IbmBob
             | Self::Cline
             | Self::QwenCode => None,
+            Self::Qoder => None,
             _ => Some(self.kind().as_str()),
         }
     }
@@ -2846,6 +2852,9 @@ pub enum McpClient {
     /// capture and `SessionStart` handoff delivery.
     #[value(name = "qwen-code", alias = "qwen", alias = "qwencode")]
     QwenCode,
+    /// Qoder CLI and IDE — user-level `~/.qoder/settings.json`, with a
+    /// stdio `ai-memory mcp-bridge --no-session-id` entry under `mcpServers`.
+    Qoder,
     /// GitHub Copilot CLI — `$COPILOT_HOME/mcp-config.json` (default
     /// `~/.copilot/mcp-config.json`), servers under the root `mcpServers` map
     /// with `type: "http"` + `url` + optional `headers` (#1040). Pair with
@@ -5029,6 +5038,24 @@ mod tests {
             };
             assert_eq!(args.client, McpClient::QwenCode);
         }
+    }
+
+    #[test]
+    fn qoder_install_hooks_and_mcp_parse() {
+        let hooks =
+            Cli::try_parse_from(["ai-memory", "install-hooks", "--agent", "qoder"]).unwrap();
+        let Command::InstallHooks(args) = hooks.command else {
+            panic!("expected install-hooks");
+        };
+        assert_eq!(args.agent, AgentChoice::Qoder);
+        assert_eq!(args.agent.kind(), ai_memory_core::AgentKind::Qoder);
+        assert_eq!(args.agent.script_hook_subdir(), None);
+
+        let mcp = Cli::try_parse_from(["ai-memory", "install-mcp", "--client", "qoder"]).unwrap();
+        let Command::InstallMcp(args) = mcp.command else {
+            panic!("expected install-mcp");
+        };
+        assert_eq!(args.client, McpClient::Qoder);
     }
 
     #[test]

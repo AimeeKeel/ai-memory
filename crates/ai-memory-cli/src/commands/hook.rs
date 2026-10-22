@@ -367,6 +367,11 @@ fn resolve_hook_cwd_with(
         extract_cwd(raw)
             .or_else(|| env_lookup(QWEN_PROJECT_DIR_ENV))
             .filter(|s| !s.trim().is_empty())
+    } else if agent_kind == AgentKind::Qoder {
+        let mut env_lookup = env_lookup;
+        extract_cwd(raw)
+            .or_else(|| env_lookup(QODER_PROJECT_DIR_ENV))
+            .filter(|s| !s.trim().is_empty())
     } else {
         extract_cwd(raw).filter(|s| !s.trim().is_empty())
     }
@@ -377,6 +382,9 @@ const CODEBUDDY_PROJECT_DIR_ENV: &str = "CODEBUDDY_PROJECT_DIR";
 
 /// The project directory Qwen Code exports to every command hook process.
 const QWEN_PROJECT_DIR_ENV: &str = "QWEN_PROJECT_DIR";
+
+/// The project directory Qoder exports to hook subprocesses.
+const QODER_PROJECT_DIR_ENV: &str = "QODER_PROJECT_DIR";
 
 fn cwd_query_suffix(
     agent: &str,
@@ -825,7 +833,11 @@ fn write_success_response<W: std::io::Write>(
         Ok(())
     } else if matches!(
         agent,
-        AgentKind::Muse | AgentKind::CodeBuddy | AgentKind::IbmBob | AgentKind::QwenCode
+        AgentKind::Muse
+            | AgentKind::CodeBuddy
+            | AgentKind::IbmBob
+            | AgentKind::QwenCode
+            | AgentKind::Qoder
     ) && matches!(event, HookEvent::SessionStart | HookEvent::UserPrompt)
     {
         // Muse and IBM Bob add SessionStart and UserPromptSubmit stdout to the
@@ -2957,6 +2969,9 @@ mod tests {
                 HookEvent::PostToolUse,
                 b"{}\n".as_slice(),
             ),
+            (AgentKind::Qoder, HookEvent::SessionStart, b"".as_slice()),
+            (AgentKind::Qoder, HookEvent::UserPrompt, b"".as_slice()),
+            (AgentKind::Qoder, HookEvent::PostToolUse, b"{}\n".as_slice()),
         ] {
             let mut output = Vec::new();
             write_success_response(&mut output, agent, event).unwrap();
@@ -3656,6 +3671,29 @@ mod tests {
         assert_eq!(
             resolve_hook_cwd_with("claude-code", &bare, project_dir, process),
             None
+        );
+    }
+
+    #[test]
+    fn qoder_missing_cwd_uses_qoder_project_dir_only() {
+        let bare = serde_json::json!({"hook_event_name": "SessionStart", "source": "startup"});
+        let project_dir =
+            |name: &str| (name == "QODER_PROJECT_DIR").then(|| "env-project".to_owned());
+        let process = || Some(PathBuf::from("process-project"));
+
+        assert_eq!(
+            resolve_hook_cwd_with("qoder", &bare, project_dir, process).as_deref(),
+            Some("env-project")
+        );
+        assert_eq!(
+            resolve_hook_cwd_with("qoder", &bare, |_| None, process),
+            None
+        );
+        let with_cwd =
+            serde_json::json!({"hook_event_name": "SessionStart", "cwd": "payload-project"});
+        assert_eq!(
+            resolve_hook_cwd_with("qoder", &with_cwd, project_dir, process).as_deref(),
+            Some("payload-project")
         );
     }
 

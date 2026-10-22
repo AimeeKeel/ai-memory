@@ -468,6 +468,14 @@ pub(crate) fn qwen_code_settings_path() -> anyhow::Result<std::path::PathBuf> {
         .join("settings.json"))
 }
 
+/// `~/.qoder/settings.json` shared by Qoder CLI and IDE.
+pub(crate) fn qoder_settings_path() -> anyhow::Result<std::path::PathBuf> {
+    Ok(home_dir()
+        .context("could not locate $HOME for ~/.qoder/settings.json")?
+        .join(".qoder")
+        .join("settings.json"))
+}
+
 /// `~/.config/zero/hooks.json` — Zero's user-level lifecycle hook config
 /// (issue #156). Zero resolves it under `$XDG_CONFIG_HOME` falling back to
 /// `~/.config`; like the OpenCode plugin path below we target the default
@@ -1044,6 +1052,13 @@ pub(crate) fn run_with_opencode_dialect_and_mcp_path(
                 };
                 apply_to_qwen_code_settings(&path, &server_url, auth, &config.data_dir, &args)
             }
+            AgentChoice::Qoder => {
+                let path = match &args.config_file {
+                    Some(path) => path.clone(),
+                    None => qoder_settings_path()?,
+                };
+                apply_to_qoder_settings(&path, &server_url, auth, &config.data_dir, &args)
+            }
         };
     }
     let strategy = args.project_strategy.and_then(ProjectStrategyArg::baked);
@@ -1221,6 +1236,7 @@ pub(crate) fn run_with_opencode_dialect_and_mcp_path(
             &preview_capture_mode,
         ),
         AgentChoice::QwenCode => render_qwen_code(&server_url, auth, &config.data_dir, strategy),
+        AgentChoice::Qoder => render_qoder(&server_url, auth, &config.data_dir, strategy),
     }
 }
 
@@ -1437,6 +1453,7 @@ fn existing_agent_config(args: &InstallHooksArgs) -> Option<String> {
             // shared settings document from which to recover a strategy.
             AgentChoice::Cline => return None,
             AgentChoice::QwenCode => qwen_code_settings_path().ok()?,
+            AgentChoice::Qoder => qoder_settings_path().ok()?,
         }
     };
     std::fs::read_to_string(path).ok()
@@ -1788,6 +1805,7 @@ fn infer_installed_mcp_config(
             "url",
         )),
         McpClient::Muse => Ok(infer_muse_mcp_config(&content)),
+        McpClient::Qoder => Ok(infer_muse_mcp_config(&content)),
         // MCP-only client: no AgentChoice counterpart routes here. Prime
         // Agent 0.10 has no lifecycle hooks, and its entry names the token
         // variable rather than carrying a bearer, so only the URL is there.
@@ -1879,6 +1897,7 @@ pub(crate) fn mcp_client_for_agent(agent: AgentChoice) -> Option<McpClient> {
         AgentChoice::Dsh => None,
         AgentChoice::Cline => Some(McpClient::Cline),
         AgentChoice::QwenCode => Some(McpClient::QwenCode),
+        AgentChoice::Qoder => Some(McpClient::Qoder),
     }
 }
 
@@ -7449,6 +7468,85 @@ fn render_codebuddy(
     Ok(())
 }
 
+fn apply_to_qoder_settings(
+    path: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    data_dir: &Path,
+    args: &InstallHooksArgs,
+) -> Result<()> {
+    let payload = super::render_shared::build_qoder_hooks_payload(
+        server_url,
+        auth_token,
+        Some(data_dir),
+        args.project_strategy.and_then(ProjectStrategyArg::baked),
+    );
+    let our_hooks = payload
+        .get("hooks")
+        .and_then(serde_json::Value::as_object)
+        .context("internal: build_qoder_hooks_payload did not return a hooks object")?;
+    let outcome = apply_atomic(path, |existing| {
+        mutate_json(existing, |root| {
+            let hooks = root
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                .as_object_mut()
+                .context("`hooks` is present in Qoder settings.json but not an object")?;
+            for (event, value) in our_hooks {
+                overlay_event_hooks(hooks, event, value);
+            }
+            Ok(())
+        })
+    })?;
+    println!(
+        "✓ {} {} ({})",
+        outcome.verb(),
+        path.display(),
+        match outcome {
+            ApplyOutcome::Created => "new file",
+            ApplyOutcome::Updated => "backup written next to it",
+            ApplyOutcome::NoOp => "already up to date",
+        }
+    );
+    print!("{QODER_INSTALL_NOTES}");
+    Ok(())
+}
+
+const QODER_INSTALL_NOTES: &str = "\
+# NOTE: Qoder injects SessionStart `hookSpecificOutput.additionalContext`, so
+#       the prior session's handoff is delivered automatically.
+# NOTE: restart Qoder after changing hooks; hook configuration is not hot-reloaded.
+";
+
+fn render_qoder(
+    server_url: &str,
+    auth_token: Option<&str>,
+    data_dir: &Path,
+    project_strategy: Option<&str>,
+) -> Result<()> {
+    let payload = super::render_shared::build_qoder_hooks_payload(
+        server_url,
+        auth_token,
+        Some(data_dir),
+        project_strategy,
+    );
+    let serialized =
+        serde_json::to_string_pretty(&payload["hooks"]).context("serializing Qoder hook config")?;
+    println!("# Qoder hook config — merge under the `hooks` key of");
+    println!("# ~/.qoder/settings.json, or re-run with --apply to merge it in place.");
+    println!("# AI-memory server URL: {server_url}");
+    if auth_token.is_some() {
+        println!("# Auth: this printed snippet embeds the token in each hook command —");
+        println!(
+            "#       treat settings.json as sensitive. `--apply` stores it under the data dir instead."
+        );
+    }
+    print!("{QODER_INSTALL_NOTES}");
+    println!();
+    println!("{serialized}");
+    Ok(())
+}
+
 /// Merge ai-memory's entries into IBM Bob's global settings, preserving every
 /// unrelated setting and hook. Bob IDE and Bob Shell both read this file.
 fn apply_to_ibm_bob_settings(
@@ -9128,6 +9226,63 @@ mod tests {
                 !command.contains(".sh"),
                 "{event}: no script bundle: {command}"
             );
+        }
+        let pre = root["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 2);
+        assert_eq!(pre[0]["hooks"][0]["command"], "/usr/local/bin/guard.sh");
+    }
+
+    #[test]
+    fn qoder_apply_merges_native_hooks_and_preserves_shared_settings() {
+        let home = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let settings = home.path().join("settings.json");
+        fs::write(
+            &settings,
+            serde_json::json!({
+                "model": "qwen3-coder-plus",
+                "mcpServers": {"other": {"command": "other-server"}},
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "Write",
+                        "hooks": [{"type": "command", "command": "/usr/local/bin/guard.sh"}]
+                    }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let args = InstallHooksArgs {
+            agent: AgentChoice::Qoder,
+            config_file: Some(settings.clone()),
+            ..default_hook_args()
+        };
+
+        apply_to_qoder_settings(&settings, "http://memory:49374", None, data.path(), &args)
+            .unwrap();
+        let first = fs::read_to_string(&settings).unwrap();
+        apply_to_qoder_settings(&settings, "http://memory:49374", None, data.path(), &args)
+            .unwrap();
+        assert_eq!(first, fs::read_to_string(&settings).unwrap());
+
+        let root: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(root["model"], "qwen3-coder-plus");
+        assert_eq!(root["mcpServers"]["other"]["command"], "other-server");
+        for (event, script) in super::super::render_shared::QODER_EVENTS {
+            let entries = root["hooks"][event].as_array().unwrap();
+            let ours: Vec<_> = entries
+                .iter()
+                .filter(|entry| is_ai_memory_hook_entry(entry))
+                .collect();
+            assert_eq!(ours.len(), 1, "{event}: exactly one ai-memory entry");
+            assert_eq!(ours[0]["matcher"], "", "{event}");
+            let command = ours[0]["hooks"][0]["command"].as_str().unwrap();
+            let stem = script.trim_end_matches(".sh");
+            assert!(
+                command.contains(&format!(" hook --event {stem} --agent qoder --server-url ")),
+                "{event}: {command}"
+            );
+            assert!(!command.contains(".sh"), "{event}: {command}");
         }
         let pre = root["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2);

@@ -247,7 +247,8 @@ pub(crate) fn tool_payload_fields(agent: AgentKind, raw: &Value) -> Option<(&str
         | AgentKind::CodeBuddy
         | AgentKind::IbmBob
         | AgentKind::Dsh
-        | AgentKind::QwenCode => (
+        | AgentKind::QwenCode
+        | AgentKind::Qoder => (
             object.get("tool_name")?.as_str()?,
             object.get("tool_use_id").and_then(Value::as_str),
         ),
@@ -338,6 +339,7 @@ pub(crate) fn tool_observation_metadata(
                             | AgentKind::IbmBob
                             | AgentKind::Dsh
                             | AgentKind::QwenCode
+                            | AgentKind::Qoder
                     ) {
                         "tool_input"
                     } else {
@@ -402,7 +404,7 @@ pub(crate) fn tool_observation_outcome(agent: AgentKind, raw: &Value) -> ToolOut
         // Meta Muse Code's `PostToolUseFailure` has the same `error` string
         // (captured offline on Muse Code 1.4.7); its `PostToolUse` proves no
         // outcome.
-        AgentKind::Zcode | AgentKind::Muse | AgentKind::QwenCode
+        AgentKind::Zcode | AgentKind::Muse | AgentKind::QwenCode | AgentKind::Qoder
             if raw
                 .get("error")
                 .and_then(Value::as_str)
@@ -1187,6 +1189,7 @@ fn extract(agent: AgentKind, raw: &Value) -> Extracted<'_> {
         | AgentKind::Cursor
         | AgentKind::GeminiCli
         | AgentKind::QwenCode
+        | AgentKind::Qoder
         | AgentKind::Devin
         | AgentKind::Hermes
         | AgentKind::KiroCli
@@ -4709,6 +4712,7 @@ mod tests {
             AgentKind::Muse,
             AgentKind::CodeBuddy,
             AgentKind::QwenCode,
+            AgentKind::Qoder,
             AgentKind::OpenCode,
             AgentKind::Omp,
             AgentKind::Pi,

@@ -1652,6 +1652,37 @@ does not document a stable native transcript store. Start a new Qwen session
 after installing so it reloads `settings.json`. See [the Qwen Code MCP and
 hook details](mcp-install.md#qwen-code).
 
+### Qoder
+
+Qoder CLI and IDE share `~/.qoder/settings.json`. Install MCP and lifecycle
+capture together:
+
+```bash
+ai-memory install-mcp --client qoder --apply \
+    --server-url "https://memory.example/mcp" \
+    --auth-token "$TOKEN"
+ai-memory install-hooks --agent qoder --apply \
+    --server-url "https://memory.example" \
+    --auth-token "$TOKEN"
+```
+
+The MCP entry runs `ai-memory mcp-bridge --no-session-id` using Qoder's stdio
+shape. It therefore reaches local or remote ai-memory servers without starting
+a second server, but remains a static client: project-scoped MCP calls must pass
+`workspace` and `project`. The hook installer preserves other settings,
+servers, and handlers while adding `SessionStart`, `UserPromptSubmit`,
+`PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PreCompact`, `Stop`, and
+`SessionEnd`. A pending handoff is delivered as SessionStart
+`hookSpecificOutput.additionalContext`; capture-only context hooks stay silent.
+When a payload omits `cwd`, only Qoder's documented `QODER_PROJECT_DIR` is used.
+
+`ai-memory setup` detects `~/.qoder`; `backup-agents` preserves its settings and
+shared `~/.agents/skills` / `AGENTS.md` assets when Qoder owns those shared
+paths. Restart Qoder after changing hooks. Managed `ai-memory run qoder` and
+native transcript backfill are not claimed because Qoder does not document a
+stable transcript-store contract. See [the detailed MCP and hook
+notes](mcp-install.md#qoder).
+
 ### Kiro CLI
 
 Kiro CLI has one MCP surface and two incompatible lifecycle-hook formats.

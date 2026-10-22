@@ -160,6 +160,7 @@ caveats is in [`docs/support-matrix.md`](docs/support-matrix.md).
 | CodeBuddy Code | Hooks-only |
 | IBM Bob | Supported |
 | Qwen Code | Supported |
+| Qoder | Supported |
 | VS Code Copilot | MCP-only |
 | Zed | MCP-only |
 | DeepSeek Harness (DSH) | Hooks + MCP |
@@ -393,7 +394,7 @@ docker run -d --name ai-memory \
 # 3. Wire your agent CLI in two commands. The wrapper takes care of
 #    mounts and each client's config-path detection. Re-run with
 #    `--agent codex`, `--agent command-code`, `--agent devin`, `--agent opencode`, `--agent opencode2`, `--agent gemini-cli`,
-#    `--agent grok`, `--agent kimi-code`, `--agent kiro-cli`, `--agent copilot-cli`, `--agent droid`, `--agent muse`, `--agent cline`, `--agent qwen-code`, `--agent omp`,
+#    `--agent grok`, `--agent kimi-code`, `--agent kiro-cli`, `--agent copilot-cli`, `--agent droid`, `--agent muse`, `--agent cline`, `--agent qwen-code`, `--agent qoder`, `--agent omp`,
 #    `--agent oh-my-pi`, `--client cursor`,
 #    `--client gemini-cli`, `--client grok`, `--client kiro-cli`,
 #    `--client cline`, `--client freebuff`, etc.

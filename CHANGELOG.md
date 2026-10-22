@@ -13,6 +13,16 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added first-party Qoder CLI/IDE lifecycle and MCP support. Both installers
+  merge into `~/.qoder/settings.json`: `install-mcp --client qoder` writes a
+  sessionless stdio bridge, while `install-hooks --agent qoder` registers the
+  eight documented memory-bearing events as native commands. Session start
+  delivers a pending handoff through `hookSpecificOutput.additionalContext`,
+  prompt/tool capture uses Qoder's Claude-shaped payloads, and a missing hook
+  `cwd` falls back only to `QODER_PROJECT_DIR`. Setup detects `~/.qoder`,
+  uninstall removes both entries, and agent backups include its settings and
+  shared AGENTS-compatible skills/instructions (#1611).
+
 - Profile writes now return `digest_warning` when the selected summary,
   abstract, or prose statement exceeds the 240-byte session-start digest
   limit. The write still succeeds, but its author can shorten the summary

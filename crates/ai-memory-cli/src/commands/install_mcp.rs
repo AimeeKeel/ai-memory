@@ -141,8 +141,9 @@ pub(crate) fn run_with_opencode_dialect(
     // that dir, and a bridge without it would read the default one, with its
     // own config and bearer. Not from inside the Docker helper, whose data dir
     // is a container path the host-side bridge cannot open.
-    let runs_bridge =
-        (args.client == McpClient::ClaudeCode && args.session_aware) || args.stdio_bridge;
+    let runs_bridge = (args.client == McpClient::ClaudeCode && args.session_aware)
+        || args.stdio_bridge
+        || args.client == McpClient::Qoder;
     if config.runtime_env.host_cwd().is_none()
         && (matches!(
             args.client,
@@ -163,7 +164,7 @@ pub(crate) fn run_with_opencode_dialect(
     // different key already stored belongs to the hooks, the store failed, or
     // this is the Docker helper, whose data dir the host-side bridge cannot
     // open.
-    let bridge_carries_token = matches!(args.client, McpClient::Muse)
+    let bridge_carries_token = matches!(args.client, McpClient::Muse | McpClient::Qoder)
         || (args.client == McpClient::ClaudeCode && args.session_aware);
     let may_store_bridge_key = args.apply
         && token_given
@@ -207,6 +208,7 @@ pub(crate) fn run_with_opencode_dialect(
         McpClient::ClaudeDesktop => render_claude_desktop(&args)?,
         McpClient::GeminiCli => render_gemini_cli(&args)?,
         McpClient::QwenCode => render_qwen_code(&args)?,
+        McpClient::Qoder => render_json_mcp_fragment(&args)?,
         McpClient::Openclaw => render_openclaw(&args)?,
         McpClient::Pi => render_pi(&args)?,
         McpClient::Omp => render_omp(&args)?,
@@ -518,6 +520,13 @@ fn stdio_bridge_entry(args: &InstallMcpArgs) -> Option<serde_json::Value> {
         | McpClient::Openclaw
         | McpClient::IbmBob
         | McpClient::Cline => plain(),
+        McpClient::Qoder => {
+            let env = args
+                .auth_token
+                .as_ref()
+                .map_or_else(|| json!({}), |token| json!({"AI_MEMORY_AUTH_TOKEN": token}));
+            json!({"command": command, "args": bridge, "env": env})
+        }
         McpClient::GeminiCli | McpClient::AntigravityCli | McpClient::QwenCode => json!({
             "command": command,
             "args": bridge,
@@ -771,6 +780,7 @@ pub(crate) fn mcp_config_path_with(
         }
         McpClient::GeminiCli => home()?.join(".gemini").join("settings.json"),
         McpClient::QwenCode => home()?.join(".qwen").join("settings.json"),
+        McpClient::Qoder => home()?.join(".qoder").join("settings.json"),
         McpClient::Openclaw => home()?.join(".openclaw").join("config.json"),
         McpClient::Pi => bail!(
             "Pi has no native mcp.json; use `ai-memory install-hooks --agent pi --apply` to install the generated MCP bridge extension."
@@ -1265,6 +1275,7 @@ fn json_mcp_location(client: McpClient) -> Option<JsonMcpLocation> {
         | McpClient::Cursor
         | McpClient::GeminiCli
         | McpClient::QwenCode
+        | McpClient::Qoder
         | McpClient::Omp
         | McpClient::AntigravityCli
         | McpClient::Devin
@@ -1302,7 +1313,7 @@ fn build_json_mcp_entry(args: &InstallMcpArgs) -> Result<serde_json::Value> {
     // `serve` process would contend for the data-dir lock. Keep this at the
     // typed builder boundary so auth-enable and other internal callers cannot
     // accidentally request an unsupported direct entry.
-    if (args.stdio_bridge || args.client == McpClient::Freebuff)
+    if (args.stdio_bridge || matches!(args.client, McpClient::Freebuff | McpClient::Qoder))
         && let Some(entry) = stdio_bridge_entry(args)
     {
         return Ok(entry);
@@ -4517,6 +4528,7 @@ mod tests {
             McpClient::ClaudeDesktop => render_claude_desktop(&args).unwrap(),
             McpClient::GeminiCli => render_gemini_cli(&args).unwrap(),
             McpClient::QwenCode => render_qwen_code(&args).unwrap(),
+            McpClient::Qoder => render_json_mcp_fragment(&args).unwrap(),
             McpClient::Openclaw => render_openclaw(&args).unwrap(),
             McpClient::Pi => render_pi(&args).unwrap(),
             McpClient::Omp => render_omp(&args).unwrap(),
@@ -4560,6 +4572,7 @@ mod tests {
             McpClient::ClaudeDesktop,
             McpClient::GeminiCli,
             McpClient::QwenCode,
+            McpClient::Qoder,
             McpClient::Openclaw,
             McpClient::Omp,
             McpClient::AntigravityCli,
@@ -4586,8 +4599,10 @@ mod tests {
             // server entry, etc.), but the literal `Bearer
             // <token>` substring shows up in all of them. Keep
             // the assertion uniform.
+            let carries_token = out.contains("Bearer test-token-deadbeef")
+                || (client == McpClient::Qoder && out.contains("test-token-deadbeef"));
             assert!(
-                out.contains("Bearer test-token-deadbeef"),
+                carries_token,
                 "client {client:?} did not embed the bearer token:\n{out}"
             );
         }
@@ -4607,6 +4622,7 @@ mod tests {
             McpClient::ClaudeDesktop,
             McpClient::GeminiCli,
             McpClient::QwenCode,
+            McpClient::Qoder,
             McpClient::Openclaw,
             McpClient::Omp,
             McpClient::AntigravityCli,
@@ -4637,6 +4653,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn qoder_always_uses_the_sessionless_bridge_in_its_native_stdio_shape() {
+        let mut args = args_for(McpClient::Qoder);
+        args.auth_token = Some("qoder-token".into());
+        let entry = build_json_mcp_entry(&args).unwrap();
+        assert!(
+            entry["command"]
+                .as_str()
+                .is_some_and(|command| command.contains("ai-memory"))
+        );
+        let bridge_args = entry["args"].as_array().unwrap();
+        assert!(bridge_args.iter().any(|arg| arg == "mcp-bridge"));
+        assert!(bridge_args.iter().any(|arg| arg == "--no-session-id"));
+        assert_eq!(entry["env"]["AI_MEMORY_AUTH_TOKEN"], "qoder-token");
+        assert!(entry.get("url").is_none());
+    }
+
     fn render_for_test(client: McpClient) -> String {
         let args = args_for(client);
         match args.client {
@@ -4651,6 +4684,7 @@ mod tests {
             McpClient::ClaudeDesktop => render_claude_desktop(&args).unwrap(),
             McpClient::GeminiCli => render_gemini_cli(&args).unwrap(),
             McpClient::QwenCode => render_qwen_code(&args).unwrap(),
+            McpClient::Qoder => render_json_mcp_fragment(&args).unwrap(),
             McpClient::Openclaw => render_openclaw(&args).unwrap(),
             McpClient::Pi => render_pi(&args).unwrap(),
             McpClient::Omp => render_omp(&args).unwrap(),

@@ -977,6 +977,49 @@ and [Qwen Code settings](https://qwenlm.github.io/qwen-code-docs/en/users/config
 
 ---
 
+## Qoder
+
+**Status:** MCP and lifecycle hooks are supported. Managed workstreams and
+transcript backfill are not claimed.
+
+**Config file:** `~/.qoder/settings.json` (user), or a project
+`.qoder/settings.json` supplied with `--config-file`. MCP servers live under
+`mcpServers`; hooks live under `hooks` in the same document.
+
+```bash
+ai-memory install-mcp --client qoder --apply \
+    --server-url "https://memory.example/mcp" --auth-token "$TOKEN"
+ai-memory install-hooks --agent qoder --apply \
+    --server-url "https://memory.example" --auth-token "$TOKEN"
+```
+
+Qoder's MCP configuration accepts stdio `command`, `args`, and `env`. ai-memory
+always writes a sessionless `mcp-bridge` entry, so it can use the configured
+remote server without a second server process contending for the data-dir lock.
+The bridge has no lifecycle identity; pass explicit `workspace` and `project`
+on every project-scoped MCP call. Applied token installs use ai-memory's
+owner-only token file when possible; printed configuration carries the token in
+the entry's `AI_MEMORY_AUTH_TOKEN` environment.
+
+The hook installer registers the eight documented events that carry useful
+memory state: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+`PostToolUseFailure`, `PreCompact`, `Stop`, and `SessionEnd`. Qoder sends
+Claude-shaped fields such as `session_id`, `cwd`, `tool_name`, `tool_input`, and
+`tool_use_id`, so capture exclusions are enforced by the same closed parser.
+SessionStart delivers a pending handoff through
+`hookSpecificOutput.additionalContext`; a missing payload `cwd` falls back to
+`QODER_PROJECT_DIR`. Qoder requires a restart after hook changes.
+
+Qoder reads `AGENTS.md` and shared `~/.agents/skills`, so the normal routing
+snippet and installed Agent Skills need no Qoder-specific copy. There is no
+`ai-memory run qoder` adapter or native transcript backfill because no stable
+native transcript-store contract is documented.
+
+Sources: [Qoder hooks](https://docs.qoder.com/cli/hooks) and
+[Qoder MCP](https://docs.qoder.com/cli/mcp-reference).
+
+---
+
 ## Antigravity CLI (`agy`)
 
 **Status:** ✅ MCP supported. ✅ Lifecycle hooks supported via
