@@ -11,6 +11,21 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Added
+
+- Added Hermes Agent hook consent to `ai-memory doctor`. Hermes runs a shell
+  hook only when that exact command is approved in the home's
+  `shell-hooks-allowlist.json`, and each profile under
+  `~/.hermes/profiles/<name>` keeps its own allowlist. A profile with the
+  ai-memory hooks in `config.yaml` but no approvals captured nothing, and its
+  gateway only logged `not allowlisted — skipped` for each event. `doctor` now
+  reads the root home and every profile, reports which ai-memory hook events
+  each one wires, and warns about every profile whose events are not
+  allowlisted (unless `hooks_auto_accept` is on), with the `hermes -p <name>
+  --accept-hooks` command that approves them. The JSON output gains a `hermes`
+  array. It never writes either file and never prints the hook commands,
+  which can embed a bearer token.
+
 ## [3.2.0] - 2026-10-21
 
 ### Added
