@@ -145,7 +145,8 @@ the next primary-session turn, including after a native resume),
 it after every turn) and `on_session_finalize` (the session end). Hermes gates
 user hooks behind its own acceptance prompt (`hooks_auto_accept`), so paste the
 block and let Hermes accept it. [install.md](install.md#hermes-agent-nous-research)
-has the event table, the `TERMINAL_CWD` routing and the
+has the event table, the `TERMINAL_CWD` routing, the per-profile marker for a
+multiplexing gateway's bots and the
 `finalize-session --agent hermes` step for idle gateway sessions.
 
 `install-mcp --client hermes` (alias `hermes-agent`) prints an entry for the

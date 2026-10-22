@@ -1191,6 +1191,15 @@ only the structured `workdir` field counts. This changes raw observation
 attribution only; the session row and its compiled session page remain in the
 project where the session began.
 
+Before that lookup, a Hermes event takes `TERMINAL_CWD` (the session's
+`terminal.cwd`) in place of the process directory. A multiplexing Hermes
+gateway exports only its default profile's `terminal.cwd`, so a gateway event
+of a named profile routes instead by a marker in that profile's own Hermes
+home, `~/.hermes/profiles/<name>/.ai-memory.toml` (under the gateway's
+`HERMES_HOME` when set). It is a normal local marker: `workspace`, `project`,
+`[capture]` and `server` all apply. Without it the event keeps the gateway's
+directory. See [install.md](install.md#hermes-agent-nous-research).
+
 Independently of this setting, under `project_strategy = "repo-root"` a
 mid-session event whose cwd is outside any git repo *and* any marker (agent
 scratch directories, `/tmp`, data folders) already inherits the session's

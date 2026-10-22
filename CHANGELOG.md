@@ -11,6 +11,18 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Added
+
+- Added project routing for the named profiles of a multiplexing Hermes
+  gateway. The gateway exports only the default profile's `terminal.cwd`, so
+  every other profile's events used to fall back to the gateway's own working
+  directory and all its bots landed in one project. A gateway event of a named
+  profile now routes by an `.ai-memory.toml` placed in that profile's Hermes
+  home (`~/.hermes/profiles/<name>`, or under the gateway's `HERMES_HOME`), and
+  that marker's capture exclusions and server profile apply. A profile without
+  such a marker keeps the old behavior. The profile name is checked against
+  Hermes' profile-id pattern before it is used as a path (#TBD).
+
 ## [3.2.0] - 2026-10-21
 
 ### Added
