@@ -171,8 +171,7 @@ pub(crate) fn run_with_opencode_dialect(
     let bridge_carries_token = matches!(
         args.client,
         McpClient::Muse | McpClient::Freebuff | McpClient::Qoder
-    )
-        || (args.client == McpClient::ClaudeCode && args.session_aware);
+    ) || (args.client == McpClient::ClaudeCode && args.session_aware);
     let may_store_bridge_key = args.apply
         && token_given
         && bridge_carries_token
