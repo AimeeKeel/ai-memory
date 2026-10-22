@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Profile writes now return `digest_warning` when the selected summary,
+  abstract, or prose statement exceeds the 240-byte session-start digest
+  limit. The write still succeeds, but its author can shorten the summary
+  instead of discovering the truncation only in a later session (#1609).
+
 - Added project routing for the named profiles of a multiplexing Hermes
   gateway. The gateway exports only the default profile's `terminal.cwd`, so
   every other profile's events used to fall back to the gateway's own working

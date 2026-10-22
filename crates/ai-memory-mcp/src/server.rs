@@ -4509,7 +4509,9 @@ impl AiMemoryServer {
         tags such as `rust`, limiting it to projects on that stack) and \
         `enforced_by` (what already enforces it, which keeps it out of the \
         digest); other pages refuse both. `scope: \"global\"` writes the \
-        reserved `_global` scope directly. \
+        reserved `_global` scope directly. A profile write whose selected \
+        statement exceeds the session-start digest limit succeeds and returns \
+        `digest_warning`, so shorten its summary when the whole rule matters. \
         \
         Optional `kind`, `entities`, `abstract`, and `relations` carry bounded \
         metadata. This replaces the whole page; omitted metadata is cleared. \
@@ -4771,6 +4773,25 @@ impl AiMemoryServer {
         } else {
             serde_json::Value::Object(fm)
         };
+        let digest_warning = profile_scope
+            .then(|| {
+                ai_memory_core::profile::profile_statement(
+                    title.as_deref().unwrap_or_default(),
+                    &body,
+                    &frontmatter,
+                )
+            })
+            .flatten()
+            .filter(|statement| {
+                statement.len() > ai_memory_core::profile::ENTRY_STATEMENT_MAX_BYTES
+            })
+            .map(|statement| {
+                format!(
+                    "The session-start profile digest shows only the first {} bytes of this entry's {}-byte statement. Set a shorter summary to keep the whole rule visible.",
+                    ai_memory_core::profile::ENTRY_STATEMENT_MAX_BYTES,
+                    statement.len()
+                )
+            });
 
         // Loop prevention: a webhook that writes back into the engine sets
         // `X-Memory-Skip-Admission-Chain` so the chain doesn't re-invoke it
@@ -4841,6 +4862,9 @@ impl AiMemoryServer {
         });
         if let Some(warning) = manifest_warning {
             result["manifest_warning"] = serde_json::Value::String(warning.to_string());
+        }
+        if let Some(warning) = digest_warning {
+            result["digest_warning"] = serde_json::Value::String(warning);
         }
         ok_json(&result)
     }
@@ -17790,6 +17814,53 @@ mod tests {
         )
         .await
         .expect_err("scope: profile is refused while the profile is off");
+    }
+
+    #[tokio::test]
+    async fn profile_write_warns_when_its_digest_statement_will_be_cut() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ws = store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+        let app = store
+            .writer
+            .get_or_create_project(ws, "app", None)
+            .await
+            .unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone()).unwrap();
+        let server = AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, app)
+            .with_wiki(wiki);
+
+        let mut long = profile_entry("habits/long.md", Some("profile"));
+        long.metadata.abstract_text = Some("x".repeat(300));
+        let result = server
+            .memory_write_page(Parameters(long), OptionalParts(test_parts_default()))
+            .await
+            .unwrap();
+        let json = call_tool_json(result);
+        assert!(json["digest_warning"].as_str().is_some_and(|warning| {
+            warning.contains("240 bytes") && warning.contains("300-byte")
+        }));
+
+        let short = server
+            .memory_write_page(
+                Parameters(profile_entry("habits/short.md", Some("profile"))),
+                OptionalParts(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        assert!(call_tool_json(short).get("digest_warning").is_none());
+
+        let mut project = profile_entry("notes/long.md", None);
+        project.body = format!("# Long\n\n{}", "x".repeat(300));
+        let project = server
+            .memory_write_page(Parameters(project), OptionalParts(test_parts_default()))
+            .await
+            .unwrap();
+        assert!(call_tool_json(project).get("digest_warning").is_none());
     }
 
     /// `applies_to` and `enforced_by` reach a profile entry's frontmatter
