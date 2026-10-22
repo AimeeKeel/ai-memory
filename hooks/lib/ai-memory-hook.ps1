@@ -65,7 +65,7 @@ function Test-AiMemoryMarkerDeclaresSettings {
     }
     if ([regex]::IsMatch($text, '(?m)^\s*aliases\s*=')) { return $true }
     if ([regex]::IsMatch($text, '(?m)^[\s﻿]*server\s*=')) { return $true }
-    foreach ($key in @("default_global", "inject_on_session_start", "max_chars", "contribute", "consume")) {
+    foreach ($key in @("default_global", "inject_on_session_start", "max_chars", "contribute", "consume", "deliver_on_session_start")) {
         if ([regex]::IsMatch($text, "(?m)^\s*$key\s*=")) { return $true }
     }
     return $false
@@ -589,6 +589,7 @@ function Get-AiMemoryMarkerQuery {
     $identityStyle = $null
     $profileContribute = $null
     $profileConsume = $null
+    $handoffOff = $false
     $aliases = $null
     $identityQuery = ""
     $homeRouted = $false
@@ -629,6 +630,8 @@ function Get-AiMemoryMarkerQuery {
         # what it stored.
         $profileContribute = ConvertTo-AiMemoryProfileFlag (Get-AiMemoryTomlFlag -File $marker -Key "contribute")
         $profileConsume = ConvertTo-AiMemoryProfileFlag (Get-AiMemoryTomlFlag -File $marker -Key "consume")
+        # `[handoff] deliver_on_session_start = false`: sent only when explicitly falsy.
+        $handoffOff = (ConvertTo-AiMemoryProfileFlag (Get-AiMemoryTomlFlag -File $marker -Key "deliver_on_session_start")) -eq "0"
         if ($proj) { $projSrc = "marker" }
     }
     # Before repo-root can fill $proj: a repo-root name is an inference, while
@@ -662,6 +665,7 @@ function Get-AiMemoryMarkerQuery {
     if ($defaultGlobal) { $qs += "&default_global=$([uri]::EscapeDataString($defaultGlobal))" }
     if ($profileContribute) { $qs += "&profile_contribute=$([uri]::EscapeDataString($profileContribute))" }
     if ($profileConsume) { $qs += "&profile_consume=$([uri]::EscapeDataString($profileConsume))" }
+    if ($handoffOff) { $qs += "&handoff=0" }
     return $qs
 }
 

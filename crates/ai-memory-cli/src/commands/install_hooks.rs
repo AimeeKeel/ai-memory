@@ -4406,7 +4406,7 @@ pub(crate) const TS_FIND_SETTINGS_MARKER: &str = r#"function declaresSettings(te
   }
   if (/^\s*aliases\s*=/m.test(text)) return true;
   if (/^\s*server\s*=/m.test(text)) return true;
-  for (const key of ["default_global", "inject_on_session_start", "max_chars", "contribute", "consume"]) {
+  for (const key of ["default_global", "inject_on_session_start", "max_chars", "contribute", "consume", "deliver_on_session_start"]) {
     if (tomlFlag(text, key) !== undefined) return true;
   }
   return false;
@@ -4495,6 +4495,7 @@ pub(crate) fn ts_apply_marker_params(
   let briefingBudget: string | undefined;
   let profileContribute: string | undefined;
   let profileConsume: string | undefined;
+  let handoffOff = false;
   let explicitIdentity: string | undefined;
   let identityStyle: string | undefined;
   let aliases: string | undefined;
@@ -4514,6 +4515,7 @@ pub(crate) fn ts_apply_marker_params(
         briefingBudget = tomlFlag(body, "max_chars");
         profileContribute = profileFlag(tomlFlag(body, "contribute"));
         profileConsume = profileFlag(tomlFlag(body, "consume"));
+        handoffOff = profileFlag(tomlFlag(body, "deliver_on_session_start")) === "0";
         if (route) {
           routed = true;
           workspace = route.workspace;
@@ -4546,6 +4548,7 @@ pub(crate) fn ts_apply_marker_params(
       briefingBudget = tomlFlag(body, "max_chars");
       profileContribute = profileFlag(tomlFlag(body, "contribute"));
       profileConsume = profileFlag(tomlFlag(body, "consume"));
+      handoffOff = profileFlag(tomlFlag(body, "deliver_on_session_start")) === "0";
       explicitIdentity = tomlKey(body, "identity");
       identityStyle = tomlKey(body, "identity_style");
       aliases = markerAliases(body);
@@ -4577,6 +4580,7 @@ pub(crate) fn ts_apply_marker_params(
   if (briefingBudget) url.searchParams.set("briefing_budget", briefingBudget);
   if (profileContribute) url.searchParams.set("profile_contribute", profileContribute);
   if (profileConsume) url.searchParams.set("profile_consume", profileConsume);
+  if (handoffOff) url.searchParams.set("handoff", "0");
   return true;
 }"#
     .replace("__DEFAULT_LINE__", apply_default)
@@ -13044,6 +13048,8 @@ model = "gpt-5"
         assert!(plugin.contains("tomlFlag(body, \"contribute\")"));
         assert!(plugin.contains("url.searchParams.set(\"profile_contribute\", profileContribute)"));
         assert!(plugin.contains("url.searchParams.set(\"profile_consume\", profileConsume)"));
+        assert!(plugin.contains("tomlFlag(body, \"deliver_on_session_start\")"));
+        assert!(plugin.contains("url.searchParams.set(\"handoff\", \"0\")"));
         // #668: applyMarkerParams resolves scope/settings via the
         // settings-walk, not the nearest-marker findMarker, so a nested
         // capture-only marker does not shadow an outer marker's scope.
@@ -13055,7 +13061,7 @@ model = "gpt-5"
         ));
         assert!(plugin.contains("if (/^\\s*aliases\\s*=/m.test(text)) return true;"));
         assert!(plugin.contains(
-            "for (const key of [\"default_global\", \"inject_on_session_start\", \"max_chars\", \"contribute\", \"consume\"])"
+            "for (const key of [\"default_global\", \"inject_on_session_start\", \"max_chars\", \"contribute\", \"consume\", \"deliver_on_session_start\"])"
         ));
         assert!(plugin.contains("if (declaresSettings(text)) return marker;"));
         assert!(plugin.contains(

@@ -1227,12 +1227,13 @@ fn declares_more_than_capture(text: &str) -> bool {
         "identity",
         "identity_style",
     ];
-    const FLAG_KEYS: [&str; 5] = [
+    const FLAG_KEYS: [&str; 6] = [
         "default_global",
         "inject_on_session_start",
         "max_chars",
         "contribute",
         "consume",
+        "deliver_on_session_start",
     ];
     QUOTED_KEYS
         .iter()
@@ -2355,6 +2356,7 @@ project = "infra" # this is fine
             "[recall]\ndefault_global = true\n",
             "[briefing]\ninject_on_session_start = true\n",
             "[briefing]\nmax_chars = 4000\n",
+            "[handoff]\ndeliver_on_session_start = false\n",
         ] {
             assert!(
                 declares_more_than_capture(text),

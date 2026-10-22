@@ -502,6 +502,26 @@ assert_eq "marker_qs forwards [profile] contribute and consume" \
 assert_eq "marker_qs sends explicit [profile] defaults when a marker omits the keys" \
     "&cwd=$(ai_memory_url_encode "$TMP/profile-only")&workspace=outer&profile_contribute=1&profile_consume=1" \
     "$(ai_memory_marker_qs "$TMP/profile-only")"
+# `[handoff] deliver_on_session_start = false` is sent as &handoff=0 only when
+# explicitly falsy, and a [handoff]-only marker is a settings boundary.
+mkdir -p "$TMP/handoff-off/inner" "$TMP/handoff-on"
+printf 'workspace = "outer"\n' >"$TMP/handoff-off/.ai-memory.toml"
+printf '[handoff]\ndeliver_on_session_start = "false"\n' >"$TMP/handoff-off/inner/.ai-memory.toml"
+printf '[handoff]\ndeliver_on_session_start = true\n' >"$TMP/handoff-on/.ai-memory.toml"
+assert_eq "handoff-only marker is a settings boundary" \
+    "$TMP/handoff-off/inner/.ai-memory.toml" "$(ai_memory_find_settings_marker "$TMP/handoff-off/inner")"
+assert_eq "marker_qs forwards the [handoff] opt-out" \
+    "&cwd=$(ai_memory_url_encode "$TMP/handoff-off/inner")&profile_contribute=1&profile_consume=1&handoff=0" \
+    "$(ai_memory_marker_qs "$TMP/handoff-off/inner")"
+assert_eq "marker_qs omits handoff for a sibling project and for a truthy value" \
+    "&cwd=$(ai_memory_url_encode "$TMP/handoff-off")&workspace=outer&profile_contribute=1&profile_consume=1" \
+    "$(ai_memory_marker_qs "$TMP/handoff-off")"
+assert_eq "marker_qs omits handoff when deliver_on_session_start is true" \
+    "&cwd=$(ai_memory_url_encode "$TMP/handoff-on")&profile_contribute=1&profile_consume=1" \
+    "$(ai_memory_marker_qs "$TMP/handoff-on")"
+HF_PS=$(grep -q 'deliver_on_session_start' hooks/lib/ai-memory-hook.ps1 \
+    && grep -q '&handoff=0' hooks/lib/ai-memory-hook.ps1 && printf 'ok' || printf 'missing')
+assert_eq "powershell marker query forwards the [handoff] opt-out (static)" "ok" "$HF_PS"
 PSH=""
 if command -v pwsh >/dev/null 2>&1; then
     PSH=$(command -v pwsh)

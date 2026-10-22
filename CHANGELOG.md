@@ -13,6 +13,13 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added `[handoff] deliver_on_session_start = false` to `.ai-memory.toml`. A
+  project that sets it no longer gets its handoff, or the continuity notice, at
+  session start; the handoff is still created when the session ends and stays
+  open for `memory_handoff_accept`. The native hook, the shell and PowerShell
+  scripts and the generated TypeScript integrations send `handoff=0` only when
+  the value is explicitly falsy (#1621).
+
 - Added first-party Qoder CLI/IDE lifecycle and MCP support. Both installers
   merge into `~/.qoder/settings.json`: `install-mcp --client qoder` writes a
   sessionless stdio bridge, while `install-hooks --agent qoder` registers the

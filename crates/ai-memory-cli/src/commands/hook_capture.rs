@@ -639,6 +639,7 @@ fn marker_query_suffix_impl_from_selection(
     let (mut drop_subagent, mut default_global) = (None, None);
     let (mut briefing, mut briefing_budget) = (None, None);
     let (mut profile_contribute, mut profile_consume) = (None, None);
+    let mut handoff_off = false;
     // The nearest marker that declares more than `[capture]` (#668): a
     // nested capture-only marker (e.g. one that only sets `ignore_paths`)
     // must not shadow an outer marker's workspace/project/briefing/etc.
@@ -658,6 +659,12 @@ fn marker_query_suffix_impl_from_selection(
         // marker sends nothing, so the server keeps what it stored.
         profile_contribute = Some(profile_flag_value(parse_toml_flag(&marker, "contribute")));
         profile_consume = Some(profile_flag_value(parse_toml_flag(&marker, "consume")));
+        // `[handoff] deliver_on_session_start = false` keeps this project's
+        // handoffs out of its session starts. Sent only when explicitly
+        // falsy, so an absent key leaves the request byte-identical.
+        handoff_off = parse_toml_flag(&marker, "deliver_on_session_start")
+            .as_deref()
+            .is_some_and(crate::marker::is_falsy);
     }
     if let Some(val) = scope.workspace {
         qs.push_str(&format!("&workspace={}", url_encode(&val)));
@@ -704,6 +711,9 @@ fn marker_query_suffix_impl_from_selection(
     }
     if let Some(val) = profile_consume {
         qs.push_str(&format!("&profile_consume={val}"));
+    }
+    if handoff_off {
+        qs.push_str("&handoff=0");
     }
     // Per-repo session-start brief opt-in: forwarded on every request for
     // simplicity (the capture path ignores it); only the `/handoff` GET at
@@ -1829,6 +1839,47 @@ drop_subagent_captures = "true"
         let bare = tempfile::TempDir::new().unwrap();
         let none = marker_query_suffix(bare.path().to_str().unwrap(), None);
         assert!(!none.contains("profile_"), "{none}");
+    }
+
+    /// `[handoff] deliver_on_session_start` is forwarded as `&handoff=0` only
+    /// when explicitly falsy; every other shape leaves the request unchanged,
+    /// and a `[handoff]`-only marker is a settings boundary.
+    #[test]
+    fn marker_query_suffix_forwards_the_handoff_opt_out_only_when_falsy() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let inner = tmp.path().join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::write(
+            tmp.path().join(".ai-memory.toml"),
+            "workspace = \"outer\"\n",
+        )
+        .unwrap();
+        for off in ["false", "\"no\"", "0", "\"OFF\""] {
+            std::fs::write(
+                inner.join(".ai-memory.toml"),
+                format!("[handoff]\ndeliver_on_session_start = {off}\n"),
+            )
+            .unwrap();
+            let qs = marker_query_suffix(inner.to_str().unwrap(), None);
+            assert!(qs.contains("&handoff=0"), "{off}: {qs}");
+            assert!(
+                !qs.contains("workspace=outer"),
+                "a [handoff] marker is a boundary: {qs}"
+            );
+        }
+        for on in ["true", "\"yes\"", "banana"] {
+            std::fs::write(
+                inner.join(".ai-memory.toml"),
+                format!("[handoff]\ndeliver_on_session_start = {on}\n"),
+            )
+            .unwrap();
+            let qs = marker_query_suffix(inner.to_str().unwrap(), None);
+            assert!(!qs.contains("handoff"), "{on}: {qs}");
+        }
+        // The sibling project keeps delivering: the opt-out is read from the
+        // nearest settings marker only.
+        let outer = marker_query_suffix(tmp.path().to_str().unwrap(), None);
+        assert!(!outer.contains("handoff"), "{outer}");
     }
 
     /// A marker WITHOUT `drop_subagent_captures` does not forward the flag, so
