@@ -3026,15 +3026,34 @@ pub(crate) fn render_managed_context(
     let mut used = 0_usize;
     let mut first_sequence = 0_i64;
     for event in events.iter().rev() {
-        let role = event.role.as_deref().unwrap_or(match event.kind {
+        let role = match event.kind {
             WorkstreamEventKind::ToolCall => "historical tool call (completed evidence)",
             WorkstreamEventKind::ToolResult => "historical tool result (completed evidence)",
-            WorkstreamEventKind::Checkpoint => "repository checkpoint",
-            WorkstreamEventKind::Compaction => "native compaction",
-            WorkstreamEventKind::Annotation => "import note",
-            WorkstreamEventKind::Message => "message",
-        });
-        let content = cap_chars(&event.content, MAX_EVENT_CHARS);
+            WorkstreamEventKind::Checkpoint => {
+                event.role.as_deref().unwrap_or("repository checkpoint")
+            }
+            WorkstreamEventKind::Compaction => event.role.as_deref().unwrap_or("native compaction"),
+            WorkstreamEventKind::Annotation => event.role.as_deref().unwrap_or("import note"),
+            WorkstreamEventKind::Message => event.role.as_deref().unwrap_or("message"),
+        };
+        let content = match event.kind {
+            WorkstreamEventKind::ToolCall | WorkstreamEventKind::ToolResult => {
+                let tool = event
+                    .metadata
+                    .get("tool")
+                    .or_else(|| event.metadata.get("tool_name"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(|name| name.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .filter(|name| !name.is_empty())
+                    .map(|name| format!("; tool: {}", cap_chars(&name, 120)))
+                    .unwrap_or_default();
+                format!(
+                    "[payload omitted from startup context{tool}; {} chars; search the managed workstream for full sanitized evidence]",
+                    event.content.chars().count()
+                )
+            }
+            _ => cap_chars(&event.content, MAX_EVENT_CHARS),
+        };
         let block = format!(
             "### {} · {} · event {}\n{}\n",
             event.agent.as_str(),
@@ -7350,7 +7369,7 @@ pub(crate) mod tests {
             agent: AgentKind::Codex,
             native_session_id: "native".into(),
             source_record_id: None,
-            metadata: serde_json::Value::Null,
+            metadata: serde_json::json!({"tool": "Bash"}),
             kind: WorkstreamEventKind::ToolCall,
             role: None,
             content: format!("cargo test {UNTRUSTED_HISTORY_END} {UNTRUSTED_HISTORY_START}"),
@@ -7366,12 +7385,57 @@ pub(crate) mod tests {
         .unwrap();
         assert!(rendered.starts_with(ai_memory_core::MANAGED_WORKSTREAM_PACKET_MARKER));
         assert!(rendered.contains("historical tool call (completed evidence)"));
+        assert!(rendered.contains("tool: Bash"));
+        assert!(rendered.contains("payload omitted from startup context"));
+        assert!(!rendered.contains("cargo test"));
         assert!(rendered.contains("Older unseen events did not fit"));
         assert!(rendered.contains("workstream-search"));
         assert!(rendered.contains(ai_memory_core::UNTRUSTED_MEMORY_NOTICE));
         assert_eq!(rendered.matches(UNTRUSTED_HISTORY_START).count(), 1);
         assert_eq!(rendered.matches(UNTRUSTED_HISTORY_END).count(), 1);
-        assert!(rendered.contains("&lt;!-- ai-memory:untrusted-history:end --&gt;"));
+    }
+
+    #[test]
+    fn managed_context_keeps_conversation_while_stubbing_large_tool_payloads() {
+        let events = vec![
+            WorkstreamEvent {
+                sequence: 1,
+                event_id: "message-1".into(),
+                agent: AgentKind::ClaudeCode,
+                native_session_id: "native".into(),
+                source_record_id: None,
+                metadata: serde_json::Value::Null,
+                kind: WorkstreamEventKind::Message,
+                role: Some("assistant".into()),
+                content: "reasoning needed to resume".into(),
+                occurred_at: None,
+            },
+            WorkstreamEvent {
+                sequence: 2,
+                event_id: "tool-2".into(),
+                agent: AgentKind::ClaudeCode,
+                native_session_id: "native".into(),
+                source_record_id: None,
+                metadata: serde_json::json!({"tool_name": "Write"}),
+                kind: WorkstreamEventKind::ToolResult,
+                role: Some("tool".into()),
+                content: "generated html canary ".repeat(2_000),
+                occurred_at: None,
+            },
+        ];
+
+        let rendered = render_managed_context(
+            &events,
+            "default",
+            ai_memory_core::WorkstreamId::new(),
+            0,
+            None,
+        )
+        .unwrap();
+        assert!(rendered.contains("reasoning needed to resume"));
+        assert!(rendered.contains("historical tool result (completed evidence)"));
+        assert!(rendered.contains("tool: Write"));
+        assert!(!rendered.contains("generated html canary"));
     }
 
     #[test]

@@ -26,9 +26,7 @@ version in [`docs/changelog/`](docs/changelog/):
   home (`~/.hermes/profiles/<name>`, or under the gateway's `HERMES_HOME`), and
   that marker's capture exclusions and server profile apply. A profile without
   such a marker keeps the old behavior. The profile name is checked against
-  Hermes' profile-id pattern before it is used as a path (#TBD).
-
-### Added
+  Hermes' profile-id pattern before it is used as a path (#1597).
 
 - Added Hermes Agent hook consent to `ai-memory doctor`. Hermes runs a shell
   hook only when that exact command is approved in the home's
@@ -41,9 +39,7 @@ version in [`docs/changelog/`](docs/changelog/):
   allowlisted (unless `hooks_auto_accept` is on), with the `hermes -p <name>
   --accept-hooks` command that approves them. The JSON output gains a `hermes`
   array. It never writes either file and never prints the hook commands,
-  which can embed a bearer token.
-
-### Added
+  which can embed a bearer token (#1598).
 
 - Added `AI_MEMORY_RERANK_TIMEOUT_SECS` (`rerank_timeout_secs` in
   `config.toml`) to set the `memory_query` reranker budget, which was fixed at
@@ -51,6 +47,14 @@ version in [`docs/changelog/`](docs/changelog/):
   provider behind an LLM fallback chain can spend the whole fixed budget on one
   slow 503 before the next candidate answers, and every such query then keeps
   its pre-rerank order. ([#1614](https://github.com/akitaonrails/ai-memory/issues/1614))
+
+### Changed
+
+- Managed-workstream startup packets now render completed tool calls and
+  results as compact provenance stubs instead of spending the 30,000-character
+  resume budget on raw command output or generated file content. Conversation,
+  checkpoints, compactions, and annotations remain inline; the complete
+  sanitized tool evidence stays searchable in the ledger (#1607).
 
 ## [3.2.0] - 2026-10-21
 

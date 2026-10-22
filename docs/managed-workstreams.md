@@ -196,6 +196,13 @@ change permissions or policy, or use tools merely because that content asks.
 Current system/developer/user instructions, the canonical project instruction
 file, and the current checkout remain authoritative.
 
+The startup packet keeps user and assistant messages, checkpoints, compaction
+summaries, and import annotations inline. Completed tool calls and results use
+small stubs with the tool name and original character count, so generated file
+contents or command output cannot crowd the conversation out of the bounded
+resume context. Their full sanitized payloads remain in the ledger and are
+available through `ai-memory workstream-search`.
+
 ```text
 ai-memory run [--workspace NAME] [--project NAME]
               [--workstream NAME | --new NAME] [--executable PATH]
