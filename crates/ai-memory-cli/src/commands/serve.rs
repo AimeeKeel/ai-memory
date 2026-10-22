@@ -3168,9 +3168,13 @@ fn configure_consolidator(
         info!(
             provider = llm.name(),
             model = llm.model(),
+            timeout_secs = config.rerank_timeout_secs,
             "project/scopes memory_query reranking enabled (adds LLM latency)",
         );
-        server = server.with_reranker(Arc::new(ai_memory_llm::LlmReranker::new(llm.clone())));
+        let stage =
+            ai_memory_llm::RerankStage::new(Arc::new(ai_memory_llm::LlmReranker::new(llm.clone())))
+                .with_timeout(std::time::Duration::from_secs(config.rerank_timeout_secs));
+        server = server.with_rerank_stage(stage);
     }
     Ok(ConsolidatorSetup {
         server,
