@@ -2072,6 +2072,19 @@ file, `--apply` included: `~/.hermes/config.yaml` is YAML you also edit, and
 Hermes gates user hooks behind its own acceptance prompt (`hooks_auto_accept`).
 Paste the block, let Hermes accept it, and restart Hermes and its gateway.
 
+Hermes runs a hook only when its exact `(event, command)` pair is in that
+home's `shell-hooks-allowlist.json`, or when `hooks_auto_accept`,
+`--accept-hooks` or `HERMES_ACCEPT_HOOKS` approves it. Each profile
+(`~/.hermes/profiles/<name>`) is a home of its own with its own allowlist, so
+pasting the block into a profile's `config.yaml` is not enough: approve it
+there once with `hermes -p <name> --accept-hooks chat`, or run `hermes -p
+<name>` and accept the prompt. A gateway has no terminal to prompt on, so it
+skips an unapproved hook and logs `not allowlisted — skipped` on every event.
+`ai-memory doctor` checks the root home and every profile and names each
+profile whose ai-memory hooks are not approved. It reads both files and never
+changes them, and it cannot see a `HERMES_ACCEPT_HOOKS` set only in the
+gateway's environment.
+
 Six events are wired, each with a 20-second timeout:
 
 | Hermes event | ai-memory event | What it does |
