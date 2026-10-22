@@ -519,6 +519,12 @@ pub struct Config {
     /// preserves the fused, authority-adjusted order. Set with
     /// `AI_MEMORY_RERANKER=llm`.
     pub reranker: Option<String>,
+    /// Wall-clock budget, in seconds, for one rerank call before the search
+    /// answers from the pre-rerank order. Defaults to
+    /// `ai_memory_llm::reranker::RERANK_TIMEOUT` (20s). Raise it when the
+    /// LLM chain falls back across slow free-tier candidates (a hosted 503
+    /// can take ~20s alone). Set with `AI_MEMORY_RERANK_TIMEOUT_SECS`.
+    pub rerank_timeout_secs: u64,
     /// Optional embedding provider (`openai`, `voyage`, `google` / `gemini`,
     /// or `openai-compat`).
     pub embedding_provider: Option<String>,
@@ -1427,6 +1433,7 @@ impl Default for Config {
             strip_root_combinators: false,
             gemini_safe_schemas: false,
             reranker: None,
+            rerank_timeout_secs: ai_memory_llm::reranker::RERANK_TIMEOUT.as_secs(),
             embedding_provider: None,
             embedding_model: None,
             embedding_dim: None,
@@ -2628,6 +2635,15 @@ impl Config {
                 "llm_timeout_secs must be at least 1 second (got {}); \
                  AI_MEMORY_LLM_TIMEOUT_SECS is read in seconds",
                 config.llm_timeout_secs
+            );
+        }
+        // Zero would time out every rerank before the provider is called,
+        // silently turning reranking off while it still reports as enabled.
+        if config.rerank_timeout_secs == 0 {
+            anyhow::bail!(
+                "rerank_timeout_secs must be at least 1 second (got {}); \
+                 AI_MEMORY_RERANK_TIMEOUT_SECS is read in seconds",
+                config.rerank_timeout_secs
             );
         }
         // Parsed (and discarded) here so a malformed header list is rejected
@@ -5428,6 +5444,37 @@ input_token_safety_margin = {margin}
             .expect_err("a sub-second timeout must fail closed");
         assert!(
             error.to_string().contains("llm_timeout_secs"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    /// `AI_MEMORY_RERANK_TIMEOUT_SECS` (figment maps it to this field) lets a
+    /// slow free-tier fallback chain finish a rerank; unset keeps the 20s
+    /// budget the reranker always had.
+    #[test]
+    fn load_defaults_and_round_trips_the_rerank_timeout() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let cfg = Config::load(Some(&config_path), Some(tmp.path().to_path_buf())).unwrap();
+        assert_eq!(
+            cfg.rerank_timeout_secs,
+            ai_memory_llm::reranker::RERANK_TIMEOUT.as_secs()
+        );
+        std::fs::write(&config_path, "rerank_timeout_secs = 60\n").unwrap();
+        let cfg = Config::load(Some(&config_path), Some(tmp.path().to_path_buf())).unwrap();
+        assert_eq!(cfg.rerank_timeout_secs, 60);
+    }
+
+    #[test]
+    fn load_rejects_a_zero_rerank_timeout() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "rerank_timeout_secs = 0\n").unwrap();
+        let error = Config::load(Some(&config_path), Some(tmp.path().to_path_buf()))
+            .expect_err("a zero rerank budget must fail closed");
+        assert!(
+            error.to_string().contains("rerank_timeout_secs"),
             "unexpected error: {error:#}"
         );
     }

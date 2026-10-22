@@ -11,6 +11,15 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Added
+
+- Added `AI_MEMORY_RERANK_TIMEOUT_SECS` (`rerank_timeout_secs` in
+  `config.toml`) to set the `memory_query` reranker budget, which was fixed at
+  20 seconds. The default stays 20 and zero is rejected at startup. A hosted
+  provider behind an LLM fallback chain can spend the whole fixed budget on one
+  slow 503 before the next candidate answers, and every such query then keeps
+  its pre-rerank order.
+
 ## [3.2.0] - 2026-10-21
 
 ### Added

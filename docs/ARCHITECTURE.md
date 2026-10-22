@@ -1505,6 +1505,7 @@ AI_MEMORY_LLM_HEADERS      optional extra HTTP headers on every chat request, as
                            contain a comma through the env var — use
                            `llm_headers = [...]` in config.toml for that.
 AI_MEMORY_RERANKER         optional `llm`; reranks project/scopes query candidates
+AI_MEMORY_RERANK_TIMEOUT_SECS optional rerank budget in seconds (default 20, minimum 1)
 COPILOT_GITHUB_TOKEN       optional GitHub token for copilot
 AI_MEMORY_CODEX_EXECUTABLE optional Codex executable; defaults to codex on PATH
 AI_MEMORY_CURSOR_AGENT     optional Cursor Agent CLI executable for cursor; defaults to agent on PATH

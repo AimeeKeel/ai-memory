@@ -434,7 +434,9 @@ RRF ranked below the requested cut, at the cost of LLM latency and usage. The
 request sends the query plus at most 30 bounded page titles and search snippets
 to the configured provider; all values are JSON-encoded and treated as
 untrusted data. A timeout, provider error, or incomplete/invalid score set
-preserves the normal order. `global=true` and supplemental global-preference
+preserves the normal order. The timeout is 20 seconds per query; raise it with
+`AI_MEMORY_RERANK_TIMEOUT_SECS` (or `rerank_timeout_secs` in `config.toml`)
+when a slow provider or a fallback chain needs longer to answer. `global=true` and supplemental global-preference
 hits keep their existing non-RRF ranking. Concurrent provider calls are capped
 at four; saturated queries keep their local ranking without waiting.
 

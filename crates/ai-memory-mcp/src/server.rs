@@ -2652,7 +2652,11 @@ impl AiMemoryServer {
         hits: Vec<(PageHit, Option<ai_memory_store::SearchExplain>)>,
         limit: usize,
     ) -> Vec<(PageHit, Option<ai_memory_store::SearchExplain>)> {
-        self.rerank_hits_with_timeout(query, hits, limit, ai_memory_llm::reranker::RERANK_TIMEOUT)
+        let timeout = self.rerank.as_ref().map_or(
+            ai_memory_llm::reranker::RERANK_TIMEOUT,
+            ai_memory_llm::RerankStage::timeout,
+        );
+        self.rerank_hits_with_timeout(query, hits, limit, timeout)
             .await
     }
 
@@ -8209,6 +8213,41 @@ mod tests {
             original_ids
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// The stage's configured budget (`AI_MEMORY_RERANK_TIMEOUT_SECS`) is the
+    /// one `memory_query` applies: a slow reranker is cut off under a short
+    /// budget and allowed to finish under a long one.
+    #[tokio::test]
+    async fn reranker_applies_the_stage_configured_timeout() {
+        let (_tmp, _store, server, _ws, _proj) = setup_server().await;
+        let hits = rerank_test_hits(4);
+        let original_ids: Vec<PageId> = hits.iter().map(|(hit, _)| hit.id).collect();
+        let reversed_ids: Vec<PageId> = original_ids.iter().rev().copied().collect();
+
+        let (reranker, _, _) = stub_reranker(StubRerankOutcome::Reverse, Duration::from_millis(50));
+        let short =
+            ai_memory_llm::RerankStage::new(reranker).with_timeout(Duration::from_millis(1));
+        let result = server
+            .clone()
+            .with_rerank_stage(short)
+            .rerank_hits("query", hits.clone(), 4)
+            .await;
+        assert_eq!(
+            result.iter().map(|(hit, _)| hit.id).collect::<Vec<_>>(),
+            original_ids
+        );
+
+        let (reranker, _, _) = stub_reranker(StubRerankOutcome::Reverse, Duration::from_millis(50));
+        let long = ai_memory_llm::RerankStage::new(reranker).with_timeout(Duration::from_secs(5));
+        let result = server
+            .with_rerank_stage(long)
+            .rerank_hits("query", hits, 4)
+            .await;
+        assert_eq!(
+            result.iter().map(|(hit, _)| hit.id).collect::<Vec<_>>(),
+            reversed_ids
+        );
     }
 
     #[tokio::test]
