@@ -101,8 +101,8 @@ ai_memory_profile_flag() {
 # Whether "$1" (a marker file) declares anything beyond a `[capture]`
 # section: any root-level scope key (workspace/project/project_strategy), or
 # any of the other settings ai_memory_marker_qs / ai_memory_briefing_qs
-# forward (drop_subagent_captures, default_global, [briefing] and [profile]
-# keys). Mirrors
+# forward (drop_subagent_captures, default_global, [briefing], [profile] and
+# [handoff] keys). Mirrors
 # `declares_more_than_capture` in marker.rs. A marker with any of these is a
 # resolution boundary; only a marker whose only content is `[capture]` (e.g.
 # ignore_paths) is scope/settings-transparent (#668).
@@ -115,7 +115,7 @@ ai_memory_marker_declares_settings() {
     ai_memory_strip_utf8_bom <"$file" \
         | LC_ALL=C grep -Eq '^[[:space:]]*aliases[[:space:]]*=' && return 0
     ai_memory_marker_declares_server "$file" && return 0
-    for key in default_global inject_on_session_start max_chars contribute consume; do
+    for key in default_global inject_on_session_start max_chars contribute consume deliver_on_session_start; do
         [ -n "$(ai_memory_parse_toml_flag "$file" "$key")" ] && return 0
     done
     return 1
@@ -680,6 +680,7 @@ ai_memory_marker_qs() {
     isty=""
     pcon=""
     pcons=""
+    hoff=""
     aliases=""
     routed=""
     # The nearest marker that declares more than `[capture]` (#668): a nested
@@ -723,6 +724,9 @@ ai_memory_marker_qs() {
         # what it stored.
         pcon=$(ai_memory_profile_flag "$(ai_memory_parse_toml_flag "$marker" contribute)")
         pcons=$(ai_memory_profile_flag "$(ai_memory_parse_toml_flag "$marker" consume)")
+        # `[handoff] deliver_on_session_start = false` is sent only when
+        # explicitly falsy; an absent key leaves the request unchanged.
+        [ "$(ai_memory_profile_flag "$(ai_memory_parse_toml_flag "$marker" deliver_on_session_start)")" = 0 ] && hoff=0
         [ -n "$pr" ] && ps="marker"
     fi
     # Before repo-root can fill `pr`: a repo-root name is an inference, while
@@ -768,6 +772,7 @@ ai_memory_marker_qs() {
     [ -n "$dg" ] && qs="${qs}&default_global=$(ai_memory_url_encode "$dg")"
     [ -n "$pcon" ] && qs="${qs}&profile_contribute=$(ai_memory_url_encode "$pcon")"
     [ -n "$pcons" ] && qs="${qs}&profile_consume=$(ai_memory_url_encode "$pcons")"
+    [ -n "$hoff" ] && qs="${qs}&handoff=0"
     qs="${qs}$(ai_memory_managed_qs)"
     printf '%s' "$qs"
 }

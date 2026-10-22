@@ -191,6 +191,15 @@ inject_on_session_start = "true"
 # defaults to 4000.
 max_chars = 4000
 
+# Optional. Stop delivering this project's handoff at session start. Only an
+# explicit false / "no" / "off" / "0" turns it off; the default is to deliver.
+# Handoffs are still created when a session ends, and stay open (an agent can
+# still take one with `memory_handoff_accept`), so only the automatic delivery
+# stops. The brief, the profile digest and everything else on start are
+# unchanged.
+[handoff]
+deliver_on_session_start = false
+
 # Optional. The cross-project profile (docs/cross-project-profile.md): your
 # usual choices from other projects, delivered at session start as defaults
 # below this repository's rules file. Both keys default to on.
@@ -292,6 +301,14 @@ values are ignored and behave like the default `basename(cwd)` strategy.
 `[profile] contribute` and `consume` are on unless the value is explicitly
 falsy (`false` / `0` / `no` / `off`, quoted or bare). A marker that sets only
 `[profile]` keys is a settings boundary, like one with `[briefing]` keys.
+
+`[handoff] deliver_on_session_start` is on unless the value is explicitly falsy
+(`false` / `0` / `no` / `off`, quoted or bare). Clients send `handoff=0` on the
+session-start fetch only when the marker turns it off, so the server reads
+nothing, claims nothing and adds no handoff or continuity notice for that
+project. A marker that sets only `[handoff]` is a settings boundary, like one
+with `[briefing]` or `[profile]` keys. Use it for projects whose automatic
+handoffs are mostly noise, such as a bot fleet driven by routines and webhooks.
 
 `[recall] default_global` applies to an agent's unscoped `memory_query` and
 `memory_recent` calls. A `memory_query` with `as_of` is not broadened: it
