@@ -120,6 +120,11 @@ baseline-vs-baseline determinism check is clean (all accuracy/token deltas `0.00
 
 ## Reading the numbers
 
+- **Evidence coverage.** `hit@k` credits any evidence session, `recall@k`
+  measures the fraction found, and `recall-all@k` requires every evidence
+  session in the top k distinct retrieved sessions. Each metric is averaged
+  per question; abstention questions are excluded. Historical reports that
+  omit `recall-all@k` do not establish complete-evidence recall.
 - **mode: local embeddings** is the 2.0 default: the in-process
   all-MiniLM embedder (no API key, no egress) fused with FTS5 + entity +
   graph. **mode: zero-llm** is the deterministic floor (`embedding_provider

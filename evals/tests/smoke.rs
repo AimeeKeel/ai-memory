@@ -50,6 +50,8 @@ fn the_harness_scores_a_tiny_sample_end_to_end() {
     assert_eq!(report["questions_scored"], 2);
     assert_eq!(report["mode"], "zero-llm");
     assert!(report["slices"]["overall"]["hit_at"]["5"].is_number());
+    assert!(report["slices"]["overall"]["recall_all_at"]["5"].is_number());
+    assert!(report["per_question"][0]["recall_all_at"]["5"].is_number());
     // The R2 triple lands next to accuracy.
     assert!(report["slices"]["overall"]["latency_p50_ms"].is_number());
     assert!(report["slices"]["overall"]["context_tokens_mean"].is_number());
@@ -117,6 +119,7 @@ fn the_ab_path_reports_a_zero_delta_for_identical_configs() {
     for k in ["1", "3", "5", "10"] {
         assert_eq!(delta["hit_at"][k], 0.0, "hit@{k} delta");
         assert_eq!(delta["recall_at"][k], 0.0, "recall@{k} delta");
+        assert_eq!(delta["recall_all_at"][k], 0.0, "recall-all@{k} delta");
     }
     assert_eq!(delta["context_tokens_mean"], 0.0);
     assert_eq!(delta["context_tokens_median"], 0.0);
