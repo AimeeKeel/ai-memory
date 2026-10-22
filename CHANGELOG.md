@@ -18,7 +18,7 @@ version in [`docs/changelog/`](docs/changelog/):
   20 seconds. The default stays 20 and zero is rejected at startup. A hosted
   provider behind an LLM fallback chain can spend the whole fixed budget on one
   slow 503 before the next candidate answers, and every such query then keeps
-  its pre-rerank order.
+  its pre-rerank order. ([#1614](https://github.com/akitaonrails/ai-memory/issues/1614))
 
 ## [3.2.0] - 2026-10-21
 
