@@ -2101,8 +2101,21 @@ instead, the variable Hermes exports `terminal.cwd` through, when it names an
 existing absolute directory. A multiplexing gateway serves every profile from
 the default profile's process and exports only the default profile's
 `terminal.cwd`, so inside a gateway the variable is used only for events the
-`default` profile fired; another profile's events keep the process directory.
-A tool call can still move to another checkout
+`default` profile fired. Another profile's events keep the process directory
+unless that profile's own Hermes home (`~/.hermes/profiles/<name>`, under the
+gateway's `HERMES_HOME` when it is set) carries an `.ai-memory.toml`; then the
+hook routes them by that marker. This is how the bots of one gateway reach the
+project they work for:
+
+```toml
+# ~/.hermes/profiles/sc-seo/.ai-memory.toml
+workspace = "default"
+project = "smart-compost"
+```
+
+The marker is an ordinary local marker, so its `[capture]` exclusions and
+`server` profile govern that profile's events. A profile without one is left
+where it was. A tool call can still move to another checkout
 when its absolute location proves one: `terminal`'s `workdir`, a file tool's
 `path`, or `search_files`' `path`. With neither, an event stays with the
 process directory and, under `capture_mode = allowlist`, is captured only if

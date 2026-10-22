@@ -1030,10 +1030,7 @@ const HERMES_GATEWAY_HOST_PROFILE: &str = "default";
 /// fired. A standalone gateway of another profile loses it too: nothing in
 /// the hook's environment tells it apart from a multiplexed one.
 fn hermes_terminal_cwd(runtime_env: &RuntimeEnv, profile: Option<&str>) -> Option<String> {
-    let in_gateway = runtime_env
-        .var_os(HERMES_GATEWAY_ENV)
-        .is_some_and(|value| value == "1");
-    if in_gateway && profile != Some(HERMES_GATEWAY_HOST_PROFILE) {
+    if hermes_in_gateway(runtime_env) && profile != Some(HERMES_GATEWAY_HOST_PROFILE) {
         return None;
     }
     let path = PathBuf::from(runtime_env.var_os(HERMES_TERMINAL_CWD_ENV)?);
@@ -1041,6 +1038,68 @@ fn hermes_terminal_cwd(runtime_env: &RuntimeEnv, profile: Option<&str>) -> Optio
         return None;
     }
     path.to_str().map(str::to_owned)
+}
+
+fn hermes_in_gateway(runtime_env: &RuntimeEnv) -> bool {
+    runtime_env
+        .var_os(HERMES_GATEWAY_ENV)
+        .is_some_and(|value| value == "1")
+}
+
+/// A gateway event of a profile other than the host's, routed by an
+/// `.ai-memory.toml` the operator placed in that profile's own Hermes home.
+/// Its `terminal.cwd` never reaches the hook (see `hermes_terminal_cwd`), so
+/// without this every bot profile of a gateway lands in the gateway's own
+/// cwd. The profile directory is used only when it holds its own marker: an
+/// unmarked profile keeps the process cwd it always had, rather than turning
+/// into a project named after the profile.
+///
+/// The name comes from the payload, so it must be a Hermes profile id
+/// (`PROFILE_ID_RE` in `hermes_constants.py`) before it becomes a path
+/// component. Profiles live in `<root>/profiles/<name>` (`get_profile_dir` in
+/// `hermes_cli/profiles.py`), where the root is the gateway's `HERMES_HOME`,
+/// else `~/.hermes`; a standalone gateway of a named profile runs with that
+/// profile's directory as its `HERMES_HOME`.
+fn hermes_profile_marker_cwd(runtime_env: &RuntimeEnv, profile: Option<&str>) -> Option<String> {
+    if !hermes_in_gateway(runtime_env) || runtime_env.ignore_marker() {
+        return None;
+    }
+    let profile = profile
+        .filter(|name| *name != HERMES_GATEWAY_HOST_PROFILE && is_hermes_profile_id(name))?;
+    let hermes_home = crate::commands::path_util::agent_config_home(
+        runtime_env.var_os("HERMES_HOME"),
+    )
+    .or_else(|| {
+        runtime_env
+            .home_dir()
+            .map(|home| Path::new(home).join(".hermes"))
+    })?;
+    let standalone = hermes_home.file_name() == Some(std::ffi::OsStr::new(profile))
+        && hermes_home
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|parent| parent == "profiles");
+    let dir = if standalone {
+        hermes_home
+    } else {
+        hermes_home.join("profiles").join(profile)
+    };
+    if !dir.is_absolute() || !dir.join(".ai-memory.toml").is_file() {
+        return None;
+    }
+    dir.to_str().map(str::to_owned)
+}
+
+/// `^[a-z0-9][a-z0-9_-]{0,63}$`, Hermes' `PROFILE_ID_RE`.
+fn is_hermes_profile_id(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() <= 64
+        && bytes
+            .first()
+            .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_' || *b == b'-')
 }
 
 /// Run a single hook end-to-end. Always returns Ok and always writes a JSON
@@ -1273,10 +1332,14 @@ where
     // Hermes reports its own process cwd on every event, which for a gateway
     // is wherever the gateway started. The session's working directory is
     // `terminal.cwd`, which Hermes exports to hooks as `TERMINAL_CWD`, so that
-    // replaces the reported cwd. A tool event can still move to another
-    // checkout its own absolute locations prove (below).
+    // replaces the reported cwd; a gateway's other profiles route by a marker
+    // in their own Hermes home instead. A tool event can still move to
+    // another checkout its own absolute locations prove (below).
     let payload_cwd = match (agent_kind == AgentKind::Hermes)
-        .then(|| hermes_terminal_cwd(&runtime_env, hermes_profile.as_deref()))
+        .then(|| {
+            hermes_terminal_cwd(&runtime_env, hermes_profile.as_deref())
+                .or_else(|| hermes_profile_marker_cwd(&runtime_env, hermes_profile.as_deref()))
+        })
         .flatten()
     {
         Some(cwd) => {
@@ -8685,6 +8748,180 @@ mod tests {
             if let Some(entry) = entries.first() {
                 assert_eq!(query_param(&entry.url, "project"), Some("default-repo"));
             }
+        }
+    }
+
+    /// A Hermes home with one named profile carrying its own marker.
+    fn hermes_root_with_profile_marker(parent: &Path, profile: &str, marker: &str) -> PathBuf {
+        let root = parent.join("hermes-root");
+        repo_with_marker(&root.join("profiles"), profile, marker);
+        root
+    }
+
+    #[test]
+    fn hermes_profile_marker_cwd_takes_only_a_marked_named_profile_in_a_gateway() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = hermes_root_with_profile_marker(tmp.path(), "sc-seo", "project = \"p\"\n");
+        std::fs::create_dir_all(root.join("profiles").join("unmarked")).unwrap();
+        let profile_dir = root.join("profiles").join("sc-seo");
+        let root_str = root.to_str().unwrap();
+        let gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", root_str),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        assert_eq!(
+            hermes_profile_marker_cwd(&gateway, Some("sc-seo")).as_deref(),
+            profile_dir.to_str()
+        );
+        assert_eq!(hermes_profile_marker_cwd(&gateway, Some("unmarked")), None);
+        assert_eq!(hermes_profile_marker_cwd(&gateway, Some("missing")), None);
+        assert_eq!(hermes_profile_marker_cwd(&gateway, None), None);
+        // The default profile's directory is the root; its route is `TERMINAL_CWD`.
+        std::fs::write(root.join(".ai-memory.toml"), "project = \"root\"\n").unwrap();
+        assert_eq!(hermes_profile_marker_cwd(&gateway, Some("default")), None);
+        // Outside a gateway the process cwd and `TERMINAL_CWD` are the session's own.
+        let standalone_cli = RuntimeEnv::with_process_env_for_tests(&[("HERMES_HOME", root_str)]);
+        assert_eq!(
+            hermes_profile_marker_cwd(&standalone_cli, Some("sc-seo")),
+            None
+        );
+        // A standalone gateway of the profile runs with its directory as HERMES_HOME.
+        let own_gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", profile_dir.to_str().unwrap()),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        assert_eq!(
+            hermes_profile_marker_cwd(&own_gateway, Some("sc-seo")).as_deref(),
+            profile_dir.to_str()
+        );
+    }
+
+    /// Adversarial: the profile name arrives in the payload, so a name that is
+    /// not a Hermes profile id never becomes a path, even when a marker waits
+    /// where it would lead.
+    #[test]
+    fn hermes_profile_marker_cwd_refuses_a_name_that_is_not_a_profile_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = hermes_root_with_profile_marker(tmp.path(), "sc-seo", "project = \"p\"\n");
+        repo_with_marker(&root, "escape", "project = \"escape\"\n");
+        repo_with_marker(&root.join("profiles"), "Upper", "project = \"upper\"\n");
+        let gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", root.to_str().unwrap()),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        for name in ["../escape", "sc-seo/..", "Upper", "", "-lead", "a/b"] {
+            assert_eq!(
+                hermes_profile_marker_cwd(&gateway, Some(name)),
+                None,
+                "{name}"
+            );
+        }
+        assert!(is_hermes_profile_id(&"a".repeat(64)));
+        assert!(!is_hermes_profile_id(&"a".repeat(65)));
+        // Control: the valid id still routes.
+        assert!(hermes_profile_marker_cwd(&gateway, Some("sc-seo")).is_some());
+    }
+
+    /// A multiplexing gateway reports its own cwd (here an unmarked home) for
+    /// every profile. A named profile whose Hermes home carries a marker is
+    /// routed there under allowlist mode; an unmarked profile keeps the
+    /// gateway cwd, which allowlist mode drops.
+    #[tokio::test]
+    async fn hermes_gateway_profile_routes_by_its_own_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let root = hermes_root_with_profile_marker(
+            tmp.path(),
+            "sc-seo",
+            "workspace = \"w\"\nproject = \"smart-compost\"\n",
+        );
+        std::fs::create_dir_all(root.join("profiles").join("sc-unmarked")).unwrap();
+        let gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", root.to_str().unwrap()),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        let payload = |profile: &str| {
+            let mut payload: serde_json::Value = serde_json::from_str(&hermes_payload(
+                "pre_llm_call",
+                &home,
+                pre_llm_call_extra(false),
+            ))
+            .unwrap();
+            payload["profile"] = profile.into();
+            payload.to_string()
+        };
+        let args = || {
+            let mut args = hermes_args("user-prompt-submit", &dead_server_url());
+            args.capture_mode = Some(crate::cli::CaptureModeArg::Allowlist);
+            args
+        };
+        for (profile, spooled) in [("sc-seo", 1), ("sc-unmarked", 0)] {
+            let data_dir = tmp.path().join(format!("data-{profile}"));
+            run_hermes(&data_dir, args(), payload(profile), gateway.clone()).await;
+            let entries = spooled_entries(&data_dir);
+            assert_eq!(entries.len(), spooled, "{profile}");
+            if let Some(entry) = entries.first() {
+                assert_eq!(query_param(&entry.url, "project"), Some("smart-compost"));
+                let body: serde_json::Value = serde_json::from_str(&entry.body).unwrap();
+                assert_eq!(
+                    body["cwd"],
+                    root.join("profiles").join(profile).to_str().unwrap()
+                );
+            }
+        }
+    }
+
+    /// Adversarial: a profile marker selects where the event lands, so its
+    /// exclusions and server profile govern it, as a checkout's do. An
+    /// excluded relative read is never spooled and an unregistered server
+    /// profile drops the event; a public read is the control.
+    #[tokio::test]
+    async fn hermes_gateway_profile_marker_applies_its_capture_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let root = hermes_root_with_profile_marker(
+            tmp.path(),
+            "guarded",
+            "project = \"guarded\"\n[capture]\nignore_paths = [\"secret/**\"]\n",
+        );
+        repo_with_marker(&root.join("profiles"), "routed", "server = \"nobody\"\n");
+        let gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", root.to_str().unwrap()),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        let read = |profile: &str, path: &str| {
+            serde_json::json!({
+                "hook_event_name": "post_tool_call",
+                "tool_name": "read_file",
+                "tool_input": {"path": path},
+                "session_id": "hermes-session",
+                "cwd": home,
+                "profile": profile,
+                "extra": {"tool_call_id": "call-1", "status": "ok", "result": "SENTINEL_CONTENT"}
+            })
+            .to_string()
+        };
+        for (name, profile, path, spooled) in [
+            ("excluded read", "guarded", "secret/token.txt", 0),
+            ("public read", "guarded", "README.md", 1),
+            ("refused profile", "routed", "README.md", 0),
+        ] {
+            let data_dir = tmp.path().join(format!("data-{}", name.replace(' ', "-")));
+            run_hermes(
+                &data_dir,
+                hermes_args("post-tool-use", &dead_server_url()),
+                read(profile, path),
+                gateway.clone(),
+            )
+            .await;
+            let entries = spooled_entries(&data_dir);
+            assert_eq!(entries.len(), spooled, "{name}");
+            assert!(
+                entries.iter().all(|e| !e.body.contains("secret/token")),
+                "{name}"
+            );
         }
     }
 

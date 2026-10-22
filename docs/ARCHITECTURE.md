@@ -432,8 +432,12 @@ For Hermes the native hook first replaces that process cwd with
 names an existing absolute directory; a gateway's process cwd is wherever the
 gateway started. A multiplexing gateway exports only the default profile's
 `terminal.cwd`, so in a gateway (`_HERMES_GATEWAY=1`) the variable applies only
-to events whose `profile` is `default`. Every Hermes event routes from there,
-and tool events can still move by their own locations.
+to events whose `profile` is `default`. A gateway event of another profile
+routes by that profile's Hermes home (`<HERMES_HOME or ~/.hermes>/profiles/<name>`,
+the name checked against Hermes' profile-id pattern first) when that directory
+holds its own `.ai-memory.toml`, and otherwise keeps the process cwd. Every
+Hermes event routes from there, and tool events can still move by their own
+locations.
 
 Hermes' lifecycle maps by meaning: `on_session_start` is `session-start` and
 only records the start (Hermes ignores its stdout), `pre_llm_call` is
