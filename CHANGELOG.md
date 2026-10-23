@@ -69,7 +69,7 @@ version in [`docs/changelog/`](docs/changelog/):
   the JSON `client` object. In a split install (native client and hooks, the
   server in a container or on another host) the two drift apart when only one
   side is upgraded, and nothing showed it. When they differ in major version,
-  the text report adds a warning to upgrade the older side (#PRNUM).
+  the text report adds a warning to upgrade the older side (#1644).
 
 ### Changed
 
