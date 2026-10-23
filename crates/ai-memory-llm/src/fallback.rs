@@ -148,25 +148,28 @@ impl FallbackLlmProvider {
                 .max(CIRCUIT_COOLDOWN)
                 .min(MAX_CIRCUIT_COOLDOWN)
         });
-        {
+        let should_log_transient = {
             let mut state = self.entries[index]
                 .state
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            let circuit_was_open =
+                matches!(state.circuit_open_until, Some(until) if Instant::now() < until);
             state.last_error_at = Some(Timestamp::now());
             state.last_error_status = err.http_status();
             state.last_error_class = Some(err.class());
             if let Some(cooldown) = cooldown {
                 state.circuit_open_until = Some(Instant::now() + cooldown);
             }
-        }
+            cooldown.is_some() && !circuit_was_open
+        };
         // Redacted fields only, as the reranker does: the `Display` of a
         // provider failure carries the upstream response body. The model is
         // the failing candidate's, which the caller cannot see: every caller
         // labels the chain with its first candidate.
         let candidate = &self.entries[index].candidate;
         match cooldown {
-            Some(cooldown) => warn!(
+            Some(cooldown) if should_log_transient => warn!(
                 provider = candidate.provider,
                 model = %candidate.model,
                 position = index,
@@ -175,6 +178,7 @@ impl FallbackLlmProvider {
                 cooldown_secs = cooldown.as_secs(),
                 "llm fallback candidate failed; skipping it until its cooldown ends"
             ),
+            Some(_) => {}
             None => debug!(
                 provider = candidate.provider,
                 model = %candidate.model,
@@ -995,5 +999,34 @@ mod tests {
             .await
             .unwrap();
         assert!(!quiet_log.text().contains("now answering"));
+    }
+
+    #[test]
+    fn concurrent_transient_failures_log_only_the_circuit_transition() {
+        let (log, _guard, _companion) = capture_info_logs();
+        let chain = FallbackLlmProvider::new(vec![Candidate::new(
+            "gemini",
+            "primary",
+            Arc::new(ScriptedLlm::ok("gemini", "primary", "unused")),
+        )]);
+        let failure = LlmError::Provider {
+            status: 503,
+            body: "must not leak".into(),
+            retry_after: Some(Duration::from_secs(600)),
+        };
+
+        // Two requests can both reach the provider before the first failure
+        // opens its circuit. The later result still refreshes health state,
+        // but it must not repeat the outage warning.
+        chain.record_error(0, &failure);
+        chain.record_error(0, &failure);
+
+        let text = log.text();
+        assert_eq!(
+            text.matches("skipping it until its cooldown ends").count(),
+            1,
+            "an already-open circuit repeated its warning: {text}"
+        );
+        assert!(!text.contains("must not leak"), "the body leaked: {text}");
     }
 }
