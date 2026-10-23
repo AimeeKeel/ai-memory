@@ -73,6 +73,14 @@ version in [`docs/changelog/`](docs/changelog/):
   checkpoints, compactions, and annotations remain inline; the complete
   sanitized tool evidence stays searchable in the ledger (#1607).
 
+- The LLM fallback chain now logs its own events. A transient candidate
+  failure logs a warning with that candidate's provider, model, chain
+  position, error class, HTTP status and cooldown, and an info line records
+  each change of the answering candidate. Before, the chain logged nothing,
+  and callers such as the reranker named only the first candidate, so a log
+  could blame the primary for a timeout another candidate caused. Response
+  bodies are never logged (#1628).
+
 ### Fixed
 
 - `ai-memory user list` and `ai-memory api-key list` now size their columns
