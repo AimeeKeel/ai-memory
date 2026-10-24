@@ -1709,6 +1709,9 @@ pub struct AutoImproveEvalSettings {
     pub enabled: bool,
     /// Executable command plus whitespace-separated args. Executed directly, not through a shell.
     pub command: String,
+    /// Built-in scorer, run in-process. `structure` is the only one; it is
+    /// mutually exclusive with `command` (#1638).
+    pub builtin: String,
     /// Timeout per proposal eval command.
     pub timeout_secs: u64,
     /// Wiki path prefixes that require eval when enabled.
@@ -1722,6 +1725,7 @@ impl Default for AutoImproveEvalSettings {
         Self {
             enabled: false,
             command: String::new(),
+            builtin: String::new(),
             timeout_secs: 120,
             targets: ai_memory_consolidate::default_auto_improve_eval_targets(),
             min_delta: 0.0,
@@ -2571,6 +2575,24 @@ impl Config {
             )
             .map_err(|message| anyhow::anyhow!(message))?,
         );
+        // One scorer per gate: an operator who set both meant one of them, and
+        // silently ignoring the builtin (as the gate does) would leave a config
+        // that reads as if it ran both (#1638).
+        let eval = &config.auto_improve.eval;
+        if !eval.builtin.trim().is_empty() && !eval.command.trim().is_empty() {
+            anyhow::bail!(
+                "auto_improve.eval.builtin and auto_improve.eval.command are mutually exclusive; \
+                 remove one (builtin `structure` runs in-process, a command runs your own scorer)"
+            );
+        }
+        let builtin = eval.builtin.trim();
+        if !builtin.is_empty() && builtin != "structure" {
+            anyhow::bail!(
+                "auto_improve.eval.builtin `{builtin}` is not a known scorer; the only one is \
+                 `structure`"
+            );
+        }
+
         // A4 entropy filter thresholds: reject an unusable threshold at startup
         // rather than silently ignoring it on the first experience pass.
         if let Err(message) = config
@@ -5847,6 +5869,45 @@ input_token_safety_margin = {margin}
         assert!(cfg.auto_improve.include_raw_fallback);
         assert_eq!(cfg.auto_improve.proposal_actor, "review_bot");
         assert_eq!(cfg.auto_improve.pending_path, "_pending/review-bot");
+    }
+
+    /// One scorer per gate: setting both is a startup error, not a config
+    /// where the builtin silently loses (#1638).
+    #[test]
+    fn an_eval_gate_rejects_both_a_builtin_and_a_command() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let write = |toml: &str| {
+            let path = tmp.path().join("config.toml");
+            std::fs::write(&path, toml).unwrap();
+            Config::load(Some(&path), Some(tmp.path().to_path_buf()))
+        };
+        let both = write(
+            "[auto_improve.eval]\nenabled = true\nbuiltin = \"structure\"\n\
+             command = \"sh score.sh\"\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            both.contains("mutually exclusive"),
+            "unexpected error: {both}"
+        );
+
+        let unknown = write("[auto_improve.eval]\nenabled = true\nbuiltin = \"vibes\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            unknown.contains("not a known scorer"),
+            "unexpected error: {unknown}"
+        );
+
+        let builtin =
+            write("[auto_improve.eval]\nenabled = true\nbuiltin = \"structure\"\n").unwrap();
+        assert_eq!(builtin.auto_improve.eval.builtin, "structure");
+        assert!(builtin.auto_improve.eval.command.is_empty());
+
+        let command =
+            write("[auto_improve.eval]\nenabled = true\ncommand = \"sh score.sh\"\n").unwrap();
+        assert!(command.auto_improve.eval.builtin.is_empty());
     }
 
     #[test]
