@@ -11,7 +11,6 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### Added
 
 - Added `[handoff] deliver_on_session_start = false` to `.ai-memory.toml`. A
@@ -81,11 +80,6 @@ version in [`docs/changelog/`](docs/changelog/):
   and callers such as the reranker named only the first candidate, so a log
   could blame the primary for a timeout another candidate caused. Response
   bodies are never logged (#1628).
-
-||||||| 1bd86637
-=======
-### Changed
-
 - `ai-memory hook` and `ai-memory hook-drain` now run on a single-threaded
   tokio runtime. Both are spawned once per agent event and answer one request,
   and the multi-threaded default started a worker thread per CPU before the
@@ -100,7 +94,6 @@ version in [`docs/changelog/`](docs/changelog/):
   nobody meant to delete, and a flag that spells it out is the only way to tell
   the two cases apart (#1642).
 
->>>>>>> origin/main
 ### Fixed
 
 - A capture whose `.ai-memory.toml` names a promoted project's old name (its
