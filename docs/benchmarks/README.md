@@ -251,3 +251,9 @@ sustained on a 282-question prefix); the local-embeddings run is bounded
 by the embedder at roughly 19 pages/s and lands near half an hour. Expect
 about ±15% of run-to-run spread on wall clock when the machine has other
 work on it; accuracy noise is the ±0.005 band above, not wall clock.
+
+## Local builder measurements
+
+[Draft query-answer context admission](query-answer-context-draft.md) records
+synthetic prompt sizes and local debug timings for #1684. It does not measure
+retrieval quality, answer accuracy or provider token usage.
