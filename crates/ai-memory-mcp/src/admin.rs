@@ -13946,7 +13946,7 @@ mod tests {
                             "from_workspace": "src",
                             "project": "merged",
                             "to_workspace": "dst",
-                            "confirm": true,
+                            "confirm": true, "allow_lossy_merge": true,
                         }))
                         .unwrap(),
                     ))
@@ -14000,7 +14000,7 @@ mod tests {
             "from_workspace": "src",
             "project": "live",
             "to_workspace": "dst",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
         });
         let guarded = router
             .clone()
@@ -14020,7 +14020,7 @@ mod tests {
             "from_workspace": "src",
             "project": "live",
             "to_workspace": "dst",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
             "force": true,
         });
         let moved = router
@@ -14404,7 +14404,7 @@ mod tests {
                             "from_workspace": "src",
                             "project": "merged",
                             "to_workspace": "dst",
-                            "confirm": true,
+                            "confirm": true, "allow_lossy_merge": true,
                             "force": true,
                         }))
                         .unwrap(),
@@ -14756,7 +14756,7 @@ mod tests {
                     "from_workspace": "default",
                     "to_workspace": "archive",
                     "project": "scratch",
-                    "confirm": true
+                    "confirm": true, "allow_lossy_merge": true
                 }),
             ),
             (
@@ -16128,7 +16128,7 @@ mod tests {
                 "from_workspace": "team-a",
                 "project": "shared",
                 "to_workspace": "team-b",
-                "confirm": true,
+                "confirm": true, "allow_lossy_merge": true,
             })),
         )
         .await;
