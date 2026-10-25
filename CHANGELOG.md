@@ -13,6 +13,14 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- `ai-memory audit-contamination` reports projects whose names differ only by
+  spelling: two rows whose names are equal after case folding, Unicode
+  composition and separators (`renato` / `Renato` / `Rénato`). That is the
+  signature of one working copy reaching the server twice, which no
+  cwd-anchored check can see; each finding names the peer projects and their
+  page and session counts, and suggests a marker or a merge. Read-only, and it
+  never fires for a project that merely shares a prefix (#1645).
+
 - Added an optional `[query_answer] max_context_tokens` admission budget for
   answer synthesis. It preserves retrieval hits, reports omitted or clipped
   evidence, prioritizes known newer corrections, prefers whole snippets and
