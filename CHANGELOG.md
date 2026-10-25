@@ -11,20 +11,16 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
-## [3.2.4] - 2026-10-25
+### Added
 
-### Security
-
-- A restricted project now stays closed when its access-mode or grant query
-  fails. The common authorization resolver previously degraded these store
-  failures to an open project, so an unrelated authenticated user could gain
-  access during a database fault. Unknown projects and forward-unknown access
-  modes retain their compatibility behavior, and normal root, creator and
-  grant access is unchanged.
-- Human-auth endpoints now log unexpected store and task failures server-side
-  and return a stable `authentication unavailable` response. Login and
-  recovery previously returned raw SQLite or task error text before the caller
-  authenticated; password-change conflicts also no longer expose store errors.
+- `GET /admin/status` and `ai-memory status --json` now carry a
+  `consolidation` block: the queue counts plus up to 20 `failed_sessions`
+  (`session_id`, `attempts`, `failed_at_us`, scrubbed `last_error`), newest
+  first. A consolidation run that gives up after its retries now has a
+  machine-readable record with the session ids needed to re-run it, instead of
+  only a journal line and the `/health` panel's count — which also resets with
+  the process. The web health panel's own view stays counts-only, and an older
+  server's status shape is unchanged (#1692).
 
 - Added the bundled `coding-v1` retrieval-evaluation corpus for offline checks
   of decision rationale, resolved-error causes, correction evidence, and late
@@ -101,6 +97,7 @@ version in [`docs/changelog/`](docs/changelog/):
   provider behind an LLM fallback chain can spend the whole fixed budget on one
   slow 503 before the next candidate answers, and every such query then keeps
   its pre-rerank order. ([#1614](https://github.com/akitaonrails/ai-memory/issues/1614))
+
 - `ai-memory status` now shows the client's version next to the server's: a
   `ai-memory X (client)` line under `ai-memory X (server)`, and `version` in
   the JSON `client` object. In a split install (native client and hooks, the
@@ -139,6 +136,21 @@ version in [`docs/changelog/`](docs/changelog/):
   and callers such as the reranker named only the first candidate, so a log
   could blame the primary for a timeout another candidate caused. Response
   bodies are never logged (#1628).
+
+## [3.2.4] - 2026-10-25
+
+### Security
+
+- A restricted project now stays closed when its access-mode or grant query
+  fails. The common authorization resolver previously degraded these store
+  failures to an open project, so an unrelated authenticated user could gain
+  access during a database fault. Unknown projects and forward-unknown access
+  modes retain their compatibility behavior, and normal root, creator and
+  grant access is unchanged.
+- Human-auth endpoints now log unexpected store and task failures server-side
+  and return a stable `authentication unavailable` response. Login and
+  recovery previously returned raw SQLite or task error text before the caller
+  authenticated; password-change conflicts also no longer expose store errors.
 
 ### Fixed
 
