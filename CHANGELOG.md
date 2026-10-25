@@ -13,6 +13,7 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+<<<<<<< HEAD
 - `[auto_improve.eval] builtin = "structure"` runs the eval gate's structural
   checks in process, so the gate needs no interpreter, no scorer script inside
   the container and no timeout to hit. It checks an H1, an upper-case
@@ -31,6 +32,18 @@ version in [`docs/changelog/`](docs/changelog/):
   key" or a provider `400` while the server was healthy. The probe runs one
   fixed short prompt, reports provider, model, latency and the error class, and
   scrubs the provider's message before printing it (#1639).
+||||||| d39e1165
+=======
+- `ai-memory llm-test --server` probes the server's own configured provider
+  instead of building one from the caller's environment, through a new
+  root-only `POST /admin/llm-test`. The retry hint that `status` and the health
+  panel print now names it: with the server in a container or on another host
+  its keys exist only there, so the old client-side hint failed with "no API
+  key" or a provider `400` while the server was healthy. The probe runs one
+  fixed short prompt, reports provider, model, latency and the error class, and
+  scrubs the provider's message before printing it (#1639).
+
+>>>>>>> origin/release/3.3
 - Added `[handoff] deliver_on_session_start = false` to `.ai-memory.toml`. A
   project that sets it no longer gets its handoff, or the continuity notice, at
   session start; the handoff is still created when the session ends and stays
@@ -89,8 +102,18 @@ version in [`docs/changelog/`](docs/changelog/):
   side is upgraded, and nothing showed it. When they differ in major version,
   the text report adds a warning to upgrade the older side (#1644).
 
+## [3.2.3] - 2026-10-24
+
 ### Changed
 
+- `memory_install_self_routing(compact: true)` and `ai-memory
+  install-instructions --compact` now return a block that is actually compact:
+  2.1 KB instead of 5.9 KB, close to the 7.9 KB full block it was supposed to
+  replace. It keeps the rules a session needs without reading anything else
+  (scope selection for session-aware and static clients, managed-run resume,
+  capture, the untrusted-memory trust rule, and where rules belong) and points
+  at the installed `ai-memory-*` Agent Skills for the rest, which it already
+  required to be installed (#1672).
 - When the native session linked to a workstream is missing from its store,
   an interactive `ai-memory run <harness>` now also names the newest session
   this checkout still holds for that harness and the native selector that
@@ -2804,7 +2827,8 @@ version in [`docs/changelog/`](docs/changelog/):
   session-timeline owner rule. Another operator's observations still rank
   shared session pages.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.2...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.3...HEAD
+[3.2.3]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.3
 [3.2.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.2
 [3.2.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.1
 [3.2.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.0
