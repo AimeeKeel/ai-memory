@@ -2675,7 +2675,93 @@ struct Pool {
     closed: bool,
 }
 
+/// Metadata for ordering answer evidence that retrieval has already authorized.
+/// Contains no page body and does not authorize access to the identified page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnswerEvidenceMeta {
+    /// Workspace owning the retrieved page.
+    pub workspace_id: WorkspaceId,
+    /// Project owning the retrieved page.
+    pub project_id: ProjectId,
+    /// Stored page title.
+    pub title: String,
+    /// Evidence time in microseconds since the Unix epoch: the same-scope
+    /// session start for canonical session pages, otherwise page modification.
+    pub updated_at: i64,
+    /// Previous version identifier, without fetching that version's metadata.
+    pub supersedes: Option<PageId>,
+}
+
 impl ReaderPool {
+    /// Fetch metadata only for page IDs already admitted by authorized retrieval.
+    ///
+    /// This internal data helper is not an authorization boundary: callers must
+    /// pass only their admitted hits. One batched query returns at most the
+    /// requested IDs, without reading bodies or following supersession links.
+    /// Empty input does not open a connection. At most 300 IDs are accepted.
+    ///
+    /// # Errors
+    /// Rejects oversized input and propagates SQL, ID decoding and pool errors.
+    pub async fn answer_evidence_metadata(
+        &self,
+        ids: Vec<PageId>,
+    ) -> StoreResult<std::collections::HashMap<PageId, AnswerEvidenceMeta>> {
+        if ids.len() > 300 {
+            return Err(StoreError::InvalidState(
+                "answer evidence metadata accepts at most 300 page IDs".into(),
+            ));
+        }
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        self.with_conn(move |conn| {
+            let placeholders = vec!["?"; ids.len()].join(",");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT p.id, p.workspace_id, p.project_id, p.title, \
+                        COALESCE(s.started_at, p.updated_at), p.supersedes \
+                 FROM pages p LEFT JOIN sessions s \
+                   ON s.id = unhex(replace(substr(p.path, 10, 36), '-', '')) \
+                  AND s.workspace_id = p.workspace_id AND s.project_id = p.project_id \
+                  AND p.path = 'sessions/' || substr(lower(hex(s.id)), 1, 8) || '-' || \
+                      substr(lower(hex(s.id)), 9, 4) || '-' || \
+                      substr(lower(hex(s.id)), 13, 4) || '-' || \
+                      substr(lower(hex(s.id)), 17, 4) || '-' || \
+                      substr(lower(hex(s.id)), 21, 12) || '.md' \
+                 WHERE p.id IN ({placeholders})"
+            ))?;
+            let bound: Vec<Value> = ids
+                .iter()
+                .map(|id| Value::Blob(id.as_bytes().to_vec()))
+                .collect();
+            let rows = stmt.query_map(params_from_iter(bound.iter()), |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                ))
+            })?;
+            let mut metadata = std::collections::HashMap::new();
+            for row in rows {
+                let (id, workspace, project, title, updated_at, supersedes) = row?;
+                metadata.insert(
+                    PageId::from_slice(&id)?,
+                    AnswerEvidenceMeta {
+                        workspace_id: WorkspaceId::from_slice(&workspace)?,
+                        project_id: ProjectId::from_slice(&project)?,
+                        title,
+                        updated_at,
+                        supersedes: supersedes.as_deref().map(PageId::from_slice).transpose()?,
+                    },
+                );
+            }
+            Ok(metadata)
+        })
+        .await
+    }
+
     /// Initialise the pool. Connections are opened lazily on first use.
     ///
     /// # Errors
@@ -15186,6 +15272,161 @@ fn open_read_only(path: &Path) -> StoreResult<Connection> {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn answer_evidence_metadata_uses_session_time_only_in_the_same_scope() {
+        use ai_memory_core::PageId;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ws = store.writer.get_or_create_workspace("local").await.unwrap();
+        let project = store
+            .writer
+            .get_or_create_project(ws, "app", None)
+            .await
+            .unwrap();
+        let other_project = store
+            .writer
+            .get_or_create_project(ws, "other", None)
+            .await
+            .unwrap();
+        let other_ws = store.writer.get_or_create_workspace("other").await.unwrap();
+        let other_ws_project = store
+            .writer
+            .get_or_create_project(other_ws, "app", None)
+            .await
+            .unwrap();
+        let early = SessionId::new();
+        let late = SessionId::new();
+        let conn = rusqlite::Connection::open(store.db_path()).unwrap();
+        for (id, started_at) in [(early, 100), (late, 200)] {
+            conn.execute(
+                "INSERT INTO sessions (id,workspace_id,project_id,agent_kind,started_at) VALUES (?1,?2,?3,'codex',?4)",
+                rusqlite::params![id.as_bytes(),ws.as_bytes(),project.as_bytes(),started_at],
+            ).unwrap();
+        }
+        let early_page = PageId::new();
+        let late_page = PageId::new();
+        let foreign_project_page = PageId::new();
+        let foreign_workspace_page = PageId::new();
+        for (id, workspace, project_id, session, updated_at) in [
+            (early_page, ws, project, early, 900),
+            (late_page, ws, project, late, 300),
+            (foreign_project_page, ws, other_project, late, 700),
+            (
+                foreign_workspace_page,
+                other_ws,
+                other_ws_project,
+                late,
+                800,
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO pages (id,workspace_id,project_id,path,title,tier,body,body_sha256,created_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,'same topic','episodic','body',zeroblob(32),1,?5)",
+                rusqlite::params![id.as_bytes(),workspace.as_bytes(),project_id.as_bytes(),format!("sessions/{session}.md"),updated_at],
+            ).unwrap();
+        }
+        let metadata = store
+            .reader
+            .answer_evidence_metadata(vec![
+                early_page,
+                late_page,
+                foreign_project_page,
+                foreign_workspace_page,
+            ])
+            .await
+            .unwrap();
+        assert_eq!(metadata[&early_page].updated_at, 100);
+        assert_eq!(metadata[&late_page].updated_at, 200);
+        assert!(
+            metadata[&late_page].updated_at > metadata[&early_page].updated_at,
+            "session chronology wins despite the older session page being ingested later"
+        );
+        assert_eq!(
+            metadata[&foreign_project_page].updated_at, 700,
+            "same session filename in another project must use its own page timestamp"
+        );
+        assert_eq!(
+            metadata[&foreign_workspace_page].updated_at, 800,
+            "same session filename in another workspace must use its own page timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn answer_evidence_metadata_returns_only_requested_ids_without_expanding_links() {
+        use ai_memory_core::PageId;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ws = store
+            .writer
+            .get_or_create_workspace("admitted")
+            .await
+            .unwrap();
+        let project = store
+            .writer
+            .get_or_create_project(ws, "app", None)
+            .await
+            .unwrap();
+        let foreign_ws = store
+            .writer
+            .get_or_create_workspace("foreign")
+            .await
+            .unwrap();
+        let foreign_project = store
+            .writer
+            .get_or_create_project(foreign_ws, "app", None)
+            .await
+            .unwrap();
+        let requested = PageId::new();
+        let unrelated = PageId::new();
+        let foreign = PageId::new();
+        let conn = rusqlite::Connection::open(store.db_path()).unwrap();
+        for (id, workspace, project_id, title) in [
+            (foreign, foreign_ws, foreign_project, "foreign title"),
+            (requested, ws, project, "requested title"),
+            (unrelated, ws, project, "unrequested title"),
+        ] {
+            conn.execute(
+                "INSERT INTO pages (id,workspace_id,project_id,path,title,tier,body,body_sha256,created_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,'semantic','body must not be loaded',zeroblob(32),1,123)",
+                rusqlite::params![id.as_bytes(),workspace.as_bytes(),project_id.as_bytes(),id.to_string(),title],
+            ).unwrap();
+        }
+        // Even malformed historical linkage must not expand the admitted set.
+        conn.execute(
+            "UPDATE pages SET supersedes=?1 WHERE id=?2",
+            rusqlite::params![foreign.as_bytes(), requested.as_bytes()],
+        )
+        .unwrap();
+        let metadata = store
+            .reader
+            .answer_evidence_metadata(vec![requested, requested, PageId::new()])
+            .await
+            .unwrap();
+        assert_eq!(metadata.len(), 1);
+        let row = &metadata[&requested];
+        assert_eq!((row.workspace_id, row.project_id), (ws, project));
+        assert_eq!(row.title, "requested title");
+        assert_eq!(row.updated_at, 123);
+        assert_eq!(row.supersedes, Some(foreign));
+        assert!(!metadata.contains_key(&foreign));
+        assert!(!metadata.contains_key(&unrelated));
+        assert!(
+            store
+                .reader
+                .answer_evidence_metadata(vec![])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            store
+                .reader
+                .answer_evidence_metadata(vec![requested; 301])
+                .await,
+            Err(crate::StoreError::InvalidState(_))
+        ));
+    }
 
     /// `close` is a state, not a one-off sweep: a connection checked out
     /// before it is dropped on return, and nothing opens after it. The control

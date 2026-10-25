@@ -13,6 +13,13 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added an optional `[query_answer] max_context_tokens` admission budget for
+  answer synthesis. It preserves retrieval hits, reports omitted or clipped
+  evidence, prioritizes known newer corrections, prefers whole snippets and
+  clips only complete trailing sentences or statements into leftover space. It
+  skips the model when no meaningful evidence fits. The default
+  remains disabled (#1684).
+
 - `GET /admin/status` and `ai-memory status --json` now carry a
   `consolidation` block: the queue counts plus up to 20 `failed_sessions`
   (`session_id`, `attempts`, `failed_at_us`, scrubbed `last_error`), newest
