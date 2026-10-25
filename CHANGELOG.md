@@ -15,8 +15,24 @@ version in [`docs/changelog/`](docs/changelog/):
 
 - Added an optional `[query_answer] max_context_tokens` admission budget for
   answer synthesis. It preserves retrieval hits, reports omitted or clipped
-  evidence, and skips the model when no meaningful evidence fits. The default
+  evidence, prioritizes known newer corrections, prefers whole snippets and
+  clips only complete trailing sentences or statements into leftover space. It
+  skips the model when no meaningful evidence fits. The default
   remains disabled (#1684).
+
+- `GET /admin/status` and `ai-memory status --json` now carry a
+  `consolidation` block: the queue counts plus up to 20 `failed_sessions`
+  (`session_id`, `attempts`, `failed_at_us`, scrubbed `last_error`), newest
+  first. A consolidation run that gives up after its retries now has a
+  machine-readable record with the session ids needed to re-run it, instead of
+  only a journal line and the `/health` panel's count — which also resets with
+  the process. The web health panel's own view stays counts-only, and an older
+  server's status shape is unchanged (#1692).
+
+- Added the bundled `coding-v1` retrieval-evaluation corpus for offline checks
+  of decision rationale, resolved-error causes, correction evidence, and late
+  session details. It reuses the existing scorer and A/B reports; it measures
+  evidence retrieval, not semantic answer correctness or handoff behavior (#1686).
 
 - `[auto_improve.eval] builtin = "structure"` runs the eval gate's structural
   checks in process, so the gate needs no interpreter, no scorer script inside
@@ -88,14 +104,13 @@ version in [`docs/changelog/`](docs/changelog/):
   provider behind an LLM fallback chain can spend the whole fixed budget on one
   slow 503 before the next candidate answers, and every such query then keeps
   its pre-rerank order. ([#1614](https://github.com/akitaonrails/ai-memory/issues/1614))
+
 - `ai-memory status` now shows the client's version next to the server's: a
   `ai-memory X (client)` line under `ai-memory X (server)`, and `version` in
   the JSON `client` object. In a split install (native client and hooks, the
   server in a container or on another host) the two drift apart when only one
   side is upgraded, and nothing showed it. When they differ in major version,
   the text report adds a warning to upgrade the older side (#1644).
-
-## [3.2.3] - 2026-10-24
 
 ### Changed
 
@@ -107,6 +122,7 @@ version in [`docs/changelog/`](docs/changelog/):
   capture, the untrusted-memory trust rule, and where rules belong) and points
   at the installed `ai-memory-*` Agent Skills for the rest, which it already
   required to be installed (#1672).
+
 - When the native session linked to a workstream is missing from its store,
   an interactive `ai-memory run <harness>` now also names the newest session
   this checkout still holds for that harness and the native selector that
@@ -127,6 +143,91 @@ version in [`docs/changelog/`](docs/changelog/):
   and callers such as the reranker named only the first candidate, so a log
   could blame the primary for a timeout another candidate caused. Response
   bodies are never logged (#1628).
+
+## [3.2.5] - 2026-10-25
+
+### Fixed
+
+- `ai-memory backup` and `ai-memory backup-agents` now carry a size that
+  would round to `1024.00` of the current unit into the next one. A backup
+  of 1 MiB - 5 bytes was printed as `1024.00 KiB` (#1705).
+- The OKF migration dialog now carries an archive size that would round to
+  `1024.0` of the current unit into the next one. An archive of 1 MB - 51
+  bytes was printed as `1024.0 KB` (#1706).
+
+## [3.2.4] - 2026-10-25
+
+### Security
+
+- A restricted project now stays closed when its access-mode or grant query
+  fails. The common authorization resolver previously degraded these store
+  failures to an open project, so an unrelated authenticated user could gain
+  access during a database fault. Unknown projects and forward-unknown access
+  modes retain their compatibility behavior, and normal root, creator and
+  grant access is unchanged.
+- Human-auth endpoints now log unexpected store and task failures server-side
+  and return a stable `authentication unavailable` response. Login and
+  recovery previously returned raw SQLite or task error text before the caller
+  authenticated; password-change conflicts also no longer expose store errors.
+
+### Fixed
+
+- `ai-memory move-session` now refuses explicitly empty scope flags
+  (`--from-project`, `--from-workspace`, `--to-workspace`, and `--to`) before
+  sending any request. Passing an empty string like `--from-project ""` previously
+  bypassed the flag check while falling back to deriving the project from the
+  current working directory, which triggered an unintended batch move of all
+  sessions from the current repository (#1698).
+
+- `ai-memory delete-page` now refuses explicitly empty scope flags (`--workspace`
+  and `--project`) as well as an empty `--path` before sending any request.
+  Passing an empty `--project ""` previously bypassed the flag check while falling
+  back to deriving the project from the current working directory, which risked
+  deleting the page from the local repository (#1700).
+
+- `ai-memory rename-workstream` now refuses explicitly empty scope flags
+  (`--workspace` and `--project`) as well as empty workstream names (`--from`
+  and `--to`) before inspecting the repository or sending any request.
+  Passing an empty `--project ""` previously bypassed the flag check while
+  falling back to resolving the project from the current working directory (#1702).
+
+- Fixed `ai-memory setup` treating another service's HTTP 200 response as a
+  healthy ai-memory server. Setup now checks the bounded `/healthz` JSON,
+  reports an occupied address with port/configuration remedies, and skips
+  MCP/admin probes when the health response is unrecognized (#1647).
+
+- Preserved repository edits saved while `ai-memory-wikisync export --apply`
+  fetched server pages. Export now rechecks each file before replacing it,
+  as two-way sync already did, and refuses a changed file even with `--force`
+  without advancing its export state (#986).
+
+- Codex's own memory-writing agent no longer appears as captured sessions.
+  Codex runs a background "memory writing agent" from `$CODEX_HOME/memories`
+  (the default `~/.codex/memories`) to consolidate its memory; the hooks
+  captured each run as a normal session, so one project of 78 sessions and
+  ~2,600 observations existed for work nobody did, and it returned with the
+  next run after a purge. Those events are now accepted and stored nowhere,
+  recognized by the directory (any `…/.codex/memories`) or by the agent's
+  `## Memory Writing Agent` prompt header, and transcript imports
+  (`backfill`, the `run` ledger, `recover`) skip them for the same reason
+  (#1674).
+
+- `memory_query(answer=true)` now validates model-generated citation paths
+  against the snippets supplied in that request. Unknown paths and paths
+  shared by distinct page versions withhold the answer, while retrieval hits
+  remain available with an `answer_unavailable` note. Repeated citations are
+  deduplicated in model order; the default query path makes no added calls
+  (#1682).
+- `ai-memory write-page` and `restore-page` now print the last eight
+  characters of the page id instead of the first eight. Page ids are UUIDv7,
+  so the first eight are a timestamp prefix that every page written within
+  about a minute shares, and the printed `page_id` was the same for all of
+  them. The web UI already shortens ids this way (#1693).
+
+## [3.2.3] - 2026-10-24
+
+### Changed
+
 - `ai-memory hook` and `ai-memory hook-drain` now run on a single-threaded
   tokio runtime. Both are spawned once per agent event and answer one request,
   and the multi-threaded default started a worker thread per CPU before the
@@ -2820,7 +2921,9 @@ version in [`docs/changelog/`](docs/changelog/):
   session-timeline owner rule. Another operator's observations still rank
   shared session pages.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.3...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.5...HEAD
+[3.2.5]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.5
+[3.2.4]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.4
 [3.2.3]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.3
 [3.2.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.2
 [3.2.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.1

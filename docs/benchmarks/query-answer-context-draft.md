@@ -1,7 +1,7 @@
 # Query-answer context admission: draft local measurements
 
 This receipt accompanies the default-disabled proposal in #1684. Its configuration,
-response contract and pruning policy still need maintainer agreement. It measures
+response contract was accepted by the maintainer in the review on #1689. It measures
 builder size and local execution time, not answer correctness or provider usage.
 
 ## Provenance
@@ -60,7 +60,7 @@ claim. Retrieval hits and ranking remain unchanged.
 
 Full measurements: [CSV](query-answer-context-draft.csv).
 
-## Offline evidence-retention regression
+## Historical evidence-retention result (before review changes)
 
 `answer_budget_labeled_evidence_retention_boundaries` uses labeled English,
 pt-BR, CJK and code fixtures with an exact required current-fact literal. It
@@ -109,3 +109,29 @@ cargo test -p ai-memory-mcp --lib answer_budget_measurements -- --ignored --noca
 Lines beginning `C2CSV,` contain the receipt. Remove that prefix to recover the
 CSV. No provider configuration is needed. The test is ignored in normal CI so
 its timing loop does not become part of the everyday test run.
+
+## Reviewed admission policy
+
+The revised policy orders same-topic evidence by explicit supersession first,
+then evidence time within the same workspace/project and normalized exact title.
+Canonical session pages use session start time, so late ingestion cannot make
+an older session appear newer. This is a narrow metadata-based topic rule;
+prose similarity alone does not establish a topic relationship.
+
+It first admits whole snippets, skipping items that do not fit. If a newer
+correction was skipped, its known obsolete predecessor cannot consume that
+allowance instead. After whole-snippet selection, unused space can hold one
+complete trailing sentence or statement from an omitted snippet. Partial
+sentences and unsplittable text are omitted. Unicode punctuation and code
+statement boundaries are supported; this is a syntactic boundary rule, not a
+language parser. Wrapped prose newlines and semicolons do not permit clipping. Ellipses and the receipt make omissions visible.
+
+The original sixteen literal-retention probes now require all corrections to
+remain present. Additional tests cover same-topic session chronology, lineage
+over imported timestamps, independent topics/scopes, whole-snippet priority
+and safe refusal when no complete sentence fits. These probes do not measure
+model answer accuracy or prove that arbitrary omitted evidence is irrelevant.
+The earlier timings and 8/16 result above remain historical measurements.
+
+A snippet with an incomplete trailing qualification is omitted rather than
+clipped back to an earlier complete sentence; that tail might reverse the rule.

@@ -822,6 +822,8 @@ struct QueryHit {
     hit: ai_memory_store::PageHit,
     #[serde(skip_serializing_if = "Option::is_none")]
     score_details: Option<ai_memory_store::SearchExplain>,
+    #[serde(skip)]
+    evidence: Option<ai_memory_store::AnswerEvidenceMeta>,
 }
 
 impl From<ai_memory_store::PageHit> for QueryHit {
@@ -829,6 +831,7 @@ impl From<ai_memory_store::PageHit> for QueryHit {
         Self {
             hit,
             score_details: None,
+            evidence: None,
         }
     }
 }
@@ -2999,6 +3002,7 @@ impl AiMemoryServer {
                     .map(|(hit, details)| QueryHit {
                         hit,
                         score_details: details,
+                        evidence: None,
                     })
                     .collect(),
                 answer: None,
@@ -3181,7 +3185,11 @@ impl AiMemoryServer {
                             bump_actor.as_ref(),
                         );
                         hits.into_iter()
-                            .map(|(hit, score_details)| QueryHit { hit, score_details })
+                            .map(|(hit, score_details)| QueryHit {
+                                hit,
+                                score_details,
+                                evidence: None,
+                            })
                             .collect()
                     }
                 }
@@ -3251,10 +3259,13 @@ impl AiMemoryServer {
                             hits.iter().map(|(h, _)| h.id).collect(),
                             bump_actor.as_ref(),
                         );
-                        global_scope_hits.extend(
-                            hits.into_iter()
-                                .map(|(hit, score_details)| QueryHit { hit, score_details }),
-                        );
+                        global_scope_hits.extend(hits.into_iter().map(|(hit, score_details)| {
+                            QueryHit {
+                                hit,
+                                score_details,
+                                evidence: None,
+                            }
+                        }));
                     }
                     Ok(_) => {}
                     Err(e) => {
@@ -3269,6 +3280,7 @@ impl AiMemoryServer {
             .map(|(hit, score_details)| QueryHit {
                 hit,
                 score_details: score_details.filter(|_| explain),
+                evidence: None,
             })
             .collect();
         // Pin before search: when the caller opts in AND this is a
@@ -3278,7 +3290,7 @@ impl AiMemoryServer {
         // the query appears once, and the combined list is re-truncated to the
         // requested limit so the total stays bounded. Default off → this branch
         // never runs and the ordering is byte-identical.
-        let hits = if args.pin_first.unwrap_or(false) && resolved_scopes.is_none() {
+        let mut hits = if args.pin_first.unwrap_or(false) && resolved_scopes.is_none() {
             let (ws, proj) = self
                 .effective_ids_for_read_args_with_actor(
                     args.workspace.as_deref(),
@@ -3315,6 +3327,24 @@ impl AiMemoryServer {
         let (answer, answer_unavailable) = if args.answer.unwrap_or(false) {
             match self.llm.as_ref() {
                 Some(llm) => {
+                    if self
+                        .answer_max_context_tokens
+                        .is_some_and(|limit| limit > 0)
+                    {
+                        let ids = hits
+                            .iter()
+                            .chain(&global_scope_hits)
+                            .map(|hit| hit.hit.id)
+                            .collect();
+                        let metadata = self
+                            .reader
+                            .answer_evidence_metadata(ids)
+                            .await
+                            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                        for hit in hits.iter_mut().chain(&mut global_scope_hits) {
+                            hit.evidence = metadata.get(&hit.hit.id).cloned();
+                        }
+                    }
                     let plan = prepare_answer_request(
                         &args.query,
                         &hits,
@@ -7794,7 +7824,7 @@ fn validate_answer_citations(
 /// Accounting uses one UTF-8 byte per estimated input token. The fixed
 /// envelope allowance covers unrepresented provider framing approximately.
 const ANSWER_ENVELOPE_RESERVE: usize = 1_024;
-const MIN_CLIPPED_EVIDENCE_CHARS: usize = 16;
+const MIN_CLIPPED_EVIDENCE_CHARS: usize = 1;
 
 #[derive(Debug, Serialize)]
 struct AnswerContext {
@@ -7816,6 +7846,107 @@ fn answer_context_notice(admitted: usize, omitted: usize, clipped: usize) -> Str
     format!(
         "\n[Answer context: {admitted} admitted, {omitted} omitted, {clipped} clipped. Retrieval hits are unchanged.]\n"
     )
+}
+
+fn answer_evidence_newer(a: &QueryHit, b: &QueryHit) -> bool {
+    match (&a.evidence, &b.evidence) {
+        (Some(x), Some(y)) if x.workspace_id == y.workspace_id && x.project_id == y.project_id => {
+            x.supersedes == Some(b.hit.id)
+                || (y.supersedes != Some(a.hit.id)
+                    && !x.title.trim().is_empty()
+                    && x.title.trim().to_lowercase() == y.title.trim().to_lowercase()
+                    && (!a.hit.superseded || b.hit.superseded)
+                    && x.updated_at > y.updated_at)
+        }
+        _ => false,
+    }
+}
+
+fn answer_evidence_order<'a>(hits: &'a [QueryHit], global: &'a [QueryHit]) -> Vec<&'a QueryHit> {
+    let pending: Vec<_> = hits.iter().chain(global).collect();
+
+    let count = pending.len();
+    let edges: Vec<Vec<bool>> = pending
+        .iter()
+        .map(|new| {
+            pending
+                .iter()
+                .map(|old| answer_evidence_newer(new, old))
+                .collect()
+        })
+        .collect();
+    let mut incoming: Vec<usize> = (0..count)
+        .map(|old| edges.iter().filter(|row| row[old]).count())
+        .collect();
+    let mut remaining = vec![true; count];
+    let mut ordered = Vec::with_capacity(count);
+    for _ in 0..count {
+        // Stable topological order preserves unrelated retrieval ranks.
+        let index = (0..count)
+            .find(|&old| remaining[old] && incoming[old] == 0)
+            .or_else(|| (0..count).find(|&i| remaining[i]))
+            .unwrap_or(0);
+        remaining[index] = false;
+        for old in 0..count {
+            if edges[index][old] {
+                incoming[old] = incoming[old].saturating_sub(1);
+            }
+        }
+        ordered.push(pending[index]);
+    }
+    ordered
+}
+
+fn answer_snippet_prefix(hit: &QueryHit, number: usize) -> String {
+    format!(
+        "{}. path: `{}`\n   title: {}\n   superseded: {}\n   snippet: ",
+        number,
+        hit.hit.path.as_str(),
+        hit.hit.title,
+        hit.hit.superseded
+    )
+}
+
+// A complete trailing sentence can preserve a correction lost by prefix clipping.
+// This bounded syntactic rule does not infer meaning from stored prose.
+fn answer_sentence_suffix(snippet: &str, available: usize) -> Option<String> {
+    let code = ["//", "fn ", "const ", "```"]
+        .iter()
+        .any(|prefix| snippet.trim_start().starts_with(prefix));
+    let terminator = |i: usize, c: char| {
+        matches!(c, '。' | '！' | '？')
+            || ((matches!(c, '.' | '!' | '?') || (code && matches!(c, ';' | '}')))
+                && snippet[i + c.len_utf8()..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace))
+    };
+    let end = snippet
+        .char_indices()
+        .rev()
+        .find(|(i, c)| terminator(*i, *c))
+        .map(|(i, c)| i + c.len_utf8())?;
+    // A partial trailing qualification may reverse an earlier sentence.
+    // Omit rather than silently discard that qualification.
+    if !snippet[end..].trim().is_empty() {
+        return None;
+    }
+    let starts = std::iter::once(0).chain(
+        snippet[..end]
+            .char_indices()
+            .filter(|(i, c)| terminator(*i, *c))
+            .map(|(i, c)| i + c.len_utf8()),
+    );
+    for start in starts {
+        let text = snippet[start..end].trim();
+        let head_marker = if start == 0 { "" } else { "… " };
+        if text.chars().filter(|c| c.is_alphanumeric()).count() >= MIN_CLIPPED_EVIDENCE_CHARS
+            && head_marker.len() + text.len() <= available
+        {
+            return Some(format!("{head_marker}{text}"));
+        }
+    }
+    None
 }
 
 fn prepare_answer_request<'a>(
@@ -7868,51 +7999,45 @@ fn prepare_answer_request<'a>(
     let mut sources = AnswerSources::new();
     let mut admitted = 0;
     let mut clipped = 0;
-    for hit in hits.iter().chain(global_scope_hits) {
+    let ordered = answer_evidence_order(hits, global_scope_hits);
+    let mut omitted: Vec<&QueryHit> = Vec::new();
+    let mut unadmitted: Vec<&QueryHit> = Vec::new();
+    for hit in ordered {
+        // An unadmitted correction must not be replaced by its obsolete predecessor.
+        if unadmitted.iter().any(|new| answer_evidence_newer(new, hit)) {
+            unadmitted.push(hit);
+            continue;
+        }
         let snippet = ai_memory_store::plain_snippet(&hit.hit.snippet);
         if !snippet.chars().any(char::is_alphanumeric) {
             continue;
         }
-        let prefix = format!(
-            "{}. path: `{}`\n   title: {}\n   superseded: {}\n   snippet: ",
-            admitted + 1,
-            hit.hit.path.as_str(),
-            hit.hit.title,
-            hit.hit.superseded
-        );
-        let available = remaining.saturating_sub(prefix.len().saturating_add(2));
-        let is_clipped = snippet.len() > available;
-        let selected = if is_clipped {
-            ai_memory_core::truncate_utf8_bytes(&snippet, available)
-        } else {
-            snippet
-        };
-        if selected.trim().is_empty()
-            || (is_clipped
-                && selected
-                    .trim_end_matches('…')
-                    .chars()
-                    .filter(|c| c.is_alphanumeric())
-                    .count()
-                    < MIN_CLIPPED_EVIDENCE_CHARS)
-        {
-            break;
-        }
-        let used = prefix
-            .len()
-            .saturating_add(selected.len())
-            .saturating_add(2);
+        let prefix = answer_snippet_prefix(hit, admitted + 1);
+        let used = prefix.len().saturating_add(snippet.len()).saturating_add(2);
         if used > remaining {
-            break;
+            omitted.push(hit);
+            unadmitted.push(hit);
+            continue;
         }
         user.push_str(&prefix);
-        user.push_str(&selected);
+        user.push_str(&snippet);
         user.push_str("\n\n");
         remaining -= used;
         admitted += 1;
-        clipped += usize::from(is_clipped);
         sources.insert(hit.hit.path.as_str(), all_sources[hit.hit.path.as_str()]);
-        if is_clipped {
+    }
+    // Whole snippets first; at most one sentence-safe fragment uses leftover space.
+    for hit in omitted {
+        let prefix = answer_snippet_prefix(hit, admitted + 1);
+        let available = remaining.saturating_sub(prefix.len().saturating_add(2));
+        let snippet = ai_memory_store::plain_snippet(&hit.hit.snippet);
+        if let Some(selected) = answer_sentence_suffix(&snippet, available) {
+            user.push_str(&prefix);
+            user.push_str(&selected);
+            user.push_str("\n\n");
+            admitted += 1;
+            clipped = 1;
+            sources.insert(hit.hit.path.as_str(), all_sources[hit.hit.path.as_str()]);
             break;
         }
     }
@@ -8551,11 +8676,19 @@ mod tests {
                 Some(exact - 1),
             );
             let context = plan.context.unwrap();
-            assert_eq!(context.clipped, 1, "{snippet}");
             assert!(
                 context.estimated_input_tokens + (context.reserved_output_tokens as usize) < exact
             );
-            assert!(plan.request.unwrap().messages[0].content.contains('…'));
+            if let Some(request) = plan.request {
+                assert_eq!(context.clipped, 1, "{snippet}");
+                assert!(request.messages[0].content.contains('…'));
+            } else {
+                // A single complete sentence cannot fit one byte short; do
+                // not admit a cut word or an arbitrary sentence prefix.
+                assert_eq!(context.admitted, 0, "{snippet}");
+                assert_eq!(context.clipped, 0, "{snippet}");
+                assert!(plan.sources.is_empty());
+            }
         }
     }
 
@@ -8715,8 +8848,8 @@ mod tests {
         assert_eq!(plan.context.unwrap().admitted, 2);
     }
 
-    /// A literal-retention oracle, not an answer-quality evaluator. Expected
-    /// losses make the ranked-prefix policy's limits executable and visible.
+    /// A literal-retention oracle, not an answer-quality evaluator. These
+    /// labeled cases pin complete corrections and scoped recency ordering.
     #[test]
     fn answer_budget_labeled_evidence_retention_boundaries() {
         const QUERY: &str = "What is the current decision?";
@@ -8753,11 +8886,11 @@ mod tests {
             let combined = format!("{historical} {correction}");
             for (case, snippets, retained, expected_counts) in [
                 ("exact-fit", vec![combined.as_str()], true, (1, 0, 0)),
-                ("trimmed-tail", vec![combined.as_str()], false, (1, 0, 1)),
+                ("trimmed-tail", vec![combined.as_str()], true, (1, 0, 1)),
                 (
-                    "historical-first-omitted-correction",
+                    "historical-first-current-selected",
                     vec![historical, correction],
-                    false,
+                    true,
                     (1, 1, 0),
                 ),
                 (
@@ -8768,10 +8901,22 @@ mod tests {
                 ),
             ] {
                 let mut hits = answer_budget_hits(&snippets);
-                if case == "historical-first-omitted-correction" {
-                    hits[0].hit.superseded = true;
-                } else if case == "current-first-omitted-history" {
-                    hits[1].hit.superseded = true;
+                let selected_index = usize::from(case == "historical-first-current-selected");
+                if hits.len() > 1 {
+                    let old_index = 1 - selected_index;
+                    let workspace_id = WorkspaceId::new();
+                    let project_id = ProjectId::new();
+                    for (index, hit) in hits.iter_mut().enumerate() {
+                        hit.evidence = Some(ai_memory_store::AnswerEvidenceMeta {
+                            workspace_id,
+                            project_id,
+                            title: "Deployment decision".into(),
+                            updated_at: if index == selected_index { 2 } else { 1 },
+                            supersedes: None,
+                        });
+                    }
+                    hits[selected_index].evidence.as_mut().unwrap().supersedes =
+                        Some(hits[old_index].hit.id);
                 }
                 let before = serde_json::to_value(&hits).unwrap();
                 let baseline =
@@ -8791,8 +8936,8 @@ mod tests {
                 let context = full_first.context.unwrap();
                 let exact =
                     context.estimated_input_tokens + context.reserved_output_tokens as usize;
-                // In the tail case the allowance ends before the correction;
-                // the ellipsis consumes three bytes of the historical prefix.
+                // Preserve the original probe allowance: enough historical
+                // prefix bytes, now used to retain a complete correction.
                 let limit = if case == "trimmed-tail" {
                     exact - correction.len() - 1
                 } else {
@@ -8831,25 +8976,27 @@ mod tests {
                 );
                 assert_eq!(plan.sources.len(), 1, "{language}/{case}");
                 assert_eq!(
-                    plan.sources.get(hits[0].hit.path.as_str()),
-                    Some(&Some(hits[0].hit.id)),
+                    plan.sources.get(hits[selected_index].hit.path.as_str()),
+                    Some(&Some(hits[selected_index].hit.id)),
                     "{language}/{case}"
                 );
                 if hits.len() > 1 {
-                    assert!(!plan.sources.contains_key(hits[1].hit.path.as_str()));
+                    let omitted_index = 1 - selected_index;
+                    assert!(
+                        !plan
+                            .sources
+                            .contains_key(hits[omitted_index].hit.path.as_str())
+                    );
                     assert!(
                         validate_answer_citations(
                             AnswerSynthesis {
                                 answer: "unsupported omitted-source claim".into(),
-                                citations: vec![hits[1].hit.path.to_string()],
+                                citations: vec![hits[omitted_index].hit.path.to_string()],
                             },
                             &plan.sources,
                         )
                         .is_none()
                     );
-                }
-                if case == "historical-first-omitted-correction" {
-                    assert!(body.contains("superseded: true"));
                 }
                 assert_eq!(serde_json::to_value(&hits).unwrap(), before);
                 println!(
@@ -8857,6 +9004,203 @@ mod tests {
                     context.admitted, context.omitted, context.clipped
                 );
             }
+        }
+    }
+
+    fn answer_test_metadata(hits: &mut [QueryHit]) {
+        let workspace_id = WorkspaceId::new();
+        let project_id = ProjectId::new();
+        for (index, hit) in hits.iter_mut().enumerate() {
+            hit.evidence = Some(ai_memory_store::AnswerEvidenceMeta {
+                workspace_id,
+                project_id,
+                title: "Deployment decision".into(),
+                updated_at: index as i64 + 1,
+                supersedes: None,
+            });
+        }
+    }
+
+    #[test]
+    fn answer_budget_newer_session_same_topic_precedes_old_retrieval_rank() {
+        let mut hits = answer_budget_hits(&[
+            "An earlier session selected SQLite for deployment.",
+            "A later session corrected the deployment to PostgreSQL.",
+        ]);
+        answer_test_metadata(&mut hits);
+        let before = serde_json::to_value(&hits).unwrap();
+        let order = answer_evidence_order(&hits, &[]);
+        assert_eq!(
+            order.iter().map(|hit| hit.hit.id).collect::<Vec<_>>(),
+            vec![hits[1].hit.id, hits[0].hit.id]
+        );
+        assert_eq!(serde_json::to_value(&hits).unwrap(), before);
+    }
+
+    #[test]
+    fn answer_budget_explicit_supersedes_wins_with_distinct_titles() {
+        let mut hits = answer_budget_hits(&[
+            "Earlier deployment decision.",
+            "Replacement deployment decision.",
+        ]);
+        answer_test_metadata(&mut hits);
+        let previous = hits[0].hit.id;
+        let replacement = hits[1].evidence.as_mut().unwrap();
+        replacement.title = "Replacement topic title".into();
+        // Explicit lineage, rather than title equality or timestamp alone,
+        // determines the ordering even if an imported timestamp is older.
+        replacement.updated_at = 0;
+        replacement.supersedes = Some(previous);
+        assert_eq!(answer_evidence_order(&hits, &[])[0].hit.id, hits[1].hit.id);
+    }
+
+    #[test]
+    fn answer_budget_explicit_same_topic_lineage_overrides_imported_timestamp() {
+        let mut hits = answer_budget_hits(&[
+            "Earlier deployment decision.",
+            "Replacement deployment decision.",
+        ]);
+        answer_test_metadata(&mut hits);
+        let previous = hits[0].hit.id;
+        let replacement = hits[1].evidence.as_mut().unwrap();
+        replacement.updated_at = 0;
+        replacement.supersedes = Some(previous);
+        assert!(answer_evidence_newer(&hits[1], &hits[0]));
+        assert!(!answer_evidence_newer(&hits[0], &hits[1]));
+        let order = answer_evidence_order(&hits, &[]);
+        assert_eq!(order[0].hit.id, hits[1].hit.id);
+        assert_eq!(order[1].hit.id, hits[0].hit.id);
+    }
+
+    #[test]
+    fn answer_budget_unrelated_scopes_titles_and_equal_times_preserve_rank() {
+        for variation in ["workspace", "project", "title", "equal-time", "no-metadata"] {
+            let mut hits =
+                answer_budget_hits(&["First ranked evidence.", "Second ranked evidence."]);
+            answer_test_metadata(&mut hits);
+            // A superseded flag alone must not reorder unrelated retrieval.
+            hits[0].hit.superseded = true;
+            match variation {
+                "workspace" => hits[1].evidence.as_mut().unwrap().workspace_id = WorkspaceId::new(),
+                "project" => hits[1].evidence.as_mut().unwrap().project_id = ProjectId::new(),
+                "title" => hits[1].evidence.as_mut().unwrap().title = "Unrelated topic".into(),
+                "equal-time" => hits[1].evidence.as_mut().unwrap().updated_at = 1,
+                _ => hits[1].evidence = None,
+            }
+            let order = answer_evidence_order(&hits[..1], &hits[1..]);
+            assert_eq!(
+                order.iter().map(|hit| hit.hit.id).collect::<Vec<_>>(),
+                vec![hits[0].hit.id, hits[1].hit.id],
+                "{variation}"
+            );
+        }
+    }
+
+    #[test]
+    fn answer_budget_whole_lower_ranked_snippet_precedes_oversized_fragment() {
+        let large = format!(
+            "{} Current deployment uses PostgreSQL.",
+            "Historical background. ".repeat(40)
+        );
+        let hits = answer_budget_hits(&[&large, "A complete independent deployment fact."]);
+        let full = prepare_answer_request(
+            "question",
+            &hits[1..],
+            &[],
+            ReasoningTier::Minimal,
+            Some(100_000),
+        );
+        let context = full.context.unwrap();
+        let limit = context.estimated_input_tokens + context.reserved_output_tokens as usize;
+        let plan =
+            prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(limit));
+        let context = plan.context.unwrap();
+        assert_eq!(
+            (context.admitted, context.omitted, context.clipped),
+            (1, 1, 0)
+        );
+        assert_eq!(
+            plan.sources.get(hits[1].hit.path.as_str()),
+            Some(&Some(hits[1].hit.id))
+        );
+        assert!(!plan.sources.contains_key(hits[0].hit.path.as_str()));
+        let request = plan.request.unwrap();
+        assert!(
+            request.messages[0]
+                .content
+                .contains("A complete independent deployment fact.")
+        );
+        assert!(
+            !request.messages[0]
+                .content
+                .contains("Current deployment uses PostgreSQL.")
+        );
+    }
+
+    #[test]
+    fn answer_budget_supersession_chain_does_not_fall_back_to_old_ancestors() {
+        let mut hits = answer_budget_hits(&[
+            "The oldest obsolete database choice.",
+            "An intermediate obsolete database choice.",
+            "A current correction that cannot fit whole "
+                .repeat(100)
+                .as_str(),
+        ]);
+        answer_test_metadata(&mut hits);
+        hits[0].hit.superseded = true;
+        hits[1].hit.superseded = true;
+        hits[0].evidence.as_mut().unwrap().updated_at = 1000;
+        hits[1].evidence.as_mut().unwrap().supersedes = Some(hits[0].hit.id);
+        hits[2].evidence.as_mut().unwrap().supersedes = Some(hits[1].hit.id);
+        let order = answer_evidence_order(&hits, &[]);
+        assert_eq!(
+            order.iter().map(|h| h.hit.id).collect::<Vec<_>>(),
+            vec![hits[2].hit.id, hits[1].hit.id, hits[0].hit.id]
+        );
+        let full = prepare_answer_request(
+            "question",
+            &hits[..1],
+            &[],
+            ReasoningTier::Minimal,
+            Some(100_000),
+        );
+        let context = full.context.unwrap();
+        let limit = context.estimated_input_tokens + context.reserved_output_tokens as usize;
+        let plan =
+            prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(limit));
+        assert!(plan.request.is_none());
+        assert!(plan.sources.is_empty());
+    }
+
+    #[test]
+    fn answer_budget_refuses_unsplittable_or_unterminated_fragments() {
+        for snippet in [
+            "anunsplittablewordwithoutanysentenceboundary".repeat(20),
+            "An older complete rule. A trailing correction without a terminator".repeat(20),
+            "A long unfinished deployment decision without a sentence terminator ".repeat(20),
+            "A prose sentence wrapped across lines\nthat must stay complete".repeat(20),
+            "A prose rule with a semicolon; and an unfinished qualification".repeat(20),
+        ] {
+            let hits = answer_budget_hits(&[&snippet]);
+            let full = prepare_answer_request(
+                "question",
+                &hits,
+                &[],
+                ReasoningTier::Minimal,
+                Some(100_000),
+            );
+            let context = full.context.unwrap();
+            let limit =
+                context.estimated_input_tokens + context.reserved_output_tokens as usize - 1;
+            let plan =
+                prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(limit));
+            assert!(plan.request.is_none());
+            assert!(plan.sources.is_empty());
+            let context = plan.context.unwrap();
+            assert_eq!(
+                (context.admitted, context.omitted, context.clipped),
+                (0, 1, 0)
+            );
         }
     }
 

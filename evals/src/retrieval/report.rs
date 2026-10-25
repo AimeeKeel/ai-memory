@@ -287,8 +287,8 @@ const METRIC_NOTES: &str = "\nNotes: hit@k = any evidence session in top k (the 
 pub fn to_markdown(r: &Report) -> String {
     let mut md = String::new();
     md.push_str(&format!(
-        "# LongMemEval-S retrieval — {}\n\n",
-        r.generated_at
+        "# {} retrieval — {}\n\n",
+        r.dataset, r.generated_at
     ));
     md.push_str(&provenance_md(r));
     md.push_str(&format!("- mode: {}\n- config: {}\n\n", r.mode, r.config));
@@ -400,8 +400,8 @@ fn compute_delta(baseline: &Report, candidate: &Report) -> AbDelta {
 pub fn ab_to_markdown(r: &AbReport) -> String {
     let mut md = String::new();
     md.push_str(&format!(
-        "# LongMemEval-S retrieval A/B — {}\n\n",
-        r.candidate.generated_at
+        "# {} retrieval A/B — {}\n\n",
+        r.candidate.dataset, r.candidate.generated_at
     ));
     // Provenance is shared (same dataset/commit/hardware/question set).
     md.push_str(&provenance_md(&r.candidate));
@@ -510,9 +510,23 @@ mod tests {
     }
 
     #[test]
+    fn coding_reports_name_the_selected_dataset() {
+        let mut baseline = report("embeddings=none", 1.0, 1.0, 1.0);
+        baseline.dataset = "coding_v1";
+        let mut candidate = report("embeddings=none", 1.0, 1.0, 1.0);
+        candidate.dataset = "coding_v1";
+        assert!(to_markdown(&baseline).starts_with("# coding_v1 retrieval"));
+        assert!(
+            ab_to_markdown(&AbReport::new(baseline, candidate))
+                .starts_with("# coding_v1 retrieval A/B")
+        );
+    }
+
+    #[test]
     fn markdown_carries_provenance_and_the_triple() {
         let r = report("embeddings=none reranker=off", 0.5, 0.25, 0.0);
         let md = to_markdown(&r);
+        assert!(md.starts_with("# longmemeval_s retrieval"));
         assert!(md.contains("commit: `abc`"));
         assert!(md.contains("config: embeddings=none reranker=off"));
         assert!(md.contains(" hit@5 | recall@5 | recall-all@5 |"));

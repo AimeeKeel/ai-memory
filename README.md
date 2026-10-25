@@ -689,7 +689,8 @@ endpoints for embeddings. Configuration lives in
 
 For optional synthesized query answers, operators can set
 `[query_answer] max_context_tokens` to limit admitted evidence while retaining
-all retrieval hits. It is disabled by default. See the
+all retrieval hits. Known newer corrections take priority, and whole snippets
+are preferred over sentence-bounded fragments. It is disabled by default. See the
 [configuration reference](docs/ARCHITECTURE.md#configuration-configtoml) for the
 conservative counting rule and omission receipt.
 

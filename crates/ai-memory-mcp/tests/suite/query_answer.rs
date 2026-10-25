@@ -812,3 +812,43 @@ async fn answer_budget_receipt_matches_request_at_provider_boundary() {
         assert_eq!(h.calls.as_ref().unwrap().load(Ordering::SeqCst), 1);
     }
 }
+
+#[tokio::test]
+async fn answer_budget_uses_store_recency_without_reordering_retrieval_hits() {
+    let h = harness_with_budget(
+        true,
+        json!({"answer":"PostgreSQL", "citations":["notes/current.md"]}),
+        Some(100_000),
+    )
+    .await;
+    let mut old = page(
+        h.ws,
+        h.proj,
+        "notes/old.md",
+        "needle: historical deployment uses SQLite.",
+    );
+    old.title = "Deployment decision".into();
+    old.pinned = true;
+    h.store.writer.upsert_page(old).await.unwrap();
+    // The two writes need distinct stored modification times for this fixture.
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let mut current = page(
+        h.ws,
+        h.proj,
+        "notes/current.md",
+        "needle: current deployment uses PostgreSQL.",
+    );
+    current.title = "Deployment decision".into();
+    h.store.writer.upsert_page(current).await.unwrap();
+    let response = call(
+        &h.router,
+        "memory_query",
+        query_args("needle", json!({"answer":true,"pin_first":true})),
+    )
+    .await;
+    assert_eq!(hit_paths(&response), ["notes/old.md", "notes/current.md"]);
+    let requests = h.requests.lock().unwrap();
+    let body = &requests[0].0.messages[0].content;
+    assert!(body.find("notes/current.md").unwrap() < body.find("notes/old.md").unwrap());
+    assert_eq!(response["answer"]["citations"], json!(["notes/current.md"]));
+}
