@@ -1254,9 +1254,10 @@ fn declares_more_than_capture(text: &str) -> bool {
         "identity",
         "identity_style",
     ];
-    const FLAG_KEYS: [&str; 6] = [
+    const FLAG_KEYS: [&str; 7] = [
         "default_global",
         "inject_on_session_start",
+        "inject_on_subagent_start",
         "max_chars",
         "contribute",
         "consume",
@@ -2382,6 +2383,7 @@ project = "infra" # this is fine
             "drop_subagent_captures = \"true\"\n",
             "[recall]\ndefault_global = true\n",
             "[briefing]\ninject_on_session_start = true\n",
+            "[briefing]\ninject_on_subagent_start = true\n",
             "[briefing]\nmax_chars = 4000\n",
             "[handoff]\ndeliver_on_session_start = false\n",
         ] {

@@ -191,6 +191,16 @@ inject_on_session_start = "true"
 # defaults to 4000.
 max_chars = 4000
 
+# Optional. Hand the same brief to each `claude-code` subagent when it starts
+# (`SubagentStart`), so a delegated task begins with the project's rules and
+# slots too. Independent of `inject_on_session_start`; `max_chars` bounds it,
+# and that agent's 10,000-character hook context limit caps it. It comes
+# from the read-only `GET /brief`, which never reads or claims a handoff, so a
+# subagent cannot take its parent session's baton; a server without that
+# route answers 404 and the subagent starts without a brief. Off by default:
+# every subagent pays for the brief in tokens, so opt in per repo.
+inject_on_subagent_start = "true"
+
 # Optional. Stop delivering this project's handoff at session start. Only an
 # explicit false / "no" / "off" / "0" turns it off; the default is to deliver.
 # Handoffs are still created when a session ends, and stay open (an agent can
@@ -320,7 +330,7 @@ scoped to the current project and cover every project only when you pass
 [usage.md](usage.md#search-from-the-terminal) and
 [usage.md](usage.md#recent-pages-from-the-terminal)).
 
-`default_global` and `inject_on_session_start` accept a truthy value
+`default_global`, `inject_on_session_start` and `inject_on_subagent_start` accept a truthy value
 (`true` / `1` / `yes` / `on`, quoted or bare; section-style keys are
 parsed leniently); anything else behaves as absent. `max_chars` is a
 plain integer.

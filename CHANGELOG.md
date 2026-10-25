@@ -13,6 +13,18 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added `[briefing] inject_on_subagent_start` to `.ai-memory.toml`. A project
+  that sets it hands each `claude-code` subagent the project brief when the
+  subagent starts: the same pinned, `_rules/` and `_slots/` brief that
+  `inject_on_session_start` adds at session start, kept within `max_chars` and
+  within the 10,000-character limit of that agent's hook context. The hook
+  reads it from a new read-only `GET /brief`, which resolves and authorizes the
+  project as `/handoff` does but never reads or claims a handoff, so a subagent
+  cannot take its parent session's baton. A server without the route answers
+  404 and the subagent starts as before. The native hook and the
+  `hooks/claude-code` shell and PowerShell scripts deliver it, and every marker
+  parser treats the key as a settings boundary. It is off by default (#1715).
+
 - `ai-memory audit-contamination` reports projects whose names differ only by
   spelling: two rows whose names are equal after case folding, Unicode
   composition and separators (`renato` / `Renato` / `Rénato`). That is the
