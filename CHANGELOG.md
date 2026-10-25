@@ -137,6 +137,15 @@ version in [`docs/changelog/`](docs/changelog/):
   could blame the primary for a timeout another candidate caused. Response
   bodies are never logged (#1628).
 
+### Fixed
+
+- `ai-memory backup` and `ai-memory backup-agents` now carry a size that
+  would round to `1024.00` of the current unit into the next one. A backup
+  of 1 MiB - 5 bytes was printed as `1024.00 KiB` (#1705).
+- The OKF migration dialog now carries an archive size that would round to
+  `1024.0` of the current unit into the next one. An archive of 1 MB - 51
+  bytes was printed as `1024.0 KB` (#1706).
+
 ## [3.2.4] - 2026-10-25
 
 ### Security
