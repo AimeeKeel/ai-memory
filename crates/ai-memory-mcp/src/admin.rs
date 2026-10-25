@@ -6383,6 +6383,13 @@ struct MoveProjectRequest {
     /// live managed-workstream lease in the destructive copy-purge path.
     #[serde(default)]
     force: bool,
+    /// Acknowledge that this move is a **copy+purge merge** rather than a
+    /// true-move, and that the source project's history goes with it (#1713).
+    /// The server picks the strategy from the destination; when it resolves to
+    /// the merge path and this is absent, the move is refused with the record
+    /// counts it would discard.
+    #[serde(default)]
+    allow_lossy_merge: bool,
     /// Policy for the copy-purge MERGE path when a source page's path already
     /// exists in the destination with DIFFERENT content. Ignored by true-move
     /// (no copy). Default `block` — the safe choice for a destructive op.
@@ -6909,6 +6916,39 @@ async fn move_project_core(
     // MERGE: the destination already holds a same-named project. Get-or-create
     // it (auto-creating the destination workspace) and copy the source's
     // latest pages into it, then purge the source.
+    //
+    // That second half is not a move: the source's sessions, observations,
+    // handoffs and older page versions are deleted, while a true-move keeps
+    // them. A `--confirm` written for "move this project" does not say that,
+    // so the merge path needs its own acknowledgement and shows the counts it
+    // would discard (#1713).
+    if !req.allow_lossy_merge {
+        let counts = state
+            .reader
+            .project_record_counts(src_ws, src_proj)
+            .await
+            .unwrap_or_default();
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!(
+                    "the destination workspace already holds a project named '{project_name}', so \
+                     this move would be a copy+purge merge: it copies its {} latest page(s) into \
+                     that project and deletes the source project with its {} session(s), {} \
+                     observation(s) and {} handoff(s). A true-move keeps all of that; to merge, \
+                     re-run with --allow-lossy-merge (allow_lossy_merge=true)",
+                    counts.pages, counts.sessions, counts.observations, counts.handoffs,
+                ),
+                "strategy": "copy-purge",
+                "discarded": {
+                    "pages_copied": counts.pages,
+                    "sessions": counts.sessions,
+                    "observations": counts.observations,
+                    "handoffs": counts.handoffs,
+                },
+            })),
+        ));
+    }
     let destination = create_ws_proj(state, &req.to_workspace, &project_name).await?;
     let (dst_ws, dst_proj) = destination.scope.as_tuple();
 
@@ -8416,6 +8456,10 @@ async fn handle_merge_workspace(
             confirm: true,
             force: req.force,
             on_conflict: req.on_conflict,
+            // `merge-workspace` is the explicit merge command: the operator
+            // already asked for the two workspaces to be combined, so a
+            // same-named project is merged rather than refused (#1713).
+            allow_lossy_merge: true,
         };
         match move_project_core(&state, &move_req, actor.clone()).await {
             Ok(report) => merged.push(report),
@@ -13902,7 +13946,7 @@ mod tests {
                             "from_workspace": "src",
                             "project": "merged",
                             "to_workspace": "dst",
-                            "confirm": true,
+                            "confirm": true, "allow_lossy_merge": true,
                         }))
                         .unwrap(),
                     ))
@@ -13956,7 +14000,7 @@ mod tests {
             "from_workspace": "src",
             "project": "live",
             "to_workspace": "dst",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
         });
         let guarded = router
             .clone()
@@ -13976,7 +14020,7 @@ mod tests {
             "from_workspace": "src",
             "project": "live",
             "to_workspace": "dst",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
             "force": true,
         });
         let moved = router
@@ -14360,7 +14404,7 @@ mod tests {
                             "from_workspace": "src",
                             "project": "merged",
                             "to_workspace": "dst",
-                            "confirm": true,
+                            "confirm": true, "allow_lossy_merge": true,
                             "force": true,
                         }))
                         .unwrap(),
@@ -14712,7 +14756,7 @@ mod tests {
                     "from_workspace": "default",
                     "to_workspace": "archive",
                     "project": "scratch",
-                    "confirm": true
+                    "confirm": true, "allow_lossy_merge": true
                 }),
             ),
             (
@@ -16084,7 +16128,7 @@ mod tests {
                 "from_workspace": "team-a",
                 "project": "shared",
                 "to_workspace": "team-b",
-                "confirm": true,
+                "confirm": true, "allow_lossy_merge": true,
             })),
         )
         .await;

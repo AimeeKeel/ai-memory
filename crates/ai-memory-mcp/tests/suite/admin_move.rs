@@ -236,7 +236,7 @@ async fn move_project_true_move_into_fresh_dest() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK, "move must succeed");
@@ -364,7 +364,7 @@ async fn move_project_merge_surfaces_destination_promotion_manifest_warning() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "acme-api", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "acme-api", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -420,7 +420,7 @@ async fn move_project_404_on_unknown_source() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "nope", "project": "ghost", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "nope", "project": "ghost", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -428,6 +428,107 @@ async fn move_project_404_on_unknown_source() {
 
 /// Moving into a workspace that already has a same-named project MERGES:
 /// the destination ends up with both the pre-existing and the moved pages.
+/// #1713: the copy+purge merge is not a move. A `--confirm` written for "move
+/// this project" must not delete a source's sessions and observations just
+/// because the destination happens to hold a project of the same name. The
+/// refusal names the counts it would discard and leaves the source intact;
+/// the same request with `allow_lossy_merge` proceeds.
+#[tokio::test]
+async fn a_copy_purge_merge_requires_its_own_acknowledgement() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_state(&tmp).await;
+    seed_page(&store, &state.wiki, "src", "proj", "notes/a.md", "body a").await;
+    seed_page(&store, &state.wiki, "dst", "proj", "notes/b.md", "body b").await;
+    let session = SessionId::new();
+    store
+        .writer
+        .begin_session(NewSession {
+            occurred_at: None,
+            id: session,
+            workspace_id: store
+                .reader
+                .find_workspace("src".to_string())
+                .await
+                .unwrap()
+                .unwrap(),
+            project_id: store
+                .reader
+                .find_project(
+                    store
+                        .reader
+                        .find_workspace("src".to_string())
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    "proj".to_string(),
+                )
+                .await
+                .unwrap()
+                .unwrap(),
+            agent_kind: AgentKind::Codex,
+            cwd: Some("/src/proj".into()),
+            actor_user: None,
+        })
+        .await
+        .unwrap();
+
+    let resp = post(
+        state.clone(),
+        "/admin/move-project",
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    assert_eq!(body["strategy"], "copy-purge", "{body}");
+    assert_eq!(body["discarded"]["sessions"], 1, "{body}");
+    assert_eq!(body["discarded"]["pages_copied"], 1, "{body}");
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(error.contains("--allow-lossy-merge"), "{error}");
+    assert!(error.contains("1 session(s)"), "{error}");
+
+    // The source is untouched: its page and its session are both still there.
+    assert_eq!(
+        store.reader.list_pages("src", "proj").await.unwrap().len(),
+        1
+    );
+    let src_ws = store
+        .reader
+        .find_workspace("src".to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    let src_proj = store
+        .reader
+        .find_project(src_ws, "proj".to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store
+            .reader
+            .project_record_counts(src_ws, src_proj)
+            .await
+            .unwrap()
+            .sessions,
+        1,
+        "the refusal must not delete the source's history"
+    );
+
+    // The same request with the acknowledgement proceeds; the merge tests
+    // below cover that path end to end.
+    let resp = post(
+        state,
+        "/admin/move-project",
+        json!({
+            "from_workspace": "src", "project": "proj", "to_workspace": "dst",
+            "confirm": true, "allow_lossy_merge": true
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn move_project_merges_into_existing_dest() {
     let tmp = TempDir::new().unwrap();
@@ -438,7 +539,7 @@ async fn move_project_merges_into_existing_dest() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -489,7 +590,7 @@ async fn move_project_same_workspace_rejected() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "w", "project": "proj", "to_workspace": "w", "confirm": true }),
+        json!({ "from_workspace": "w", "project": "proj", "to_workspace": "w", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -510,7 +611,7 @@ async fn move_project_refuses_a_private_profile() {
             "from_workspace": "default",
             "project": "_profile.00000000000000000000000000000001",
             "to_workspace": "elsewhere",
-            "confirm": true
+            "confirm": true, "allow_lossy_merge": true
         }),
     )
     .await;
@@ -609,7 +710,7 @@ async fn move_project_carries_source_embedding() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -710,7 +811,7 @@ async fn move_project_true_move_preserves_sessions_and_observations() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -753,7 +854,7 @@ async fn true_move_stale_source_write_fails_before_creating_file() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -856,7 +957,7 @@ async fn true_move_notifies_admission_with_destination_names() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -956,7 +1057,7 @@ async fn true_move_refuses_an_invalid_destination_namespace_without_db_changes()
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -1004,7 +1105,7 @@ async fn move_refuses_active_project_without_force() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -1025,7 +1126,7 @@ async fn move_active_project_with_force_succeeds_and_republishes() {
         state,
         "/admin/move-project",
         json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst",
-                "confirm": true, "force": true }),
+                "confirm": true, "allow_lossy_merge": true, "force": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1079,7 +1180,7 @@ async fn copy_purge_force_never_deletes_a_live_managed_workstream() {
             "from_workspace": "src",
             "project": "proj",
             "to_workspace": "dst",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
             "force": true
         }),
     )
@@ -1155,7 +1256,7 @@ async fn copy_purge_conflict_duplicates_keeping_both() {
         state,
         "/admin/move-project",
         json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst",
-                "confirm": true, "on_conflict": "duplicate" }),
+                "confirm": true, "allow_lossy_merge": true, "on_conflict": "duplicate" }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1221,7 +1322,7 @@ async fn copy_purge_conflict_blocks_by_default() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -1298,7 +1399,7 @@ async fn copy_purge_conflict_blocks_metadata_difference_by_default() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -1330,7 +1431,7 @@ async fn copy_purge_conflict_overwrites() {
         state,
         "/admin/move-project",
         json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst",
-                "confirm": true, "on_conflict": "overwrite" }),
+                "confirm": true, "allow_lossy_merge": true, "on_conflict": "overwrite" }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1404,7 +1505,7 @@ async fn copy_purge_duplicate_avoids_clobbering_dedup_slot() {
         state,
         "/admin/move-project",
         json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst",
-                "confirm": true, "on_conflict": "duplicate" }),
+                "confirm": true, "allow_lossy_merge": true, "on_conflict": "duplicate" }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1495,7 +1596,7 @@ async fn copy_purge_carries_source_embedding() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1549,7 +1650,7 @@ async fn copy_purge_partial_skips_and_preserves_source() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -1646,7 +1747,7 @@ async fn true_move_aborts_when_admission_rejects() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(
@@ -1749,7 +1850,7 @@ async fn copy_purge_purge_admission_runs_before_db_destruction() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(
@@ -1868,7 +1969,7 @@ async fn move_copy_skips_contributors_webhook_but_runs_others() {
     let resp = post(
         state,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK, "merge move should succeed");
@@ -1898,7 +1999,7 @@ async fn copy_purge_rerun_is_idempotent() {
     let r1 = post(
         s1,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     assert_eq!(r1.status(), StatusCode::OK);
@@ -1915,7 +2016,7 @@ async fn copy_purge_rerun_is_idempotent() {
     let r2 = post(
         s2,
         "/admin/move-project",
-        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true, "allow_lossy_merge": true }),
     )
     .await;
     // Flaky under heavy parallel load / on Windows (observed in the 2.0
@@ -3120,7 +3221,7 @@ async fn move_project_accepts_project_id_instead_of_name() {
             "from_workspace": "default",
             "project_id": proj.to_string(),
             "to_workspace": "elsewhere",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
         }),
     )
     .await;
@@ -3159,7 +3260,7 @@ async fn move_project_rejects_a_malformed_project_id_with_400() {
             "from_workspace": "default",
             "project_id": "not-a-uuid",
             "to_workspace": "elsewhere",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
         }),
     )
     .await;
@@ -3180,7 +3281,7 @@ async fn move_project_unknown_project_id_is_404() {
             "from_workspace": "default",
             "project_id": "00000000-0000-0000-0000-0000000000ff",
             "to_workspace": "elsewhere",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
         }),
     )
     .await;
@@ -3217,7 +3318,7 @@ async fn move_project_refuses_a_real_id_from_another_workspace() {
             "from_workspace": "default",
             "project_id": foreign.to_string(),
             "to_workspace": "target",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
         }),
     )
     .await;
@@ -3243,7 +3344,7 @@ async fn move_project_refuses_a_real_id_from_another_workspace() {
             "from_workspace": "elsewhere",
             "project_id": foreign.to_string(),
             "to_workspace": "target",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
         }),
     )
     .await;
@@ -3275,7 +3376,7 @@ async fn move_project_refuses_both_project_and_project_id() {
             "project": "movable",
             "project_id": proj.to_string(),
             "to_workspace": "elsewhere",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
         }),
     )
     .await;
@@ -3317,7 +3418,7 @@ async fn move_project_still_accepts_a_bare_project_name() {
             "from_workspace": "default",
             "project": "movable",
             "to_workspace": "elsewhere",
-            "confirm": true,
+            "confirm": true, "allow_lossy_merge": true,
         }),
     )
     .await;
