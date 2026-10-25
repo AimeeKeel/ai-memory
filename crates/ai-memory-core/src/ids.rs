@@ -569,6 +569,19 @@ impl AgentKind {
         )
     }
 
+    /// Whether this agent adds a `SubagentStart` hook's
+    /// `hookSpecificOutput.additionalContext` to the subagent's context.
+    ///
+    /// [`Self::ClaudeCode`] adds it before the subagent's first prompt, within
+    /// the same 10,000-character limit as every hook context string (its hooks
+    /// reference, `SubagentStart` section). No other supported harness
+    /// documents a context channel on its subagent-start event, so the
+    /// `[briefing] inject_on_subagent_start` brief goes to that agent only.
+    #[must_use]
+    pub fn subagent_start_injects_context(self) -> bool {
+        matches!(self, Self::ClaudeCode)
+    }
+
     /// Whether `PostToolUse` stdout is model-visible context.
     ///
     /// Grok Build reads that stdout and delivers `hookSpecificOutput.additionalContext`
@@ -745,6 +758,16 @@ mod tests {
                     !other.json_context_user_prompt_injects_handoff(),
                     "{other:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn only_one_agent_kind_takes_subagent_start_context() {
+        assert!(AgentKind::ClaudeCode.subagent_start_injects_context());
+        for other in AgentKind::ALL {
+            if other != AgentKind::ClaudeCode {
+                assert!(!other.subagent_start_injects_context(), "{other:?}");
             }
         }
     }

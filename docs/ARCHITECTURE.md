@@ -307,6 +307,16 @@ closing footer are never traded for content. The accepted algorithm and its
 budget invariants are recorded in
 [`design-tiered-session-brief.md`](design-tiered-session-brief.md).
 
+**Subagent brief:** when the marker sets `[briefing] inject_on_subagent_start`,
+the `claude-code` agent's `SubagentStart` hook prints the same brief as the subagent's
+`additionalContext`. It comes from `GET /brief`, which resolves and authorizes
+the project exactly as `/handoff` does (one shared helper) and renders only the
+brief: it never reads or claims a handoff, publishes no active project and
+records no `[profile]` flags, since a subagent runs inside its parent's
+session. For that agent the budget is also capped at 9,800 characters, under
+the 10,000-character hook context limit. A server without the route answers
+404 and the hook prints `{}` as before; it never falls back to `/handoff`.
+
 **Cross-project profile:** after the project brief, SessionStart appends a
 fenced, byte-budgeted, byte-stable digest of the user's usual choices from other
 projects (`docs/cross-project-profile.md`), filtered by the stack the project's

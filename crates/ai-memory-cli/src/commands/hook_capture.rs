@@ -293,7 +293,34 @@ pub fn url_encode(s: &str) -> String {
 /// routing win; otherwise a valid remote's canonical path wins, and repo-root
 /// is only the host-side no-valid-remote fallback.
 pub fn marker_query_suffix(cwd: &str, default_strategy: Option<&str>) -> String {
-    marker_query_suffix_impl(cwd, default_strategy, true)
+    marker_query_suffix_impl(cwd, default_strategy, Some(BriefingKey::SessionStart))
+}
+
+/// [`marker_query_suffix`] whose `&briefing` pair carries the
+/// `[briefing] inject_on_subagent_start` opt-in instead: the query a subagent
+/// start sends to `GET /brief`.
+pub fn marker_query_suffix_for_subagent_brief(cwd: &str, default_strategy: Option<&str>) -> String {
+    marker_query_suffix_impl(cwd, default_strategy, Some(BriefingKey::SubagentStart))
+}
+
+/// Which `[briefing]` opt-in a request forwards as its `&briefing` pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BriefingKey {
+    /// `inject_on_session_start`: the brief the session-start `/handoff`
+    /// fetch appends.
+    SessionStart,
+    /// `inject_on_subagent_start`: the brief a subagent starts with, from
+    /// `/brief`.
+    SubagentStart,
+}
+
+impl BriefingKey {
+    fn marker_key(self) -> &'static str {
+        match self {
+            Self::SessionStart => "inject_on_session_start",
+            Self::SubagentStart => "inject_on_subagent_start",
+        }
+    }
 }
 
 /// [`marker_query_suffix`] without the `[briefing]` pair
@@ -306,7 +333,7 @@ pub fn marker_query_suffix(cwd: &str, default_strategy: Option<&str>) -> String 
 /// cheap and self-limiting (empty body when nothing is pending) — without the
 /// briefing params, so the server does not recompose the brief per prompt.
 pub fn marker_query_suffix_without_briefing(cwd: &str, default_strategy: Option<&str>) -> String {
-    marker_query_suffix_impl(cwd, default_strategy, false)
+    marker_query_suffix_impl(cwd, default_strategy, None)
 }
 
 /// Whether the marker that routes `cwd` explicitly enables the compiled
@@ -319,16 +346,24 @@ pub fn marker_query_suffix_without_briefing(cwd: &str, default_strategy: Option<
 /// Kimi Code uses this before creating its local once-per-session marker so
 /// repositories that did not opt in do not accumulate marker files.
 pub fn marker_requests_briefing(cwd: &str) -> bool {
-    marker_requests_briefing_with_home(cwd, home_dir().as_deref())
+    marker_requests_briefing_with_home(cwd, home_dir().as_deref(), BriefingKey::SessionStart)
 }
 
-/// [`marker_requests_briefing`] resolved against `home` instead of the
-/// operator's home directory.
-fn marker_requests_briefing_with_home(cwd: &str, home: Option<&Path>) -> bool {
+/// Whether the marker that routes `cwd` explicitly enables the subagent
+/// brief (`[briefing] inject_on_subagent_start`), read from the selection
+/// [`marker_query_suffix_for_subagent_brief`] reads, so a subagent start asks
+/// `/brief` only when its query would carry the opt-in.
+pub fn marker_requests_subagent_briefing(cwd: &str) -> bool {
+    marker_requests_briefing_with_home(cwd, home_dir().as_deref(), BriefingKey::SubagentStart)
+}
+
+/// [`marker_requests_briefing`] for the opt-in `key`, resolved against `home`
+/// instead of the operator's home directory.
+fn marker_requests_briefing_with_home(cwd: &str, home: Option<&Path>, key: BriefingKey) -> bool {
     crate::marker::routing_selection_with_home(cwd, cwd, home, false)
         .ok()
         .flatten()
-        .and_then(|selection| parse_toml_flag(&selection.path, "inject_on_session_start"))
+        .and_then(|selection| parse_toml_flag(&selection.path, key.marker_key()))
         .is_some_and(|value| is_truthy(&value))
 }
 
@@ -628,19 +663,19 @@ fn profile_flag_value(raw: Option<String>) -> &'static str {
 fn marker_query_suffix_impl(
     cwd: &str,
     default_strategy: Option<&str>,
-    include_briefing: bool,
+    briefing_key: Option<BriefingKey>,
 ) -> String {
     let selection = match routing_selection(cwd) {
         Ok(selection) => selection,
         Err(_) => return String::new(),
     };
-    marker_query_suffix_impl_from_selection(cwd, default_strategy, include_briefing, selection)
+    marker_query_suffix_impl_from_selection(cwd, default_strategy, briefing_key, selection)
 }
 
 fn marker_query_suffix_impl_from_selection(
     cwd: &str,
     default_strategy: Option<&str>,
-    include_briefing: bool,
+    briefing_key: Option<BriefingKey>,
     selection: Option<RoutingSelection>,
 ) -> String {
     let mut qs = format!("&cwd={}", url_encode(cwd));
@@ -660,9 +695,12 @@ fn marker_query_suffix_impl_from_selection(
         default_global = parse_toml_flag(&marker, "default_global");
         // `[briefing] inject_on_session_start = true` + optional
         // `max_chars = N` — opt this repo into the compiled project brief
-        // appended to the session-start handoff fetch (#176).
-        briefing = parse_toml_flag(&marker, "inject_on_session_start");
-        briefing_budget = parse_toml_flag(&marker, "max_chars");
+        // appended to the session-start handoff fetch (#176); the subagent
+        // brief reads `inject_on_subagent_start` instead.
+        if let Some(key) = briefing_key {
+            briefing = parse_toml_flag(&marker, key.marker_key());
+            briefing_budget = parse_toml_flag(&marker, "max_chars");
+        }
         // `[profile] contribute` / `consume` (quoted or bare), always sent
         // explicitly once a marker resolved: a falsy value sends `0`, anything
         // else (an absent key included) `1`. Removing the key re-enables; no
@@ -725,19 +763,18 @@ fn marker_query_suffix_impl_from_selection(
     if handoff_off {
         qs.push_str("&handoff=0");
     }
-    // Per-repo session-start brief opt-in: forwarded on every request for
-    // simplicity (the capture path ignores it); only the `/handoff` GET at
-    // session start acts on it. Truthiness and the char-budget clamp are
-    // decided server-side. Callers that deliver the brief once per session
-    // (the kimi user-prompt path) pass `include_briefing = false` after the
-    // first delivery so the server stops recomposing the brief per request.
-    if include_briefing {
-        if let Some(val) = briefing.filter(|v| !v.is_empty()) {
-            qs.push_str(&format!("&briefing={}", url_encode(&val)));
-        }
-        if let Some(val) = briefing_budget.filter(|v| !v.is_empty()) {
-            qs.push_str(&format!("&briefing_budget={}", url_encode(&val)));
-        }
+    // Per-repo brief opt-in: forwarded on every request for simplicity (the
+    // capture path ignores it); only the `/handoff` GET at session start, or
+    // `/brief` at a subagent start, acts on it. Truthiness and the
+    // char-budget clamp are decided server-side. Callers that deliver the
+    // brief once per session (the kimi user-prompt path) pass no key after
+    // the first delivery so the server stops recomposing the brief per
+    // request.
+    if let Some(val) = briefing.filter(|v| !v.is_empty()) {
+        qs.push_str(&format!("&briefing={}", url_encode(&val)));
+    }
+    if let Some(val) = briefing_budget.filter(|v| !v.is_empty()) {
+        qs.push_str(&format!("&briefing_budget={}", url_encode(&val)));
     }
     qs
 }
@@ -1087,9 +1124,12 @@ mod tests {
             Some(home.path()),
             false,
         ) {
-            Ok(selection) => {
-                marker_query_suffix_impl_from_selection(cwd, default_strategy, true, selection)
-            }
+            Ok(selection) => marker_query_suffix_impl_from_selection(
+                cwd,
+                default_strategy,
+                Some(BriefingKey::SessionStart),
+                selection,
+            ),
             Err(_) => String::new(),
         }
     }
@@ -1104,7 +1144,7 @@ mod tests {
     /// reason.
     fn marker_requests_briefing(cwd: &str) -> bool {
         let home = tempfile::TempDir::new().unwrap();
-        marker_requests_briefing_with_home(cwd, Some(home.path()))
+        marker_requests_briefing_with_home(cwd, Some(home.path()), BriefingKey::SessionStart)
     }
 
     async fn serve_once(status: &'static str, body: &'static str) -> String {
@@ -1733,8 +1773,12 @@ mod tests {
             false,
         )
         .unwrap();
-        let query =
-            marker_query_suffix_impl_from_selection(repo.to_str().unwrap(), None, true, selection);
+        let query = marker_query_suffix_impl_from_selection(
+            repo.to_str().unwrap(),
+            None,
+            Some(BriefingKey::SessionStart),
+            selection,
+        );
         for expected in [
             "&workspace=right",
             "&project=api",
@@ -1770,7 +1814,7 @@ mod tests {
         )
         .unwrap();
         let query =
-            marker_query_suffix_impl_from_selection(repo.to_str().unwrap(), None, false, selection);
+            marker_query_suffix_impl_from_selection(repo.to_str().unwrap(), None, None, selection);
         assert!(query.contains("&workspace=path&project=api"), "{query}");
         assert!(!query.contains("aliases="), "{query}");
         assert!(!query.contains("identity_src="), "{query}");
@@ -1967,6 +2011,79 @@ drop_subagent_captures = "true"
         assert!(!qs.contains("briefing"), "{qs}");
     }
 
+    /// `[briefing] inject_on_subagent_start` is its own opt-in: it rides only
+    /// the subagent-start query, and the session-start query keeps forwarding
+    /// `inject_on_session_start` alone, so neither turns the other on.
+    #[test]
+    fn subagent_brief_query_forwards_only_its_own_opt_in() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+        let marker = tmp.path().join(".ai-memory.toml");
+        let subagent_query = || {
+            let home = tempfile::TempDir::new().unwrap();
+            let selection = super::super::super::marker::routing_selection_with_home(
+                cwd,
+                cwd,
+                Some(home.path()),
+                false,
+            );
+            marker_query_suffix_impl_from_selection(
+                cwd,
+                None,
+                Some(BriefingKey::SubagentStart),
+                selection.unwrap(),
+            )
+        };
+
+        std::fs::write(
+            &marker,
+            "[briefing]\ninject_on_subagent_start = true\nmax_chars = 6000\n",
+        )
+        .unwrap();
+        let qs = subagent_query();
+        assert!(qs.contains("&cwd="), "{qs}");
+        assert!(qs.contains("&briefing=true"), "{qs}");
+        assert!(qs.contains("&briefing_budget=6000"), "{qs}");
+        // `max_chars` rides along with or without an opt-in, as it always has;
+        // only `&briefing=` turns a brief on.
+        let qs = marker_query_suffix(cwd, None);
+        assert!(
+            !qs.contains("&briefing="),
+            "session start must not inherit it: {qs}"
+        );
+
+        std::fs::write(
+            &marker,
+            "[briefing]\ninject_on_session_start = true\nmax_chars = 6000\n",
+        )
+        .unwrap();
+        let qs = subagent_query();
+        assert!(
+            !qs.contains("&briefing="),
+            "subagents must not inherit it: {qs}"
+        );
+        assert!(marker_query_suffix(cwd, None).contains("&briefing=true"));
+    }
+
+    #[test]
+    fn marker_requests_subagent_briefing_only_for_its_own_truthy_opt_in() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker = tmp.path().join(".ai-memory.toml");
+        let cwd = tmp.path().to_str().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let requested = || {
+            marker_requests_briefing_with_home(cwd, Some(home.path()), BriefingKey::SubagentStart)
+        };
+
+        assert!(!requested());
+        std::fs::write(&marker, "[briefing]\ninject_on_session_start = true\n").unwrap();
+        assert!(!requested());
+        std::fs::write(&marker, "[briefing]\ninject_on_subagent_start = off\n").unwrap();
+        assert!(!requested());
+        std::fs::write(&marker, "[briefing]\ninject_on_subagent_start = \"yes\"\n").unwrap();
+        assert!(requested());
+    }
+
     #[test]
     fn marker_requests_briefing_only_for_truthy_opt_in() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -2010,18 +2127,31 @@ drop_subagent_captures = "true"
                 Some(home.path()),
                 false,
             );
-            marker_query_suffix_impl_from_selection(cwd, None, true, selection.unwrap())
+            marker_query_suffix_impl_from_selection(
+                cwd,
+                None,
+                Some(BriefingKey::SessionStart),
+                selection.unwrap(),
+            )
         };
 
         let qs = query();
         assert!(qs.contains("&briefing=true"), "{qs}");
-        assert!(marker_requests_briefing_with_home(cwd, Some(home.path())));
+        assert!(marker_requests_briefing_with_home(
+            cwd,
+            Some(home.path()),
+            BriefingKey::SessionStart
+        ));
 
         // The repo's own settings marker wins over the home marker for both.
         std::fs::write(repo.path().join(".ai-memory.toml"), "project = \"repo\"\n").unwrap();
         let qs = query();
         assert!(!qs.contains("briefing"), "{qs}");
-        assert!(!marker_requests_briefing_with_home(cwd, Some(home.path())));
+        assert!(!marker_requests_briefing_with_home(
+            cwd,
+            Some(home.path()),
+            BriefingKey::SessionStart
+        ));
     }
 
     #[test]

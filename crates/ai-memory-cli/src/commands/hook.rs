@@ -34,8 +34,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::hook_capture::{
     HookScope, build_client, canonical_context, capture_policy, extract_cwd, get_handoff,
-    hook_scope, marker_capture_policy, marker_query_suffix, marker_query_suffix_without_briefing,
-    marker_requests_briefing, resolve_cwd_with_fallbacks, url_encode,
+    hook_scope, marker_capture_policy, marker_query_suffix, marker_query_suffix_for_subagent_brief,
+    marker_query_suffix_without_briefing, marker_requests_briefing,
+    marker_requests_subagent_briefing, resolve_cwd_with_fallbacks, url_encode,
 };
 use super::hook_drain_process;
 use super::hook_spool;
@@ -1013,6 +1014,17 @@ fn session_start_handoff_envelope(agent: AgentKind, handoff: String) -> serde_js
     }
 }
 
+/// The `claude-code` agent adds a `SubagentStart` hook's `additionalContext`
+/// to the subagent's context before its first prompt.
+fn subagent_start_brief_envelope(brief: &str) -> serde_json::Value {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SubagentStart",
+            "additionalContext": brief,
+        }
+    })
+}
+
 /// Hermes adds a hook's stdout to the turn only as a JSON object whose
 /// `context` is a non-blank string (`_parse_context` in
 /// `agent/shell_hooks.py`); plain text and every other key are dropped.
@@ -1202,6 +1214,9 @@ where
         // UserPromptSubmit stdout is discarded); that path is context delivery
         // too, so external capture must not suppress it.
         || (hook_event == HookEvent::PostToolUse && agent_kind.post_tool_injects_handoff())
+        // A subagent start delivers the `[briefing] inject_on_subagent_start`
+        // brief.
+        || (hook_event == HookEvent::SubagentStart && agent_kind.subagent_start_injects_context())
         // On an Antigravity build without SessionStart, the first turn's
         // PreInvocation delivers the handoff in its place.
         || (agent_kind == AgentKind::AntigravityCli
@@ -1726,6 +1741,39 @@ where
                 }
                 return Ok(());
             }
+        }
+    }
+
+    // subagent-start: a repository that opted into `[briefing]
+    // inject_on_subagent_start` gives each subagent its project brief, for
+    // agents whose `SubagentStart` hook injects context. A subagent runs
+    // inside its parent's session, so the brief comes from the read-only
+    // `/brief`, never from `/handoff`, whose fetch would claim the parent's
+    // baton; a server that predates `/brief` answers 404 and the subagent
+    // gets the `{}` it always got. Cursor also runs these hook settings, and
+    // its handling of this envelope is unverified, so a Cursor payload gets
+    // nothing.
+    if hook_event == HookEvent::SubagentStart
+        && agent_kind.subagent_start_injects_context()
+        && ai_memory_hooks::agent_from_payload(&json) != Some(AgentKind::Cursor)
+        && let Some(cwd) = policy_cwd.as_deref()
+        && marker_requests_subagent_briefing(cwd)
+    {
+        let client = build_client();
+        let bearer = hook_spool::resolve_bearer(&client, &dd, effective_token).await;
+        let brief_url = format!(
+            "{base}/brief?agent={}{}",
+            args.agent,
+            marker_query_suffix_for_subagent_brief(
+                cwd,
+                args.project_strategy.and_then(|s| s.baked())
+            )
+        );
+        if let Some(brief) =
+            get_handoff(&client, &brief_url, bearer.as_deref(), handoff_timeout()).await
+        {
+            writeln!(stdout, "{}", subagent_start_brief_envelope(&brief))?;
+            return Ok(());
         }
     }
 
@@ -7504,6 +7552,221 @@ mod tests {
         assert_eq!(run("muse", "session-start").await, "");
         assert_eq!(run("muse", "stop").await.trim(), "{}");
         assert_eq!(run("droid", "user-prompt-submit").await.trim(), "{}");
+    }
+
+    // ── `[briefing] inject_on_subagent_start` ─────────────────────────────
+
+    fn subagent_start_payload(cwd: &Path) -> serde_json::Value {
+        serde_json::json!({
+            "session_id": "parent-session",
+            "transcript_path": cwd.join("parent.jsonl"),
+            "cwd": cwd,
+            "hook_event_name": "SubagentStart",
+            "agent_id": "agent-abc123",
+            "agent_type": "Explore"
+        })
+    }
+
+    async fn run_subagent_start(
+        data_dir: &Path,
+        args: HookArgs,
+        payload: serde_json::Value,
+    ) -> String {
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(data_dir.to_path_buf()),
+            args,
+            payload.to_string(),
+            &mut stdout,
+            |_, _| Ok(()),
+        )
+        .await
+        .unwrap();
+        String::from_utf8(stdout).unwrap()
+    }
+
+    async fn recorded_requests(
+        requests: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> Vec<String> {
+        let mut recorded = Vec::new();
+        while let Some(request) = first_request(requests).await {
+            recorded.push(request);
+        }
+        recorded
+    }
+
+    /// A repository that opted into `[briefing] inject_on_subagent_start`
+    /// hands its subagents the project brief: the hook reads it from the
+    /// read-only `/brief` route and prints the `SubagentStart` envelope the
+    /// agent adds to the subagent's context. It never asks `/handoff`, whose
+    /// fetch would claim the parent session's baton, and the event itself is
+    /// still captured.
+    #[tokio::test]
+    async fn subagent_start_delivers_the_opted_in_brief() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let repo = repo_with_marker(
+            tmp.path(),
+            "repo",
+            "[briefing]\ninject_on_subagent_start = true\nmax_chars = 6000\n",
+        );
+        let (base, mut requests) = serve_requests("200 OK", "SUBAGENT-BRIEF").await;
+
+        let stdout = run_subagent_start(
+            &data_dir,
+            claude_args("subagent-start", &base),
+            subagent_start_payload(&repo),
+        )
+        .await;
+
+        let envelope: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(
+            envelope,
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SubagentStart",
+                    "additionalContext": "SUBAGENT-BRIEF",
+                }
+            })
+        );
+        let recorded = recorded_requests(&mut requests).await;
+        let brief = recorded
+            .iter()
+            .find(|request| request.starts_with("GET /brief?"))
+            .unwrap_or_else(|| panic!("no brief fetch: {recorded:?}"));
+        assert!(brief.contains("agent=claude-code"), "{brief}");
+        assert!(brief.contains("&cwd="), "{brief}");
+        assert!(brief.contains("&briefing=true"), "{brief}");
+        assert!(brief.contains("&briefing_budget=6000"), "{brief}");
+        assert!(
+            !recorded
+                .iter()
+                .any(|request| request.starts_with("GET /handoff")),
+            "a subagent start must never fetch the handoff: {recorded:?}"
+        );
+        let spooled = spooled_entries(&data_dir);
+        assert_eq!(spooled.len(), 1, "the event is still captured");
+        assert_eq!(
+            query_param(&spooled[0].url, "event"),
+            Some("subagent-start")
+        );
+    }
+
+    /// Without the subagent opt-in nothing changes: no request, and the `{}`
+    /// a subagent start always printed — also when the repository opted into
+    /// the session-start brief only.
+    #[tokio::test]
+    async fn subagent_start_without_the_opt_in_prints_what_it_always_did() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (base, mut requests) = serve_requests("200 OK", "SUBAGENT-BRIEF").await;
+        for (name, marker) in [
+            ("unmarked", None),
+            (
+                "session-brief-only",
+                Some("[briefing]\ninject_on_session_start = true\n"),
+            ),
+            (
+                "opted-out",
+                Some("[briefing]\ninject_on_subagent_start = false\n"),
+            ),
+        ] {
+            let repo = match marker {
+                Some(marker) => repo_with_marker(tmp.path(), name, marker),
+                None => {
+                    let repo = tmp.path().join(name);
+                    std::fs::create_dir_all(&repo).unwrap();
+                    repo
+                }
+            };
+            let stdout = run_subagent_start(
+                &tmp.path().join(format!("data-{name}")),
+                claude_args("subagent-start", &base),
+                subagent_start_payload(&repo),
+            )
+            .await;
+            assert_eq!(stdout, "{}\n", "{name}");
+        }
+        let recorded = recorded_requests(&mut requests).await;
+        assert!(recorded.is_empty(), "{recorded:?}");
+    }
+
+    /// An empty `/brief` body (nothing to brief) and a 404 (a server that
+    /// predates the route) both leave the subagent with the `{}` it got
+    /// before, and neither falls back to `/handoff`.
+    #[tokio::test]
+    async fn subagent_start_with_no_brief_prints_an_empty_reply() {
+        for status in ["200 OK", "404 Not Found"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let repo = repo_with_marker(
+                tmp.path(),
+                "repo",
+                "[briefing]\ninject_on_subagent_start = true\n",
+            );
+            let (base, mut requests) = serve_requests(status, "").await;
+
+            let stdout = run_subagent_start(
+                &tmp.path().join("data"),
+                claude_args("subagent-start", &base),
+                subagent_start_payload(&repo),
+            )
+            .await;
+
+            assert_eq!(stdout, "{}\n", "{status}");
+            let recorded = recorded_requests(&mut requests).await;
+            assert!(
+                recorded
+                    .iter()
+                    .any(|request| request.starts_with("GET /brief?")),
+                "{status}: {recorded:?}"
+            );
+            assert!(
+                !recorded
+                    .iter()
+                    .any(|request| request.starts_with("GET /handoff")),
+                "{status}: {recorded:?}"
+            );
+        }
+    }
+
+    /// Only the `claude-code` agent documents `SubagentStart` context. Another
+    /// agent with the same marker asks for nothing and replies as before, and
+    /// so does a Cursor payload arriving through the same hook settings, whose
+    /// handling of the envelope is unverified.
+    #[tokio::test]
+    async fn subagent_brief_skips_agents_without_subagent_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = repo_with_marker(
+            tmp.path(),
+            "repo",
+            "[briefing]\ninject_on_subagent_start = true\n",
+        );
+        let (base, mut requests) = serve_requests("200 OK", "SUBAGENT-BRIEF").await;
+
+        let stdout = run_subagent_start(
+            &tmp.path().join("data-codex"),
+            codex_args("subagent-start", &base),
+            subagent_start_payload(&repo),
+        )
+        .await;
+        assert_eq!(stdout.trim(), "{}");
+
+        let mut cursor = subagent_start_payload(&repo);
+        cursor["cursor_version"] = "2.0.0".into();
+        let stdout = run_subagent_start(
+            &tmp.path().join("data-cursor"),
+            claude_args("subagent-start", &base),
+            cursor,
+        )
+        .await;
+        assert_eq!(stdout.trim(), "{}");
+
+        let recorded = recorded_requests(&mut requests).await;
+        assert!(
+            !recorded
+                .iter()
+                .any(|request| request.starts_with("GET /brief")),
+            "{recorded:?}"
+        );
     }
 
     // ── #992: per-repository server profiles ─────────────────────────────
