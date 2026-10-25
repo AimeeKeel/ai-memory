@@ -235,5 +235,7 @@ without loading bodies or expanding supersession links. The store tests
 `answer_evidence_metadata_returns_only_requested_ids_without_expanding_links`
 and the session chronology test cover requested-only and same-scope joins.
 `answer_budget_uses_store_recency_without_reordering_retrieval_hits` verifies
-the production metadata-to-prompt path; existing foreign-project citation and
-shared-path ambiguity tests continue to enforce the authorization boundary.
+the production metadata-to-prompt path. The transitive-lineage and unusable-newer-hit
+unit tests keep obsolete evidence out when the current evidence cannot be admitted;
+existing foreign-project citation and shared-path ambiguity tests continue to
+enforce the authorization boundary.

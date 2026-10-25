@@ -1,8 +1,9 @@
 # Query-answer context admission: draft local measurements
 
-This receipt accompanies the default-disabled proposal in #1684. Its configuration,
-response contract was accepted by the maintainer in the review on #1689. It measures
-builder size and local execution time, not answer correctness or provider usage.
+This receipt records measurements from the default-disabled proposal in #1684.
+The maintainer accepted its configuration and response contract in the review on
+#1689. It measures builder size and local execution time, not answer correctness
+or provider usage.
 
 ## Provenance
 
@@ -52,11 +53,10 @@ The one-hit ASCII case added local work: p50 rose from 5.317 µs to 49.540 µs,
 including schema sizing. Larger cases did less rendering because they omitted
 sources. No overhead acceptance threshold has been agreed.
 
-The CJK case admits only 15 of 100 sources at this conservative budget. Clipping
-can remove a correction or qualification. Deterministic tests check that supplied
-corrections remain intact when they fit and that superseded status is labelled;
-answer accuracy under pruning remains unmeasured and blocks a ready-for-review
-claim. Retrieval hits and ranking remain unchanged.
+The CJK case admits only 15 of 100 sources at this conservative budget. These
+measurements predate the reviewed admission policy below, which added stricter
+correction ordering and clipping guards. Answer accuracy under pruning remains
+unmeasured. Retrieval hits and ranking remain unchanged.
 
 Full measurements: [CSV](query-answer-context-draft.csv).
 
@@ -89,12 +89,11 @@ fixtures mark the admitted historical source `superseded: true`; that label
 does not recover an omitted correction. Lines prefixed `C2RETENTION,` report
 the asserted outcomes when run with `--nocapture`.
 
-This is a literal-retention regression, not model answer-quality evaluation.
-The two loss cases deliberately pass only when they expose the known loss;
-they do not establish acceptable pruning quality. Clipping and ranked-prefix
-omission can remove the current fact while leaving historical evidence available
-for synthesis. That unresolved policy risk and maintainer contract agreement
-still block readiness. No prompt-only abstention guarantee is claimed.
+This was a literal-retention regression, not a model answer-quality evaluation.
+The two loss cases passed only when they exposed the known loss; they did not
+establish acceptable pruning quality. The reviewed policy below replaced those
+expectations with current-fact retention checks. No prompt-only abstention
+guarantee is claimed.
 
 ```sh
 cargo test -p ai-memory-mcp --lib answer_budget_labeled_evidence_retention_boundaries -- --nocapture
@@ -124,14 +123,18 @@ allowance instead. After whole-snippet selection, unused space can hold one
 complete trailing sentence or statement from an omitted snippet. Partial
 sentences and unsplittable text are omitted. Unicode punctuation and code
 statement boundaries are supported; this is a syntactic boundary rule, not a
-language parser. Wrapped prose newlines and semicolons do not permit clipping. Ellipses and the receipt make omissions visible.
+language parser. Wrapped prose newlines and semicolons do not permit clipping.
+Ambiguous boundaries inside abbreviations or quoted code are omitted. Ellipses
+and the receipt make omissions visible.
 
 The original sixteen literal-retention probes now require all corrections to
-remain present. Additional tests cover same-topic session chronology, lineage
-over imported timestamps, independent topics/scopes, whole-snippet priority
-and safe refusal when no complete sentence fits. These probes do not measure
-model answer accuracy or prove that arbitrary omitted evidence is irrelevant.
-The earlier timings and 8/16 result above remain historical measurements.
+remain present. Additional tests cover same-topic session chronology, transitive
+lineage over imported timestamps, unusable newer evidence, independent topics
+and scopes, whole-snippet priority, ambiguous abbreviation and quoted-code
+boundaries, and safe refusal when no complete sentence fits. These probes do not
+measure model answer accuracy or prove that arbitrary omitted evidence is
+irrelevant. The earlier timings and 8/16 result above remain historical
+measurements.
 
 A snippet with an incomplete trailing qualification is omitted rather than
 clipped back to an earlier complete sentence; that tail might reverse the rule.

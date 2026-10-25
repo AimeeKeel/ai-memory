@@ -7848,11 +7848,26 @@ fn answer_context_notice(admitted: usize, omitted: usize, clipped: usize) -> Str
     )
 }
 
-fn answer_evidence_newer(a: &QueryHit, b: &QueryHit) -> bool {
+struct AnswerEvidenceOrder<'a> {
+    hits: Vec<&'a QueryHit>,
+    explicit_newer: HashSet<(PageId, PageId)>,
+}
+
+impl AnswerEvidenceOrder<'_> {
+    fn is_newer(&self, a: &QueryHit, b: &QueryHit) -> bool {
+        answer_evidence_newer(a, b, &self.explicit_newer)
+    }
+}
+
+fn answer_evidence_newer(
+    a: &QueryHit,
+    b: &QueryHit,
+    explicit_newer: &HashSet<(PageId, PageId)>,
+) -> bool {
     match (&a.evidence, &b.evidence) {
         (Some(x), Some(y)) if x.workspace_id == y.workspace_id && x.project_id == y.project_id => {
-            x.supersedes == Some(b.hit.id)
-                || (y.supersedes != Some(a.hit.id)
+            explicit_newer.contains(&(a.hit.id, b.hit.id))
+                || (!explicit_newer.contains(&(b.hit.id, a.hit.id))
                     && !x.title.trim().is_empty()
                     && x.title.trim().to_lowercase() == y.title.trim().to_lowercase()
                     && (!a.hit.superseded || b.hit.superseded)
@@ -7862,16 +7877,52 @@ fn answer_evidence_newer(a: &QueryHit, b: &QueryHit) -> bool {
     }
 }
 
-fn answer_evidence_order<'a>(hits: &'a [QueryHit], global: &'a [QueryHit]) -> Vec<&'a QueryHit> {
+fn answer_evidence_order<'a>(
+    hits: &'a [QueryHit],
+    global: &'a [QueryHit],
+) -> AnswerEvidenceOrder<'a> {
     let pending: Vec<_> = hits.iter().chain(global).collect();
-
     let count = pending.len();
+    let mut explicit_edges = vec![vec![false; count]; count];
+    for (new_index, new) in pending.iter().enumerate() {
+        let Some(new_meta) = &new.evidence else {
+            continue;
+        };
+        for (old_index, old) in pending.iter().enumerate() {
+            let Some(old_meta) = &old.evidence else {
+                continue;
+            };
+            explicit_edges[new_index][old_index] = new_meta.workspace_id == old_meta.workspace_id
+                && new_meta.project_id == old_meta.project_id
+                && new_meta.supersedes == Some(old.hit.id);
+        }
+    }
+    // Close explicit lineage before adding timestamp heuristics. Otherwise an
+    // imported timestamp on an ancestor can introduce a cycle across a chain.
+    for via in 0..count {
+        let ancestors = explicit_edges[via].clone();
+        for row in &mut explicit_edges {
+            if row[via] {
+                for (is_newer, &is_ancestor) in row.iter_mut().zip(&ancestors) {
+                    *is_newer |= is_ancestor;
+                }
+            }
+        }
+    }
+    let mut explicit_newer = HashSet::new();
+    for (new, row) in explicit_edges.iter().enumerate() {
+        for (old, &is_newer) in row.iter().enumerate() {
+            if is_newer {
+                explicit_newer.insert((pending[new].hit.id, pending[old].hit.id));
+            }
+        }
+    }
     let edges: Vec<Vec<bool>> = pending
         .iter()
         .map(|new| {
             pending
                 .iter()
-                .map(|old| answer_evidence_newer(new, old))
+                .map(|old| answer_evidence_newer(new, old, &explicit_newer))
                 .collect()
         })
         .collect();
@@ -7894,7 +7945,10 @@ fn answer_evidence_order<'a>(hits: &'a [QueryHit], global: &'a [QueryHit]) -> Ve
         }
         ordered.push(pending[index]);
     }
-    ordered
+    AnswerEvidenceOrder {
+        hits: ordered,
+        explicit_newer,
+    }
 }
 
 fn answer_snippet_prefix(hit: &QueryHit, number: usize) -> String {
@@ -7907,36 +7961,63 @@ fn answer_snippet_prefix(hit: &QueryHit, number: usize) -> String {
     )
 }
 
+fn answer_period_is_abbreviation(snippet: &str, period: usize) -> bool {
+    let token = snippet[..period]
+        .rsplit_once(char::is_whitespace)
+        .map_or(&snippet[..period], |(_, token)| token)
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '.');
+    let normalized = token.to_ascii_lowercase();
+    token.contains('.')
+        || matches!(
+            normalized.as_str(),
+            "mr" | "mrs" | "ms" | "dr" | "prof" | "sr" | "jr" | "vs" | "etc"
+        )
+}
+
 // A complete trailing sentence can preserve a correction lost by prefix clipping.
-// This bounded syntactic rule does not infer meaning from stored prose.
+// The scanner is deliberately conservative around quotations and abbreviations.
 fn answer_sentence_suffix(snippet: &str, available: usize) -> Option<String> {
     let code = ["//", "fn ", "const ", "```"]
         .iter()
         .any(|prefix| snippet.trim_start().starts_with(prefix));
-    let terminator = |i: usize, c: char| {
-        matches!(c, '。' | '！' | '？')
-            || ((matches!(c, '.' | '!' | '?') || (code && matches!(c, ';' | '}')))
-                && snippet[i + c.len_utf8()..]
-                    .chars()
-                    .next()
-                    .is_none_or(char::is_whitespace))
-    };
-    let end = snippet
-        .char_indices()
-        .rev()
-        .find(|(i, c)| terminator(*i, *c))
-        .map(|(i, c)| i + c.len_utf8())?;
+    let mut boundaries = Vec::new();
+    let mut double_quoted = false;
+    let mut single_quoted = false;
+    let mut escaped = false;
+    for (i, c) in snippet.char_indices() {
+        let next = snippet[i + c.len_utf8()..].chars().next();
+        let previous = snippet[..i].chars().next_back();
+        let apostrophe_within_word =
+            previous.is_some_and(char::is_alphanumeric) && next.is_some_and(char::is_alphanumeric);
+        if !escaped && c == '"' && !single_quoted {
+            double_quoted = !double_quoted;
+        } else if c == '\'' && !escaped && !double_quoted && !apostrophe_within_word {
+            single_quoted = !single_quoted;
+        } else if !double_quoted && !single_quoted {
+            let separated = next.is_none_or(char::is_whitespace);
+            let sentence =
+                matches!(c, '。' | '！' | '？') || (matches!(c, '.' | '!' | '?') && separated);
+            let statement = code && matches!(c, ';' | '}') && separated;
+            let next_word = snippet[i + c.len_utf8()..].trim_start().chars().next();
+            let unsafe_period = c == '.'
+                && (answer_period_is_abbreviation(snippet, i)
+                    || next_word.is_some_and(char::is_lowercase));
+            if (sentence || statement) && !unsafe_period {
+                boundaries.push(i + c.len_utf8());
+            }
+        }
+        escaped = c == '\\' && !escaped;
+        if c != '\\' {
+            escaped = false;
+        }
+    }
+    let &end = boundaries.last()?;
     // A partial trailing qualification may reverse an earlier sentence.
     // Omit rather than silently discard that qualification.
     if !snippet[end..].trim().is_empty() {
         return None;
     }
-    let starts = std::iter::once(0).chain(
-        snippet[..end]
-            .char_indices()
-            .filter(|(i, c)| terminator(*i, *c))
-            .map(|(i, c)| i + c.len_utf8()),
-    );
+    let starts = std::iter::once(0).chain(boundaries.into_iter().filter(|&i| i < end));
     for start in starts {
         let text = snippet[start..end].trim();
         let head_marker = if start == 0 { "" } else { "… " };
@@ -7999,17 +8080,18 @@ fn prepare_answer_request<'a>(
     let mut sources = AnswerSources::new();
     let mut admitted = 0;
     let mut clipped = 0;
-    let ordered = answer_evidence_order(hits, global_scope_hits);
+    let order = answer_evidence_order(hits, global_scope_hits);
     let mut omitted: Vec<&QueryHit> = Vec::new();
     let mut unadmitted: Vec<&QueryHit> = Vec::new();
-    for hit in ordered {
+    for hit in order.hits.iter().copied() {
         // An unadmitted correction must not be replaced by its obsolete predecessor.
-        if unadmitted.iter().any(|new| answer_evidence_newer(new, hit)) {
+        if unadmitted.iter().any(|new| order.is_newer(new, hit)) {
             unadmitted.push(hit);
             continue;
         }
         let snippet = ai_memory_store::plain_snippet(&hit.hit.snippet);
         if !snippet.chars().any(char::is_alphanumeric) {
+            unadmitted.push(hit);
             continue;
         }
         let prefix = answer_snippet_prefix(hit, admitted + 1);
@@ -9031,7 +9113,7 @@ mod tests {
         let before = serde_json::to_value(&hits).unwrap();
         let order = answer_evidence_order(&hits, &[]);
         assert_eq!(
-            order.iter().map(|hit| hit.hit.id).collect::<Vec<_>>(),
+            order.hits.iter().map(|hit| hit.hit.id).collect::<Vec<_>>(),
             vec![hits[1].hit.id, hits[0].hit.id]
         );
         assert_eq!(serde_json::to_value(&hits).unwrap(), before);
@@ -9051,7 +9133,10 @@ mod tests {
         // determines the ordering even if an imported timestamp is older.
         replacement.updated_at = 0;
         replacement.supersedes = Some(previous);
-        assert_eq!(answer_evidence_order(&hits, &[])[0].hit.id, hits[1].hit.id);
+        assert_eq!(
+            answer_evidence_order(&hits, &[]).hits[0].hit.id,
+            hits[1].hit.id
+        );
     }
 
     #[test]
@@ -9065,11 +9150,11 @@ mod tests {
         let replacement = hits[1].evidence.as_mut().unwrap();
         replacement.updated_at = 0;
         replacement.supersedes = Some(previous);
-        assert!(answer_evidence_newer(&hits[1], &hits[0]));
-        assert!(!answer_evidence_newer(&hits[0], &hits[1]));
         let order = answer_evidence_order(&hits, &[]);
-        assert_eq!(order[0].hit.id, hits[1].hit.id);
-        assert_eq!(order[1].hit.id, hits[0].hit.id);
+        assert!(order.is_newer(&hits[1], &hits[0]));
+        assert!(!order.is_newer(&hits[0], &hits[1]));
+        assert_eq!(order.hits[0].hit.id, hits[1].hit.id);
+        assert_eq!(order.hits[1].hit.id, hits[0].hit.id);
     }
 
     #[test]
@@ -9089,7 +9174,7 @@ mod tests {
             }
             let order = answer_evidence_order(&hits[..1], &hits[1..]);
             assert_eq!(
-                order.iter().map(|hit| hit.hit.id).collect::<Vec<_>>(),
+                order.hits.iter().map(|hit| hit.hit.id).collect::<Vec<_>>(),
                 vec![hits[0].hit.id, hits[1].hit.id],
                 "{variation}"
             );
@@ -9154,7 +9239,7 @@ mod tests {
         hits[2].evidence.as_mut().unwrap().supersedes = Some(hits[1].hit.id);
         let order = answer_evidence_order(&hits, &[]);
         assert_eq!(
-            order.iter().map(|h| h.hit.id).collect::<Vec<_>>(),
+            order.hits.iter().map(|h| h.hit.id).collect::<Vec<_>>(),
             vec![hits[2].hit.id, hits[1].hit.id, hits[0].hit.id]
         );
         let full = prepare_answer_request(
@@ -9170,6 +9255,84 @@ mod tests {
             prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(limit));
         assert!(plan.request.is_none());
         assert!(plan.sources.is_empty());
+    }
+
+    #[test]
+    fn answer_budget_transitive_supersession_overrides_ancestor_timestamp() {
+        let mut hits = answer_budget_hits(&[
+            "Obsolete choice A.",
+            "Obsolete choice B.",
+            "Obsolete choice C.",
+            &"Current choice D that cannot fit whole. ".repeat(100),
+        ]);
+        answer_test_metadata(&mut hits);
+        for hit in &mut hits[..3] {
+            hit.hit.superseded = true;
+        }
+        hits[0].evidence.as_mut().unwrap().updated_at = 1_000;
+        for index in 1..hits.len() {
+            hits[index].evidence.as_mut().unwrap().supersedes = Some(hits[index - 1].hit.id);
+        }
+        let order = answer_evidence_order(&hits, &[]);
+        assert_eq!(
+            order.hits.iter().map(|hit| hit.hit.id).collect::<Vec<_>>(),
+            vec![
+                hits[3].hit.id,
+                hits[2].hit.id,
+                hits[1].hit.id,
+                hits[0].hit.id
+            ]
+        );
+        assert!(order.is_newer(&hits[3], &hits[0]));
+
+        let old_only = prepare_answer_request(
+            "question",
+            &hits[..1],
+            &[],
+            ReasoningTier::Minimal,
+            Some(100_000),
+        );
+        let context = old_only.context.unwrap();
+        let limit = context.estimated_input_tokens + context.reserved_output_tokens as usize;
+        let plan =
+            prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(limit));
+        assert!(plan.request.is_none());
+        assert!(plan.sources.is_empty());
+    }
+
+    #[test]
+    fn answer_budget_unusable_newer_hit_suppresses_older_decision() {
+        let mut hits = answer_budget_hits(&["Use the obsolete database.", "..."]);
+        answer_test_metadata(&mut hits);
+        let plan = prepare_answer_request(
+            "question",
+            &hits,
+            &[],
+            ReasoningTier::Minimal,
+            Some(100_000),
+        );
+        assert!(plan.request.is_none());
+        assert!(plan.sources.is_empty());
+        let context = plan.context.unwrap();
+        assert_eq!(
+            (context.admitted, context.omitted, context.clipped),
+            (0, 2, 0)
+        );
+    }
+
+    #[test]
+    fn answer_budget_refuses_ambiguous_abbreviation_and_quoted_code_clips() {
+        assert_eq!(
+            answer_sentence_suffix("Do not deploy to e.g. production.", 15),
+            None
+        );
+        assert_eq!(
+            answer_sentence_suffix(
+                "const POLICY = \"Never disable TLS; even for local testing\";",
+                32
+            ),
+            None
+        );
     }
 
     #[test]
