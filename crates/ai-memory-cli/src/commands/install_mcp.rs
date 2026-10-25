@@ -4734,10 +4734,16 @@ mod tests {
         let mut args = args_for(McpClient::Qoder);
         args.auth_token = Some("qoder-token".into());
         let entry = build_json_mcp_entry(&args).unwrap();
+        // The command is this binary (or the bare name inside a container), so
+        // compare against what the builder is contracted to produce rather than
+        // a substring of the test binary's path: under `cargo test` that path is
+        // `ai_memory_cli-<hash>`, which only happens to contain `ai-memory` when
+        // the checkout does, and an out-of-tree `CARGO_TARGET_DIR` then fails
+        // the suite for the fixture's spelling (#1691).
+        let command = entry["command"].as_str().unwrap();
         assert!(
-            entry["command"]
-                .as_str()
-                .is_some_and(|command| command.contains("ai-memory"))
+            is_bridge_command(command),
+            "the Qoder entry must run this binary: {command}"
         );
         let bridge_args = entry["args"].as_array().unwrap();
         assert!(bridge_args.iter().any(|arg| arg == "mcp-bridge"));
