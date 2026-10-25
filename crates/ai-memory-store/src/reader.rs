@@ -6,6 +6,7 @@
 //! soft cap: a connection that comes back when the pool is already full
 //! is simply dropped.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1784,6 +1785,27 @@ pub struct StatusCounts {
     pub evidence_rows: u64,
 }
 
+/// The key two project names share when only their spelling differs
+/// (#1645).
+///
+/// Case folds and decomposes first, so `Renato` and `Renato` written with a
+/// combining accent are one key; then it keeps letters, digits, whitespace and
+/// the separators a project name can legitimately use, which drops the
+/// combining marks themselves and stray punctuation. It is a *finding*
+/// heuristic, deliberately a little broad: a false positive costs a line in a
+/// read-only report, while a split project costs a quarter of someone's memory.
+#[must_use]
+pub fn project_name_fold_key(name: &str) -> String {
+    let decomposed = icu_normalizer::DecomposingNormalizer::new_nfd().normalize(name);
+    decomposed
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || matches!(c, '-' | '_' | '.'))
+        .collect::<String>()
+        .to_lowercase()
+        .trim()
+        .to_string()
+}
+
 /// One likely cross-project contamination finding from
 /// [`ReaderPool::audit_contamination`]. Advisory only — it flags STRUCTURAL
 /// mislandings (an entity whose identity disagrees with the bucket it landed
@@ -1810,6 +1832,17 @@ pub struct ContaminationFinding {
     /// Originating session cwd — the prefix-resolution evidence (CHECK A).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// The other project(s) this name collides with, comma-separated
+    /// (CHECK B). Names only: the fix is a marker or `merge-project`, and the
+    /// reader needs both spellings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_projects: Option<String>,
+    /// Page count of this project (CHECK B).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pages: Option<u64>,
+    /// Session count of this project (CHECK B).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<u64>,
 }
 
 /// Per-check counts for an [`ReaderPool::audit_contamination`] run.
@@ -1817,6 +1850,9 @@ pub struct ContaminationFinding {
 pub struct ContaminationSummary {
     /// Sessions whose cwd prefix-resolves to a different project (CHECK A).
     pub sessions_misbucketed: usize,
+    /// Projects whose names collide with another project's in one workspace
+    /// (CHECK B).
+    pub project_name_collisions: usize,
 }
 
 /// Result of [`ReaderPool::audit_contamination`] — advisory, never mutates.
@@ -12441,10 +12477,13 @@ impl ReaderPool {
         // boundary and safety rules as the runtime resolver.
         type Candidate = (String, WorkspaceId, ProjectId, String, String, String);
         type Prefix = (WorkspaceId, ProjectId, String, String);
-        let (mut findings, candidates, prefixes): (
+        // CHECK B's input: every project in scope with its counts.
+        type ProjectRow = (String, String, Vec<u8>, String, u64, u64);
+        let (mut findings, candidates, prefixes, projects): (
             Vec<ContaminationFinding>,
             Vec<Candidate>,
             Vec<Prefix>,
+            Vec<ProjectRow>,
         ) = self
             .with_conn(move |conn| {
                 // CHECK A findings are built after this closure (they need the
@@ -12562,7 +12601,38 @@ impl ReaderPool {
                     }
                 }
 
-                Ok((findings, candidates, prefixes))
+                // CHECK B: project rows with their page and session counts.
+                // The fold happens outside the connection; the counts ride the
+                // same query so a large store costs two index scans, not 2N.
+                let mut p_sql = String::from(
+                    "SELECT lower(hex(p.id)), wl.name, p.id, p.name, \
+                            (SELECT COUNT(*) FROM pages pg WHERE pg.project_id = p.id \
+                              AND pg.is_latest = 1), \
+                            (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) \
+                     FROM projects p JOIN workspaces wl ON wl.id = p.workspace_id",
+                );
+                if scoped {
+                    p_sql.push_str(" WHERE p.workspace_id = ? AND p.id = ?");
+                }
+                let mut projects: Vec<ProjectRow> = Vec::new();
+                {
+                    let mut stmt = conn.prepare(&p_sql)?;
+                    let rows = stmt.query_map(params_from_iter(scope_params.iter()), |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Vec<u8>>(2)?,
+                            row.get::<_, String>(3)?,
+                            u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                            u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                        ))
+                    })?;
+                    for r in rows {
+                        projects.push(r?);
+                    }
+                }
+
+                Ok((findings, candidates, prefixes, projects))
             })
             .await?;
 
@@ -12588,6 +12658,43 @@ impl ReaderPool {
                     landed_project: landed_proj_name,
                     expected_project: Some(resolved_name.clone()),
                     cwd: Some(cwd),
+                    peer_projects: None,
+                    pages: None,
+                    sessions: None,
+                });
+            }
+        }
+
+        // CHECK B: projects whose names collide once spelling differences
+        // cannot be told apart (case, Unicode composition, separators). Two
+        // rows mean one working copy reached two projects, and no read can say
+        // which one a marker-less directory means (#1645).
+        let mut groups: BTreeMap<String, Vec<&ProjectRow>> = BTreeMap::new();
+        for project in &projects {
+            groups
+                .entry(project_name_fold_key(&project.3))
+                .or_default()
+                .push(project);
+        }
+        for (_, peers) in groups.iter().filter(|(_, peers)| peers.len() > 1) {
+            for project in peers {
+                let others: Vec<&str> = peers
+                    .iter()
+                    .filter(|peer| peer.0 != project.0)
+                    .map(|peer| peer.3.as_str())
+                    .collect();
+                findings.push(ContaminationFinding {
+                    check: "project_name_collision",
+                    confidence: "medium",
+                    entity_kind: "project",
+                    entity_id: project.0.clone(),
+                    landed_workspace: project.1.clone(),
+                    landed_project: project.3.clone(),
+                    expected_project: None,
+                    cwd: None,
+                    peer_projects: Some(others.join(", ")),
+                    pages: Some(project.4),
+                    sessions: Some(project.5),
                 });
             }
         }
@@ -12596,6 +12703,10 @@ impl ReaderPool {
             sessions_misbucketed: findings
                 .iter()
                 .filter(|f| f.check == "session_wrong_bucket")
+                .count(),
+            project_name_collisions: findings
+                .iter()
+                .filter(|f| f.check == "project_name_collision")
                 .count(),
         };
         Ok(ContaminationReport { summary, findings })
