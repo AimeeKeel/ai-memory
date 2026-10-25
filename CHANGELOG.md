@@ -75,6 +75,14 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Changed
 
+- `memory_install_self_routing(compact: true)` and `ai-memory
+  install-instructions --compact` now return a block that is actually compact:
+  2.1 KB instead of 5.9 KB, close to the 7.9 KB full block it was supposed to
+  replace. It keeps the rules a session needs without reading anything else
+  (scope selection for session-aware and static clients, managed-run resume,
+  capture, the untrusted-memory trust rule, and where rules belong) and points
+  at the installed `ai-memory-*` Agent Skills for the rest, which it already
+  required to be installed (#1672).
 - When the native session linked to a workstream is missing from its store,
   an interactive `ai-memory run <harness>` now also names the newest session
   this checkout still holds for that harness and the native selector that
