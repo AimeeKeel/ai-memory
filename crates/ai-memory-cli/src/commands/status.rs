@@ -606,6 +606,44 @@ mod tests {
         }
         assert_eq!(value["recovery"]["journal_pending"], 2);
         assert_eq!(value["counts"]["observations"], 4);
+        assert!(
+            value.get("consolidation").is_none(),
+            "an older server has no queue, and its shape is unchanged: {value}"
+        );
+
+        // A server that reports its queue adds exactly that one key (#1692).
+        let mut with_queue = report_json.clone();
+        with_queue["consolidation"] = serde_json::json!({
+            "pending": 2,
+            "running": 0,
+            "completed": 9,
+            "failed": 1,
+            "failed_sessions": [{
+                "session_id": "0192b6a1-4c2e-7d3f-8a5b-1234567890ab",
+                "attempts": 5,
+                "failed_at_us": 1_700_000_000_000_000_i64,
+                "last_error": "provider error 400: quota exceeded",
+            }],
+        });
+        let queued = json_report(
+            serde_json::from_value(with_queue).unwrap(),
+            SpoolHealth::default(),
+            0,
+            0,
+            0,
+            None,
+            "denylist",
+            &endpoint,
+            crate::local_auth::AuthPosture::NoneLoopback,
+            None,
+        );
+        assert_eq!(queued["consolidation"]["failed"], 1);
+        assert_eq!(queued["consolidation"]["pending"], 2);
+        assert_eq!(
+            queued["consolidation"]["failed_sessions"][0]["session_id"],
+            "0192b6a1-4c2e-7d3f-8a5b-1234567890ab"
+        );
+        assert_eq!(queued["consolidation"]["failed_sessions"][0]["attempts"], 5);
 
         // The server's version stays at the top level; the client's is new.
         assert_eq!(value["version"], "2.6.0");
