@@ -7,7 +7,7 @@
 //!   [`fidelity`] and `evals/README.md`).
 //! - `projection` — the zero-LLM half of that scoring: which fixture facts
 //!   and literal tokens the observation projection lets into the prompt.
-//! - `retrieval` — LongMemEval retrieval benchmark driven end-to-end
+//! - `retrieval` — pinned retrieval benchmarks driven end-to-end
 //!   through a real `ai-memory serve` subprocess: hook-shaped ingestion,
 //!   real search stack, R@k / hit@k per question category (see
 //!   [`retrieval`] and `docs/benchmarks/`).
@@ -39,7 +39,7 @@ enum Command {
     /// Zero-LLM: which facts the consolidation prompt's observation
     /// projection keeps, per fixture.
     Projection(projection::ProjectionArgs),
-    /// LongMemEval retrieval benchmark through the real server stack.
+    /// Pinned retrieval benchmarks through the real server stack.
     Retrieval(Box<retrieval::RetrievalArgs>),
 }
 

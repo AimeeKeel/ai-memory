@@ -13,7 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
-<<<<<<< HEAD
+- Added the bundled `coding-v1` retrieval-evaluation corpus for offline checks
+  of decision rationale, resolved-error causes, correction evidence, and late
+  session details. It reuses the existing scorer and A/B reports; it measures
+  evidence retrieval, not semantic answer correctness or handoff behavior (#1686).
+
 - `[auto_improve.eval] builtin = "structure"` runs the eval gate's structural
   checks in process, so the gate needs no interpreter, no scorer script inside
   the container and no timeout to hit. It checks an H1, an upper-case
@@ -32,18 +36,7 @@ version in [`docs/changelog/`](docs/changelog/):
   key" or a provider `400` while the server was healthy. The probe runs one
   fixed short prompt, reports provider, model, latency and the error class, and
   scrubs the provider's message before printing it (#1639).
-||||||| d39e1165
-=======
-- `ai-memory llm-test --server` probes the server's own configured provider
-  instead of building one from the caller's environment, through a new
-  root-only `POST /admin/llm-test`. The retry hint that `status` and the health
-  panel print now names it: with the server in a container or on another host
-  its keys exist only there, so the old client-side hint failed with "no API
-  key" or a provider `400` while the server was healthy. The probe runs one
-  fixed short prompt, reports provider, model, latency and the error class, and
-  scrubs the provider's message before printing it (#1639).
 
->>>>>>> origin/release/3.3
 - Added `[handoff] deliver_on_session_start = false` to `.ai-memory.toml`. A
   project that sets it no longer gets its handoff, or the continuity notice, at
   session start; the handoff is still created when the session ends and stays
@@ -101,6 +94,20 @@ version in [`docs/changelog/`](docs/changelog/):
   server in a container or on another host) the two drift apart when only one
   side is upgraded, and nothing showed it. When they differ in major version,
   the text report adds a warning to upgrade the older side (#1644).
+
+### Fixed
+
+- `memory_query(answer=true)` now validates model-generated citation paths
+  against the snippets supplied in that request. Unknown paths and paths
+  shared by distinct page versions withhold the answer, while retrieval hits
+  remain available with an `answer_unavailable` note. Repeated citations are
+  deduplicated in model order; the default query path makes no added calls
+  (#1682).
+- `ai-memory write-page` and `restore-page` now print the last eight
+  characters of the page id instead of the first eight. Page ids are UUIDv7,
+  so the first eight are a timestamp prefix that every page written within
+  about a minute shares, and the printed `page_id` was the same for all of
+  them. The web UI already shortens ids this way (#1693).
 
 ## [3.2.3] - 2026-10-24
 
