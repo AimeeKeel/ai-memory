@@ -1703,6 +1703,15 @@ pub struct MoveProjectArgs {
     /// lands under a de-duplicated path).
     #[arg(long, value_parser = ["block", "overwrite", "duplicate"], default_value = "block")]
     pub on_conflict: String,
+    /// Allow the copy+purge merge when the destination workspace already holds
+    /// a project of the same name.
+    ///
+    /// That path is not a move: it copies the source's latest pages and
+    /// deletes the project with its sessions, observations, handoffs and older
+    /// page versions. Without this flag the server refuses and reports the
+    /// counts it would discard (#1713).
+    #[arg(long)]
+    pub allow_lossy_merge: bool,
 }
 
 /// Arguments for `move-session`.

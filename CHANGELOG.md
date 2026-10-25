@@ -122,6 +122,16 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Changed
 
+- `move-project` now refuses the **copy+purge merge** — the path taken when the
+  destination workspace already holds a project of the same name — unless
+  `--allow-lossy-merge` is passed as well as `--confirm`. That path keeps only
+  the source's latest pages and deletes the project with its sessions,
+  observations, handoffs and older page versions, which `--confirm` written for
+  "move this project" did not say; the refusal answers `409` with the counts it
+  would discard. A true-move (fresh destination, everything preserved) is
+  unchanged, and `merge-workspace`, whose command already says merge, keeps
+  working without the extra flag (#1713).
+
 - `memory_install_self_routing(compact: true)` and `ai-memory
   install-instructions --compact` now return a block that is actually compact:
   2.1 KB instead of 5.9 KB, close to the 7.9 KB full block it was supposed to

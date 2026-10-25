@@ -2234,6 +2234,24 @@ pub struct ProjectSummary {
     pub last_updated: Option<String>,
 }
 
+/// Counts of the records a destructive project operation would discard
+/// (#1713).
+///
+/// Used as the preflight a `move-project` refusal shows: the copy+purge merge
+/// keeps the source's latest pages only, so the rest of this is what the
+/// operator is about to delete.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ProjectRecordCounts {
+    /// Unxpired latest pages.
+    pub pages: u64,
+    /// Sessions recorded in the project.
+    pub sessions: u64,
+    /// Observations captured for those sessions.
+    pub observations: u64,
+    /// Handoffs created or accepted in the project.
+    pub handoffs: u64,
+}
+
 /// Pending inbox depth for one recipient project. Returned by
 /// [`ReaderPool::pending_inbox_counts`]; projects with nothing pending have no
 /// row.
@@ -12895,6 +12913,44 @@ impl ReaderPool {
                 });
             }
             Ok(out)
+        })
+        .await
+    }
+
+    /// Count the records of one project, for a destructive operation's
+    /// preflight (#1713).
+    ///
+    /// # Errors
+    /// Propagates any SQL or pool error.
+    pub async fn project_record_counts(
+        &self,
+        workspace_id: WorkspaceId,
+        project_id: ProjectId,
+    ) -> StoreResult<ProjectRecordCounts> {
+        self.with_conn(move |conn| {
+            let count = |sql: &str| -> StoreResult<u64> {
+                let n: i64 = conn.query_row(
+                    sql,
+                    params![workspace_id.as_bytes(), project_id.as_bytes()],
+                    |row| row.get(0),
+                )?;
+                Ok(u64::try_from(n).unwrap_or(0))
+            };
+            Ok(ProjectRecordCounts {
+                pages: count(
+                    "SELECT COUNT(*) FROM pages WHERE workspace_id = ?1 AND project_id = ?2 \
+                     AND is_latest = 1",
+                )?,
+                sessions: count(
+                    "SELECT COUNT(*) FROM sessions WHERE workspace_id = ?1 AND project_id = ?2",
+                )?,
+                observations: count(
+                    "SELECT COUNT(*) FROM observations WHERE workspace_id = ?1 AND project_id = ?2",
+                )?,
+                handoffs: count(
+                    "SELECT COUNT(*) FROM handoffs WHERE workspace_id = ?1 AND project_id = ?2",
+                )?,
+            })
         })
         .await
     }
