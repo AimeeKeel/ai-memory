@@ -1,4 +1,4 @@
-//! LongMemEval retrieval benchmark, end to end through the real stack.
+//! Pinned retrieval benchmarks, end to end through the real stack.
 //!
 //! Per question: replay its haystack sessions through `POST /hook/batch`
 //! (production hook cadence), query with `memory_query` over MCP, and
@@ -54,14 +54,13 @@ mod server;
 
 #[derive(clap::Args, Debug)]
 pub struct RetrievalArgs {
-    /// Dataset file (LongMemEval-S JSON). Defaults to the selected
-    /// variant's path under `evals/datasets/`.
+    /// Dataset file in LongMemEval JSON format. Defaults to the selected
+    /// variant's pinned path.
     #[arg(long)]
     dataset: Option<PathBuf>,
 
-    /// Which pinned LongMemEval-S file to use: `s` (the original, every
-    /// published ai-memory baseline) or `s-cleaned` (the re-release other
-    /// systems publish on).
+    /// Pinned dataset: `s` or `s-cleaned` for LongMemEval, or the bundled
+    /// offline coding-session corpus `coding-v1`.
     #[arg(long, value_enum, default_value_t = Variant::S)]
     dataset_variant: Variant,
 
@@ -75,7 +74,7 @@ pub struct RetrievalArgs {
     server_bin: PathBuf,
 
     /// Score only the first N questions (deterministic prefix) — smoke
-    /// runs and iteration. Omit for the full 500.
+    /// runs and iteration. Omit for the entire selected dataset.
     #[arg(long)]
     sample: Option<usize>,
 
@@ -276,6 +275,7 @@ impl RetrievalArgs {
 enum Variant {
     S,
     SCleaned,
+    CodingV1,
 }
 
 impl Variant {
@@ -283,6 +283,7 @@ impl Variant {
         match self {
             Self::S => &dataset::VARIANT_S,
             Self::SCleaned => &dataset::VARIANT_S_CLEANED,
+            Self::CodingV1 => &dataset::VARIANT_CODING_V1,
         }
     }
 }

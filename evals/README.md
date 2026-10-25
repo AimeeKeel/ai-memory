@@ -302,6 +302,50 @@ Output: a per-slice table on stdout plus
 provenance (commit, dataset sha, hardware, per-question scores).
 When publishing a baseline, copy the markdown into `docs/benchmarks/`.
 
+### Bundled coding-session retrieval corpus
+
+`--dataset-variant coding-v1` selects four synthetic questions in
+`evals/fixtures/retrieval/coding-v1.json`. The file is committed and pinned by
+SHA-256, so a zero-LLM run needs neither a dataset download nor a provider.
+Use the existing server or grep engine and A/B reporting:
+
+```bash
+cargo build -p ai-memory-cli -p ai-memory-eval
+cargo run -p ai-memory-eval -- retrieval --dataset-variant coding-v1 \
+    --server-bin target/debug/ai-memory --candidate --concurrency 1
+cargo run -p ai-memory-eval -- retrieval --dataset-variant coding-v1 --engine grep
+```
+
+| Case | Expected evidence | Incorrect alternative |
+|---|---|---|
+| `coding-architecture` | The write-pool failure and the later actor/read-pool decision | Unrelated implementation sessions |
+| `coding-resolved-error` | The observed database error and the retry-path fix | Unrelated operational sessions |
+| `coding-correction` | The later 45-second timeout correction | The earlier 15-second proposal |
+| `coding-long-session` | The exact checksum header at the end of a 41-turn investigation | The unsuccessful initial header |
+
+Each question has twelve sessions, including distractors, and one or two
+expected evidence sessions. `answer_session_ids` drives the existing scorer;
+`has_answer` marks the relevant turns. `incorrect_session_ids` is corpus
+metadata checked by the fixture test, not an extra scoring rule. It partitions
+the remaining sessions and makes stale alternatives explicit for review.
+The gold answer is available to the optional QA mode, which still needs a
+separately configured provider.
+
+These checks measure evidence retrieval: hit@k, recall@k, recall-all@k,
+context-token estimates, and query latency. Retrieving the correction does not
+prove that an agent follows it, and a stale hit is not a measured answer error.
+The corpus does not exercise `as_of`, typed supersession, handoff claiming,
+actual harness switching, private/shared authorization, or concurrent writes.
+The existing integration suites cover those contracts. Every replay still uses
+the evaluator's Claude Code hook shape and one project per question.
+
+Run identical baseline/candidate settings to check accuracy and context-token
+parity; wall-clock latency can vary. Treat the four cases as regression probes,
+not representative quality estimates or numbers comparable to LongMemEval.
+If a fixture changes, update its pin and record the new corpus version beside
+any reported results. `--fetch` cannot download a missing bundled fixture;
+restore it from the repository instead.
+
 ### The triple: accuracy + latency + context-tokens
 
 Every run — single-config or A/B — reports three things per slice, not
