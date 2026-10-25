@@ -16,8 +16,8 @@
 //! 4. (`#[ignore]`) a live smoke test that wires a real provider when a key is
 //!    in the environment, and skips cleanly when it is not.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use ai_memory_core::{NewPage, PagePath, ProjectId, Tier, WorkspaceId};
 use ai_memory_llm::{ChatRequest, ChatResponse, LlmProvider, LlmResult};
@@ -42,6 +42,7 @@ const PROJ: &str = "scratch";
 struct FakeAnswerLlm {
     calls: Arc<AtomicUsize>,
     response: Value,
+    requests: Arc<Mutex<Vec<(ChatRequest, Value)>>>,
 }
 
 #[async_trait::async_trait]
@@ -65,10 +66,11 @@ impl LlmProvider for FakeAnswerLlm {
 
     async fn complete_structured_raw(
         &self,
-        _request: ChatRequest,
-        _schema: serde_json::Value,
+        request: ChatRequest,
+        schema: serde_json::Value,
     ) -> LlmResult<serde_json::Value> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.requests.lock().unwrap().push((request, schema));
         // Shape must deserialize into the server's answer-synthesis struct.
         Ok(self.response.clone())
     }
@@ -82,6 +84,7 @@ struct Harness {
     /// Call counter shared with the wired fake provider; `None` when no provider
     /// was attached.
     calls: Option<Arc<AtomicUsize>>,
+    requests: Arc<Mutex<Vec<(ChatRequest, Value)>>>,
     _tmp: TempDir,
 }
 
@@ -129,11 +132,13 @@ async fn harness_with_budget(
     let mut server = AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, proj)
         .with_wiki(wiki)
         .with_answer_context_budget(budget);
+    let requests = Arc::new(Mutex::new(Vec::new()));
     let calls = if with_provider {
         let calls = Arc::new(AtomicUsize::new(0));
         let provider: Arc<dyn LlmProvider> = Arc::new(FakeAnswerLlm {
             calls: calls.clone(),
             response,
+            requests: requests.clone(),
         });
         server = server.with_llm(provider);
         Some(calls)
@@ -147,6 +152,7 @@ async fn harness_with_budget(
         ws,
         proj,
         calls,
+        requests,
         _tmp: tmp,
     }
 }
@@ -754,5 +760,55 @@ async fn answer_budget_transport_accepts_admitted_and_rejects_omitted_sources() 
                     .contains("citations")
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn answer_budget_receipt_matches_request_at_provider_boundary() {
+    // Inspect the actual structured call, including its schema. A canned answer
+    // alone cannot detect a handler that accounts one prompt and sends another.
+    for (tier, output) in [
+        ("minimal", 2_000_u64),
+        ("low", 3_000),
+        ("medium", 4_000),
+        ("high", 6_000),
+        ("max", 8_000),
+    ] {
+        let h = harness_with_budget(
+            true,
+            json!({"answer":"PostgreSQL", "citations":["notes/topic.md"]}),
+            Some(16_000),
+        )
+        .await;
+        seed_budget_pages(&h, true).await;
+        let resp = call(
+            &h.router,
+            "memory_query",
+            query_args("needle", json!({"answer":true, "reasoning":tier})),
+        )
+        .await;
+        let requests = h.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "{tier}");
+        let (request, schema) = &requests[0];
+        let actual_input = request.system.as_ref().unwrap().len()
+            + request
+                .messages
+                .iter()
+                .map(|m| m.content.len())
+                .sum::<usize>()
+            + serde_json::to_vec(schema).unwrap().len()
+            + 1_024;
+        assert_eq!(request.max_tokens as u64, output, "{tier}");
+        assert_eq!(resp["answer_context"]["reserved_output_tokens"], output);
+        assert_eq!(
+            resp["answer_context"]["estimated_input_tokens"],
+            actual_input
+        );
+        assert!(actual_input + request.max_tokens as usize <= 16_000);
+        assert_eq!(resp["answer_context"]["admitted"], 2);
+        assert_eq!(resp["answer_context"]["omitted"], 0);
+        assert_eq!(resp["answer_context"]["clipped"], 0);
+        assert_eq!(hit_paths(&resp).len(), 2);
+        assert_eq!(h.calls.as_ref().unwrap().load(Ordering::SeqCst), 1);
     }
 }

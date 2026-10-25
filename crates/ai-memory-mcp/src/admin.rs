@@ -71,7 +71,10 @@ use ai_memory_core::{
     ActiveProject, AgentKind, AutoImproveProposalId, Capability, DEFAULT_PROJECT_NAME,
     DEFAULT_WORKSPACE_NAME, PagePath, ProjectId, SessionId, Tier, WorkspaceId,
 };
-use ai_memory_llm::{Embedder, LlmProvider, ProviderHealth, ProviderHealthSnapshot};
+use ai_memory_llm::{
+    ChatRequest, Embedder, LlmProvider, ProviderHealth, ProviderHealthSnapshot,
+    error_status_and_message,
+};
 use ai_memory_store::{
     ApproveAutoImproveProposalResult, AuditLogFilter, AutoImproveProposalOperation,
     AutoImproveProposalStatus, DecayParams, NewAutoImproveProposal, PagesMode, ReaderPool,
@@ -678,6 +681,7 @@ pub fn admin_router_with_sweep_tuning(
             post(handle_pending_write_reject),
         )
         .route("/admin/status", get(handle_status))
+        .route("/admin/llm-test", post(handle_llm_test))
         .route("/admin/metrics", get(handle_metrics))
         .route("/admin/projects", get(handle_list_projects))
         .route("/admin/project-coordinate", get(handle_project_coordinate))
@@ -1305,6 +1309,61 @@ async fn handle_list_projects(State(state): State<Arc<AdminState>>) -> impl Into
             Json(serde_json::json!({ "projects": projects })),
         ),
         Err(e) => internal_err(e.to_string()),
+    }
+}
+
+/// `POST /admin/llm-test` — probe the server's own configured chat provider.
+///
+/// `ai-memory llm-test` builds a provider from the *caller's* environment,
+/// which is the wrong one when the server runs in a container or on another
+/// host: its keys exist only there, so following the health report's retry
+/// hint failed while the server was healthy (#1639). This runs the provider
+/// the server configured, with a fixed short prompt, and answers with the
+/// same status class and bounded message the health snapshot records — never
+/// the request, the reply text or the provider's full body.
+async fn handle_llm_test(State(state): State<Arc<AdminState>>) -> Response {
+    let Some(llm) = state.llm.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "this server has no LLM provider configured; set one in its config and restart it",
+            })),
+        )
+            .into_response();
+    };
+    let mut request = ChatRequest::user_prompt("ping".to_owned());
+    request.temperature = Some(0.2);
+    let started = std::time::Instant::now();
+    let elapsed = |started: std::time::Instant| started.elapsed().as_millis() as u64;
+    match llm.complete(request).await {
+        Ok(response) => Json(serde_json::json!({
+            "ok": true,
+            "provider": llm.name(),
+            "model": response.model,
+            "latency_ms": elapsed(started),
+            "reply_chars": response.text.chars().count(),
+        }))
+        .into_response(),
+        Err(error) => {
+            let (status, message) = error_status_and_message(&error);
+            // A provider body can quote the key it rejected. The health
+            // snapshot's own copy is bounded but not scrubbed; this one is
+            // printed into an operator's terminal, so it goes through the
+            // privacy strip first.
+            let message = state.wiki.sanitizer().scrub(&message);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "provider": llm.name(),
+                    "model": llm.model(),
+                    "latency_ms": elapsed(started),
+                    "error": message,
+                    "status": status,
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -11315,6 +11374,59 @@ mod tests {
         );
     }
 
+    /// The same promise when the checkpoint is older than the restore: the
+    /// test above passes only when its writes and the restore fall in one
+    /// second, because the restore used to inherit `generated.at` from the
+    /// file it replaces and otherwise stamped the current time.
+    #[tokio::test]
+    async fn restoring_an_old_conformant_page_keeps_its_generated_at() {
+        let (tmp, router) = read_page_test_router();
+        post_write_page(&router, "default", "scratch", "notes/a.md", "first").await;
+        let proj_dir = scratch_project_dir(tmp.path());
+        let page = proj_dir.join("notes/a.md");
+        let written = std::fs::read_to_string(&page).unwrap();
+        let at_line = written
+            .lines()
+            .find(|line| line.trim_start().starts_with("at: "))
+            .unwrap_or_else(|| panic!("no generated.at line in:\n{written}"));
+        let indent = &at_line[..at_line.len() - at_line.trim_start().len()];
+        let checkpointed =
+            written.replacen(at_line, &format!("{indent}at: 2026-09-01T00:00:00Z"), 1);
+        std::fs::write(&page, &checkpointed).unwrap();
+        let rev = post_commit(&router, "checkpoint").await;
+
+        post_write_page(&router, "default", "scratch", "notes/a.md", "second").await;
+        post_commit(&router, "later").await;
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/restore-page")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "workspace": "default",
+                            "project": "scratch",
+                            "path": "notes/a.md",
+                            "rev": rev,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "restore-page failed");
+
+        assert_eq!(
+            std::fs::read_to_string(&page).unwrap(),
+            checkpointed,
+            "the restore re-stamped generated.at instead of keeping the checkpoint's"
+        );
+    }
+
     /// `POST /admin/commit`, returning the oid of the resulting HEAD
     /// checkpoint. A write-page already checkpoints itself, so the commit
     /// here may legitimately have nothing left to stage.
@@ -12295,6 +12407,7 @@ mod tests {
         state.auto_improve_review_config.eval = ai_memory_consolidate::AutoImproveEvalConfig {
             enabled: true,
             command: String::new(),
+            builtin: String::new(),
             timeout_secs: 1,
             targets: vec!["notes".into()],
             min_delta: 0.0,
@@ -14405,6 +14518,7 @@ mod tests {
                 serde_json::json!({"workspace": "default", "project": "scratch"}),
             ),
             ("GET", "/admin/status", serde_json::Value::Null),
+            ("POST", "/admin/llm-test", serde_json::Value::Null),
             ("GET", "/admin/metrics", serde_json::Value::Null),
             (
                 "GET",

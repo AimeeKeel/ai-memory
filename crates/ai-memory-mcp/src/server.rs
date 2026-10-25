@@ -3526,7 +3526,12 @@ impl AiMemoryServer {
                 "salience": salience,
                 "routed_to_lint": kind.routes_to_lint(),
             })),
-            None => Err(McpError::internal_error(
+            // An absent caller-supplied path is the request being wrong, not
+            // the server failing: the write call itself succeeded and found
+            // nothing to attach the signal to. `internal_error` tells a client
+            // to retry, and retrying the same path can never succeed. A
+            // genuine store failure is still `internal_error`, above.
+            None => Err(McpError::invalid_params(
                 format!(
                     "no current page at path {} in the resolved project",
                     path.as_str()
@@ -8710,6 +8715,151 @@ mod tests {
         assert_eq!(plan.context.unwrap().admitted, 2);
     }
 
+    /// A literal-retention oracle, not an answer-quality evaluator. Expected
+    /// losses make the ranked-prefix policy's limits executable and visible.
+    #[test]
+    fn answer_budget_labeled_evidence_retention_boundaries() {
+        const QUERY: &str = "What is the current decision?";
+        let fixtures = [
+            (
+                "en",
+                "Historical deployment decision: use SQLite for durable storage.",
+                "Correction: current deployment uses PostgreSQL.",
+                "current deployment uses PostgreSQL",
+            ),
+            (
+                "pt-BR",
+                "Decisão histórica de implantação: usar SQLite para armazenamento durável.",
+                "Correção: a implantação atual usa PostgreSQL.",
+                "a implantação atual usa PostgreSQL",
+            ),
+            (
+                "CJK",
+                "历史部署决定使用旧数据库保存持久数据，此记录仅描述之前的方案。",
+                "更正：当前部署使用新的数据库方案。",
+                "当前部署使用新的数据库方案",
+            ),
+            (
+                "code",
+                "// Historical deployment configuration: const DATABASE = \"sqlite\";",
+                "// Correction: const DATABASE = \"postgresql\";",
+                "const DATABASE = \"postgresql\";",
+            ),
+        ];
+        println!(
+            "C2RETENTION,fixture,case,baseline_literal_retained,candidate_literal_retained,admitted,omitted,clipped"
+        );
+        for (language, historical, correction, required_literal) in fixtures {
+            let combined = format!("{historical} {correction}");
+            for (case, snippets, retained, expected_counts) in [
+                ("exact-fit", vec![combined.as_str()], true, (1, 0, 0)),
+                ("trimmed-tail", vec![combined.as_str()], false, (1, 0, 1)),
+                (
+                    "historical-first-omitted-correction",
+                    vec![historical, correction],
+                    false,
+                    (1, 1, 0),
+                ),
+                (
+                    "current-first-omitted-history",
+                    vec![correction, historical],
+                    true,
+                    (1, 1, 0),
+                ),
+            ] {
+                let mut hits = answer_budget_hits(&snippets);
+                if case == "historical-first-omitted-correction" {
+                    hits[0].hit.superseded = true;
+                } else if case == "current-first-omitted-history" {
+                    hits[1].hit.superseded = true;
+                }
+                let before = serde_json::to_value(&hits).unwrap();
+                let baseline =
+                    prepare_answer_request(QUERY, &hits, &[], ReasoningTier::Minimal, None);
+                let baseline_retained = baseline.request.as_ref().unwrap().messages[0]
+                    .content
+                    .contains(required_literal);
+                assert!(baseline_retained, "disabled baseline: {language}/{case}");
+                assert!(baseline.context.is_none());
+                let full_first = prepare_answer_request(
+                    QUERY,
+                    &hits[..1],
+                    &[],
+                    ReasoningTier::Minimal,
+                    Some(100_000),
+                );
+                let context = full_first.context.unwrap();
+                let exact =
+                    context.estimated_input_tokens + context.reserved_output_tokens as usize;
+                // In the tail case the allowance ends before the correction;
+                // the ellipsis consumes three bytes of the historical prefix.
+                let limit = if case == "trimmed-tail" {
+                    exact - correction.len() - 1
+                } else {
+                    exact
+                };
+                let plan =
+                    prepare_answer_request(QUERY, &hits, &[], ReasoningTier::Minimal, Some(limit));
+                let context = plan.context.as_ref().unwrap();
+                let request = plan.request.as_ref().unwrap();
+                let body = &request.messages[0].content;
+                assert_eq!(
+                    body.contains(required_literal),
+                    retained,
+                    "{language}/{case}"
+                );
+                assert_eq!(
+                    (context.admitted, context.omitted, context.clipped),
+                    expected_counts,
+                    "{language}/{case}"
+                );
+                // Reconstruct the accounting from the actual request/schema,
+                // independently of the builder's remaining-capacity variable.
+                let schema = serde_json::to_vec(&schemars::schema_for!(AnswerSynthesis)).unwrap();
+                let input = request.system.as_ref().unwrap().len()
+                    + request
+                        .messages
+                        .iter()
+                        .map(|m| m.content.len())
+                        .sum::<usize>()
+                    + schema.len()
+                    + ANSWER_ENVELOPE_RESERVE;
+                assert_eq!(context.estimated_input_tokens, input, "{language}/{case}");
+                assert!(
+                    input + request.max_tokens as usize <= limit,
+                    "{language}/{case}"
+                );
+                assert_eq!(plan.sources.len(), 1, "{language}/{case}");
+                assert_eq!(
+                    plan.sources.get(hits[0].hit.path.as_str()),
+                    Some(&Some(hits[0].hit.id)),
+                    "{language}/{case}"
+                );
+                if hits.len() > 1 {
+                    assert!(!plan.sources.contains_key(hits[1].hit.path.as_str()));
+                    assert!(
+                        validate_answer_citations(
+                            AnswerSynthesis {
+                                answer: "unsupported omitted-source claim".into(),
+                                citations: vec![hits[1].hit.path.to_string()],
+                            },
+                            &plan.sources,
+                        )
+                        .is_none()
+                    );
+                }
+                if case == "historical-first-omitted-correction" {
+                    assert!(body.contains("superseded: true"));
+                }
+                assert_eq!(serde_json::to_value(&hits).unwrap(), before);
+                println!(
+                    "C2RETENTION,{language},{case},{baseline_retained},{retained},{},{},{}",
+                    context.admitted, context.omitted, context.clipped
+                );
+            }
+        }
+    }
+
     #[test]
     fn answer_sources_distinguish_repeated_rows_from_ambiguous_paths() {
         let mut hits: Vec<QueryHit> = rerank_test_hits(3)
@@ -10896,6 +11046,83 @@ mod tests {
                 .iter()
                 .all(|finding| finding["kind"] != "feedback_flagged"),
             "memory_lint must retire feedback tied to a superseded page version"
+        );
+    }
+
+    /// Both directions of the class split: an absent caller-supplied path is
+    /// the caller's mistake (`invalid_params`), a genuine store failure is the
+    /// server's (`internal_error`). Without the second half, "reclassify the
+    /// not-found arm" is indistinguishable from "reclassify everything".
+    #[tokio::test]
+    async fn memory_feedback_reports_an_unknown_target_as_invalid_params() {
+        let (_tmp, store, server, _ws, _proj) = setup_server().await;
+
+        let missing = server
+            .memory_feedback(
+                Parameters(FeedbackArgs {
+                    path: "notes/does-not-exist.md".into(),
+                    signal: FeedbackKind::Stale,
+                    reason: None,
+                    project: None,
+                    workspace: None,
+                }),
+                test_optional_parts(),
+            )
+            .await
+            .expect_err("an absent path has no page to attach a signal to");
+        assert_eq!(
+            missing.code,
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+            "an unknown caller-supplied target is a caller error: {missing}"
+        );
+        assert!(
+            missing
+                .message
+                .contains("no current page at path notes/does-not-exist.md"),
+            "the message must stay intact: {missing}"
+        );
+
+        // Control: the handler did not start refusing live targets.
+        let ok = server
+            .memory_feedback(
+                Parameters(FeedbackArgs {
+                    path: "foo.md".into(),
+                    signal: FeedbackKind::Helpful,
+                    reason: None,
+                    project: None,
+                    workspace: None,
+                }),
+                test_optional_parts(),
+            )
+            .await
+            .expect("a page that is present must still record feedback");
+        assert_eq!(call_tool_json(ok)["recorded"], true);
+
+        // The other direction: with the writer actor shut down, the very same
+        // present path fails for a reason the caller cannot fix, and that must
+        // still be `internal_error`.
+        store.writer.checkpoint_and_close().await;
+        let broken = server
+            .memory_feedback(
+                Parameters(FeedbackArgs {
+                    path: "foo.md".into(),
+                    signal: FeedbackKind::Helpful,
+                    reason: None,
+                    project: None,
+                    workspace: None,
+                }),
+                test_optional_parts(),
+            )
+            .await
+            .expect_err("a closed writer cannot record anything");
+        assert_eq!(
+            broken.code,
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "a genuine store failure stays a server fault: {broken}"
+        );
+        assert!(
+            !broken.message.contains("no current page at path"),
+            "the store failure must not be reported as a missing target: {broken}"
         );
     }
 

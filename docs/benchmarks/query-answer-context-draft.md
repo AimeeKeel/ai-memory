@@ -60,6 +60,46 @@ claim. Retrieval hits and ranking remain unchanged.
 
 Full measurements: [CSV](query-answer-context-draft.csv).
 
+## Offline evidence-retention regression
+
+`answer_budget_labeled_evidence_retention_boundaries` uses labeled English,
+pt-BR, CJK and code fixtures with an exact required current-fact literal. It
+checks the prompt produced by the actual builder, without a provider. Its
+16 cases specify these outcomes for each language:
+
+| Budget/order boundary | Required current-fact literal | Admission |
+|---|---|---|
+| Exact fit, history followed by correction in one snippet | Retained | 1 admitted, 0 omitted, 0 clipped |
+| Same snippet, allowance ends before its correction | Lost | 1 admitted, 0 omitted, 1 clipped |
+| Historical source first; only that source fits | Lost | 1 admitted, 1 omitted, 0 clipped |
+| Current correction first; only that source fits | Retained | 1 admitted, 1 omitted, 0 clipped |
+
+Measured on 2026-10-25 with local source commit
+`94293327faa450b52d13bea584e89865c185ac56`, Rust 1.95.0, on the Linux host
+described above: the disabled-mode baseline retained the required literal in
+16 of 16 cases; the bounded candidate retained it in 8 of 16 cases. These are
+deliberate boundary probes, not representative quality estimates or model-answer
+accuracy scores. One deterministic run records baseline and candidate retention
+separately for every case; it makes no provider calls.
+
+The assertions also reconstruct input accounting from the request and schema,
+check the configured bound, verify admitted/omitted citation identities, and
+compare full retrieval hits before and after admission. Historical-first
+fixtures mark the admitted historical source `superseded: true`; that label
+does not recover an omitted correction. Lines prefixed `C2RETENTION,` report
+the asserted outcomes when run with `--nocapture`.
+
+This is a literal-retention regression, not model answer-quality evaluation.
+The two loss cases deliberately pass only when they expose the known loss;
+they do not establish acceptable pruning quality. Clipping and ranked-prefix
+omission can remove the current fact while leaving historical evidence available
+for synthesis. That unresolved policy risk and maintainer contract agreement
+still block readiness. No prompt-only abstention guarantee is claimed.
+
+```sh
+cargo test -p ai-memory-mcp --lib answer_budget_labeled_evidence_retention_boundaries -- --nocapture
+```
+
 ## Reproduce
 
 ```sh

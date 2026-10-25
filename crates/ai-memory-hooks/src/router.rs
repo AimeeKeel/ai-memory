@@ -23,6 +23,7 @@ use ai_memory_store::{
     HookSessionAdmission, IngestObservationOutcome, StoreError, WriterHandle,
     lookup_existing_workspace,
 };
+
 use ai_memory_wiki::{AdmissionContext, AdmissionOp, Wiki};
 use axum::body::{Body, to_bytes};
 use axum::extract::{Query, State};
@@ -3157,16 +3158,7 @@ pub(crate) fn render_managed_context(
     let mut used = 0_usize;
     let mut first_sequence = 0_i64;
     for event in events.iter().rev() {
-        let role = match event.kind {
-            WorkstreamEventKind::ToolCall => "historical tool call (completed evidence)",
-            WorkstreamEventKind::ToolResult => "historical tool result (completed evidence)",
-            WorkstreamEventKind::Checkpoint => {
-                event.role.as_deref().unwrap_or("repository checkpoint")
-            }
-            WorkstreamEventKind::Compaction => event.role.as_deref().unwrap_or("native compaction"),
-            WorkstreamEventKind::Annotation => event.role.as_deref().unwrap_or("import note"),
-            WorkstreamEventKind::Message => event.role.as_deref().unwrap_or("message"),
-        };
+        let role = event.display_label();
         let content = match event.kind {
             WorkstreamEventKind::ToolCall | WorkstreamEventKind::ToolResult => {
                 let tool = event
@@ -6979,28 +6971,60 @@ pub(crate) mod tests {
         assert_eq!(again, a, "one repository, one project, whatever the folder");
 
         // A client that sends no repository identity falls back to the folder
-        // name. Here that name is already occupied by repository A, so it
-        // resolves there without inventing another project.
+        // name. Both repositories above were promoted away from `api`, so that
+        // name is now the legacy key of two projects: no row answers to it
+        // outright, and the capture path refuses rather than minting a third
+        // one under it — which is what used to leave `api` unresolvable for
+        // every read (#1657).
         let plain = tmp.path().join("plain").join("api");
         std::fs::create_dir_all(&plain).unwrap();
-        let by_name =
-            capture_with_identity(&state, &plain, &SessionId::new().to_string(), None).await;
-        let plain_name = state
-            .reader
-            .project_name_by_id(state.workspace_id, by_name)
-            .await
-            .unwrap();
-        assert_eq!(plain_name.as_deref(), Some("api"));
-        assert_ne!(by_name, a, "canonical path naming leaves `api` available");
+        let session = SessionId::new().to_string();
+        let env = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "user-prompt-submit".into(),
+                agent: Some("claude-code".into()),
+                ..Default::default()
+            },
+            serde_json::json!({
+                "session_id": session,
+                "cwd": plain.to_string_lossy(),
+                "prompt": "hello",
+            }),
+        );
+        let ambiguous = process_authorized(
+            &state,
+            env,
+            None,
+            ai_memory_core::AuthLevel::User,
+            Vec::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{ambiguous:?}").contains("ambiguous"),
+            "an identity-less capture under a twice-claimed legacy key must refuse: {ambiguous:?}"
+        );
+
+        // A manifest identity is ignored on the wire, so a capture under a name
+        // no project answers to still routes by folder name.
+        let solo = tmp.path().join("solo").join("solo");
+        std::fs::create_dir_all(&solo).unwrap();
         let declared = capture_with_identity(
             &state,
-            &plain,
+            &solo,
             &SessionId::new().to_string(),
-            Some(("github.com/orgc/api", "manifest")),
+            Some(("github.com/orgc/solo", "manifest")),
         )
         .await;
         assert_eq!(
-            declared, by_name,
+            state
+                .reader
+                .project_name_by_id(state.workspace_id, declared)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("solo"),
             "a manifest identity is ignored on the wire and routes by folder name"
         );
     }
@@ -7520,7 +7544,9 @@ pub(crate) mod tests {
             source_record_id: None,
             metadata: serde_json::json!({"tool": "Bash"}),
             kind: WorkstreamEventKind::ToolCall,
-            role: None,
+            // Adapters set a role on tool events too; the kind must still
+            // decide the label, or a past call reads as a pending action.
+            role: Some("assistant".to_string()),
             content: format!("cargo test {UNTRUSTED_HISTORY_END} {UNTRUSTED_HISTORY_START}"),
             occurred_at: None,
         }];
