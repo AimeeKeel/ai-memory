@@ -12407,6 +12407,7 @@ mod tests {
         state.auto_improve_review_config.eval = ai_memory_consolidate::AutoImproveEvalConfig {
             enabled: true,
             command: String::new(),
+            builtin: String::new(),
             timeout_secs: 1,
             targets: vec!["notes".into()],
             min_delta: 0.0,

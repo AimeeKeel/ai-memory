@@ -2957,6 +2957,7 @@ fn auto_improve_review_config_from_settings(
         eval: ai_memory_consolidate::AutoImproveEvalConfig {
             enabled: settings.eval.enabled,
             command: settings.eval.command.clone(),
+            builtin: settings.eval.builtin.trim().to_owned(),
             timeout_secs: settings.eval.timeout_secs,
             targets: settings.eval.targets.clone(),
             min_delta: settings.eval.min_delta,
