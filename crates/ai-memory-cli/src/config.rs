@@ -621,6 +621,8 @@ pub struct Config {
     /// LLM consolidation prompt limits. Defaults are sized for a model with a
     /// 200k-token context window.
     pub consolidation: ConsolidationSettings,
+    /// Optional context admission for query answer synthesis.
+    pub query_answer: QueryAnswerSettings,
     /// Auto-improvement reviewer. The scheduler launches background review for
     /// newly completed sessions; manual CLI/admin/MCP runs remain available.
     /// Both approve validated proposals by default unless `require_approval` is
@@ -1450,6 +1452,7 @@ impl Default for Config {
             search: SearchSettings::default(),
             slots: SlotSettings::default(),
             consolidation: ConsolidationSettings::default(),
+            query_answer: QueryAnswerSettings::default(),
             auto_improve: AutoImproveSettings::default(),
             handoff: HandoffSettings::default(),
             profile: ai_memory_core::profile::ProfileSettings::default(),
@@ -1551,6 +1554,16 @@ fn validate_run_profiles(run: &RunSettings) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Optional query-answer context admission. Omitted means unlimited admission.
+/// The limit counts each UTF-8 input byte as one estimated token and reserves
+/// schema, 1024 envelope units and the requested output token allowance.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QueryAnswerSettings {
+    /// Conservative combined context target; not a tokenizer-exact guarantee.
+    pub max_context_tokens: Option<usize>,
 }
 
 /// `[consolidation]` LLM consolidation prompt sizing.
@@ -5134,6 +5147,27 @@ mod tests {
         let cfg = Config::load(Some(&config_path), Some(tmp.path().to_path_buf()))
             .expect("a positive age must load");
         assert_eq!(cfg.decay.ledger_retention().months, 12);
+    }
+
+    #[test]
+    fn query_answer_budget_defaults_off_and_loads_explicit_limits() {
+        assert_eq!(Config::default().query_answer.max_context_tokens, None);
+        for limit in [0usize, 1, 16_000] {
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().join("config.toml");
+            std::fs::write(
+                &path,
+                format!("[query_answer]\nmax_context_tokens = {limit}\n"),
+            )
+            .unwrap();
+            let config = Config::load_with_runtime_env(
+                Some(&path),
+                Some(tmp.path().to_path_buf()),
+                RuntimeEnv::default(),
+            )
+            .unwrap();
+            assert_eq!(config.query_answer.max_context_tokens, Some(limit));
+        }
     }
 
     /// The consolidation budget must be big enough to leave room for

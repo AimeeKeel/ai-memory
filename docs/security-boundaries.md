@@ -215,3 +215,10 @@ classification fails the test. Coverage: **STRONG**.
    defects, so the guards live at integration level (`multi_session.rs`,
    `handoff_ownership.rs`, `agent_messages.rs`, `active_project` pointer tests,
    the MCP permission suites). Put boundary tests there.
+
+Query-answer input admission (when configured) validates citations only against
+admitted source identities. `server::tests::answer_budget_keeps_ranked_evidence_and_excludes_omitted_citations`
+attempts an omitted-source citation and checks a legitimate admitted citation;
+`query_answer::answer_budget_never_calls_provider_without_evidence_and_keeps_hits`
+checks the no-evidence provider boundary. The configuration does not change
+retrieval scope or authorize additional data access.

@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Decoded optional query-answer context admission receipts as `answerContext` (#1684).
+
 - `query` takes the server's `memory_query` page filters: `kind`, `tier`,
   `pathPrefix` and `tag`, in every search mode.
 

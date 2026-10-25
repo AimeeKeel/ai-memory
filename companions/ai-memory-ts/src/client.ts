@@ -754,6 +754,19 @@ export class AiMemoryClient {
         ),
       };
     }
+    const context = o["answer_context"];
+    let decodedContext: QueryResult["answerContext"];
+    if (context !== undefined && context !== null) {
+      const c = record(context, "memory_query.answer_context");
+      decodedContext = {
+        admitted: num(c, "admitted", "memory_query.answer_context"),
+        omitted: num(c, "omitted", "memory_query.answer_context"),
+        clipped: num(c, "clipped", "memory_query.answer_context"),
+        estimatedInputTokens: num(c, "estimated_input_tokens", "memory_query.answer_context"),
+        reservedOutputTokens: num(c, "reserved_output_tokens", "memory_query.answer_context"),
+        maxContextTokens: num(c, "max_context_tokens", "memory_query.answer_context"),
+      };
+    }
     return {
       hits: isGlobal
         ? list(o, "global_hits", "memory_query", queryHit)
@@ -761,6 +774,7 @@ export class AiMemoryClient {
       globalScopeHits: list(o, "global_scope_hits", "memory_query", queryHit),
       rawHits: list(o, "raw_hits", "memory_query", observationHit),
       answer: decodedAnswer,
+      ...(decodedContext === undefined ? {} : { answerContext: decodedContext }),
       answerUnavailable: optStr(o, "answer_unavailable", "memory_query"),
       raw: o,
     };

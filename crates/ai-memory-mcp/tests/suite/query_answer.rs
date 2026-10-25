@@ -109,6 +109,14 @@ async fn harness(with_provider: bool) -> Harness {
 }
 
 async fn harness_with_response(with_provider: bool, response: Value) -> Harness {
+    harness_with_budget(with_provider, response, None).await
+}
+
+async fn harness_with_budget(
+    with_provider: bool,
+    response: Value,
+    budget: Option<usize>,
+) -> Harness {
     let tmp = TempDir::new().expect("tempdir");
     let store = Store::open(tmp.path()).expect("store");
     let ws = store.writer.get_or_create_workspace(WS).await.expect("ws");
@@ -118,8 +126,9 @@ async fn harness_with_response(with_provider: bool, response: Value) -> Harness 
         .await
         .expect("proj");
     let wiki = Wiki::new(tmp.path(), store.writer.clone()).expect("wiki");
-    let mut server =
-        AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, proj).with_wiki(wiki);
+    let mut server = AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, proj)
+        .with_wiki(wiki)
+        .with_answer_context_budget(budget);
     let calls = if with_provider {
         let calls = Arc::new(AtomicUsize::new(0));
         let provider: Arc<dyn LlmProvider> = Arc::new(FakeAnswerLlm {
@@ -628,4 +637,122 @@ async fn answer_live_provider_smoke() {
         !text.trim().is_empty(),
         "live provider answer must be non-empty: {resp}"
     );
+}
+
+#[tokio::test]
+async fn answer_budget_never_calls_provider_without_evidence_and_keeps_hits() {
+    let h = harness_with_budget(
+        true,
+        json!({"answer":"unreachable", "citations":[]}),
+        Some(1),
+    )
+    .await;
+    seed_needle(&h).await;
+    let resp = call(
+        &h.router,
+        "memory_query",
+        query_args("needle", json!({"answer":true})),
+    )
+    .await;
+    assert_eq!(hit_paths(&resp), ["notes/topic.md"]);
+    assert!(resp.get("answer").is_none());
+    assert!(
+        resp["answer_unavailable"]
+            .as_str()
+            .unwrap()
+            .contains("no meaningful evidence")
+    );
+    assert_eq!(resp["answer_context"]["omitted"], 1);
+    assert_eq!(h.calls.unwrap().load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn answer_budget_is_inert_on_default_and_no_provider_queries() {
+    for with_provider in [true, false] {
+        let h = harness_with_budget(
+            with_provider,
+            json!({"answer":"unused", "citations":[]}),
+            Some(1),
+        )
+        .await;
+        seed_needle(&h).await;
+        let default = call(&h.router, "memory_query", query_args("needle", json!({}))).await;
+        assert!(default.get("answer_context").is_none());
+        assert!(default.get("answer_unavailable").is_none());
+        if !with_provider {
+            let answer = call(
+                &h.router,
+                "memory_query",
+                query_args("needle", json!({"answer":true})),
+            )
+            .await;
+            assert!(answer.get("answer_context").is_none());
+            assert!(
+                answer["answer_unavailable"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no LLM")
+            );
+        }
+    }
+}
+
+async fn seed_budget_pages(h: &Harness, second: bool) {
+    let mut first = page(
+        h.ws,
+        h.proj,
+        "notes/topic.md",
+        "needle: current deployment uses PostgreSQL.",
+    );
+    first.pinned = true;
+    h.store.writer.upsert_page(first).await.unwrap();
+    if second {
+        h.store
+            .writer
+            .upsert_page(page(
+                h.ws,
+                h.proj,
+                "notes/omitted.md",
+                "needle: unrelated procedure for the build system.",
+            ))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn answer_budget_transport_accepts_admitted_and_rejects_omitted_sources() {
+    let response = |path: &str| json!({"answer":"PostgreSQL", "citations":[path]});
+    let full = harness_with_budget(true, response("notes/topic.md"), Some(100_000)).await;
+    seed_budget_pages(&full, false).await;
+    let arguments = || query_args("needle", json!({"answer":true, "pin_first":true}));
+    let resp = call(&full.router, "memory_query", arguments()).await;
+    assert_eq!(resp["answer"]["citations"], json!(["notes/topic.md"]));
+    let limit = resp["answer_context"]["estimated_input_tokens"]
+        .as_u64()
+        .unwrap()
+        + resp["answer_context"]["reserved_output_tokens"]
+            .as_u64()
+            .unwrap();
+    for path in ["notes/topic.md", "notes/omitted.md"] {
+        let h = harness_with_budget(true, response(path), Some(limit as usize)).await;
+        seed_budget_pages(&h, true).await;
+        let resp = call(&h.router, "memory_query", arguments()).await;
+        assert_eq!(hit_paths(&resp), ["notes/topic.md", "notes/omitted.md"]);
+        assert_eq!(resp["answer_context"]["admitted"], 1);
+        assert_eq!(resp["answer_context"]["omitted"], 1);
+        assert_eq!(h.calls.as_ref().unwrap().load(Ordering::SeqCst), 1);
+        if path == "notes/topic.md" {
+            assert_eq!(resp["answer"]["citations"], json!([path]));
+            assert!(resp.get("answer_unavailable").is_none());
+        } else {
+            assert!(resp.get("answer").is_none());
+            assert!(
+                resp["answer_unavailable"]
+                    .as_str()
+                    .unwrap()
+                    .contains("citations")
+            );
+        }
+    }
 }

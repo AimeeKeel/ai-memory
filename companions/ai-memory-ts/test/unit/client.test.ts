@@ -243,6 +243,25 @@ describe("query", () => {
     assert.equal(result.globalScopeHits.length, 1);
   });
 
+  it("decodes optional answer context accounting and accepts older responses", async () => {
+    const { server, memory } = setup();
+    server.tools.set("memory_query", () => ({ hits: [payloads.hit] }));
+    const legacy = await memory.query({ query: "retry" });
+    assert.equal(legacy.answerContext, undefined);
+    assert.equal(Object.hasOwn(legacy, "answerContext"), false);
+    server.tools.set("memory_query", () => ({
+      hits: [payloads.hit],
+      answer_unavailable: "no evidence space",
+      answer_context: { admitted: 0, omitted: 1, clipped: 0, estimated_input_tokens: 2000,
+        reserved_output_tokens: 2000, max_context_tokens: 1000 },
+    }));
+    const result = await memory.query({ query: "retry", answer: true });
+    assert.deepEqual(result.answerContext, { admitted: 0, omitted: 1, clipped: 0,
+      estimatedInputTokens: 2000, reservedOutputTokens: 2000, maxContextTokens: 1000 });
+    assert.equal(result.hits.length, 1);
+    assert.equal(result.answerUnavailable, "no evidence space");
+  });
+
   it("raises ProtocolError when a promised field is missing", async () => {
     const { server, memory } = setup();
     server.tools.set("memory_query", () => ({ hits: [{ path: "notes/a.md" }] }));

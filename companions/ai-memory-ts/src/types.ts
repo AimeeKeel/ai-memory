@@ -322,6 +322,22 @@ export interface QueryAnswer {
   readonly citations: readonly string[];
 }
 
+/** Optional server-side context admission receipt for answer synthesis. */
+export interface QueryAnswerContext {
+  /** Number of source snippets admitted to the model input. */
+  readonly admitted: number;
+  /** Number of retrieval snippets not admitted. Retrieval hits stay complete. */
+  readonly omitted: number;
+  /** Number of admitted snippets clipped on a UTF-8 boundary. */
+  readonly clipped: number;
+  /** Conservative byte-based input estimate, including schema and envelope allowance. */
+  readonly estimatedInputTokens: number;
+  /** Output token allowance reserved for the requested reasoning tier. */
+  readonly reservedOutputTokens: number;
+  /** Server-configured combined context target; not a tokenizer guarantee. */
+  readonly maxContextTokens: number;
+}
+
 /** Result of {@link AiMemoryClient.query}. */
 export interface QueryResult {
   /** Page hits. A global query puts its cross-project hits here, with `workspace` and `project` set. */
@@ -334,6 +350,8 @@ export interface QueryResult {
   readonly answer: QueryAnswer | undefined;
   /** Why no answer was produced, when `answer` was set. */
   readonly answerUnavailable: string | undefined;
+  /** Present only when the server applied its optional answer context budget. */
+  readonly answerContext?: QueryAnswerContext;
   /** The server's decoded JSON. */
   readonly raw: Raw;
 }

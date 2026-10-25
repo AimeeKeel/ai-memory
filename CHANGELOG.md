@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added an optional `[query_answer] max_context_tokens` admission budget for
+  answer synthesis. It preserves retrieval hits, reports omitted or clipped
+  evidence, and skips the model when no meaningful evidence fits. The default
+  remains disabled (#1684).
+
 - Added `[handoff] deliver_on_session_start = false` to `.ai-memory.toml`. A
   project that sets it no longer gets its handoff, or the continuity notice, at
   session start; the handoff is still created when the session ends and stays

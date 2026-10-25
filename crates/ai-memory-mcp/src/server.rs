@@ -225,7 +225,9 @@ again, and say which you applied.\n\
   default, and only when the server has an LLM provider) to also synthesize \
   a cited natural-language answer over the top hits, attached as \
   `answer: { text, citations }`; with no provider it returns the hits plus \
-  an `answer_unavailable` note (never an error), and the default path makes \
+  an `answer_unavailable` note (never an error). An operator-configured \
+  answer budget reports omitted/clipped evidence in `answer_context`; all \
+  retrieval hits remain available. The default path makes \
   no LLM call. Pair `answer=true` with `reasoning` \
   (`minimal` (default) / `low` / `medium` / `high` / `max`) to give the \
   synthesis a larger token budget for a harder question; `minimal` and \
@@ -500,6 +502,7 @@ pub struct AiMemoryServer {
     /// hook ingress) — in which case the baked-in default is used.
     active_project: ActiveProject,
     default_limit: usize,
+    answer_max_context_tokens: Option<usize>,
     /// Optional LLM consolidator. When `None`, `memory_consolidate`
     /// returns a "not configured" error.
     consolidator: Option<Arc<Consolidator>>,
@@ -976,6 +979,9 @@ struct MemoryQueryResponse {
     /// never an error.
     #[serde(skip_serializing_if = "Option::is_none")]
     answer_unavailable: Option<String>,
+    /// Present only when optional answer-context admission ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    answer_context: Option<AnswerContext>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     raw_hits: Vec<ai_memory_store::ObservationHit>,
     /// Populated only by a `global=true` query: cross-project hits, each
@@ -2001,6 +2007,7 @@ impl AiMemoryServer {
             project_id,
             active_project: ActiveProject::new(),
             default_limit: 10,
+            answer_max_context_tokens: None,
             consolidator: None,
             llm: None,
             wiki: None,
@@ -2035,6 +2042,16 @@ impl AiMemoryServer {
     #[must_use]
     pub fn activity_clock(&self) -> ai_memory_consolidate::ActivityClock {
         self.activity_clock.clone()
+    }
+
+    /// Set an optional conservative context allowance for answer synthesis.
+    /// Each UTF-8 byte counts as one estimated input token; the allowance also
+    /// reserves the reasoning tier's output limit and 1024 envelope units.
+    /// This is an admission estimate, not a provider tokenizer guarantee.
+    #[must_use]
+    pub fn with_answer_context_budget(mut self, max_context_tokens: Option<usize>) -> Self {
+        self.answer_max_context_tokens = max_context_tokens;
+        self
     }
 
     /// Declare that a trusted proxy may assert end-user identities — mirror of
@@ -2918,6 +2935,7 @@ impl AiMemoryServer {
             return ok_json(&MemoryQueryResponse {
                 hits: Vec::new(),
                 answer: None,
+                answer_context: None,
                 answer_unavailable: args.answer.unwrap_or(false).then(|| {
                     "answer synthesis is not supported for global (cross-project) queries"
                         .to_string()
@@ -2984,6 +3002,7 @@ impl AiMemoryServer {
                     })
                     .collect(),
                 answer: None,
+                answer_context: None,
                 answer_unavailable: args.answer.unwrap_or(false).then(|| {
                     "answer synthesis is not supported for as_of (time-travel) queries".to_string()
                 }),
@@ -3292,16 +3311,21 @@ impl AiMemoryServer {
         // accessed and the response is byte-identical to today. When requested
         // but no provider is configured, we return the hits plus a short
         // `answer_unavailable` note rather than erroring.
+        let mut answer_context = None;
         let (answer, answer_unavailable) = if args.answer.unwrap_or(false) {
             match self.llm.as_ref() {
                 Some(llm) => {
-                    let (request, sources) = build_answer_request(
+                    let plan = prepare_answer_request(
                         &args.query,
                         &hits,
                         &global_scope_hits,
                         args.reasoning.unwrap_or_default(),
+                        self.answer_max_context_tokens,
                     );
-                    match ai_memory_llm::complete_structured_with_operation_id::<AnswerSynthesis>(
+                    answer_context = plan.context;
+                    if let Some(request) = plan.request {
+                        let sources = plan.sources;
+                        match ai_memory_llm::complete_structured_with_operation_id::<AnswerSynthesis>(
                         llm.as_ref(),
                         request,
                         ai_memory_llm::LlmOperationId::for_workload(
@@ -3342,6 +3366,9 @@ impl AiMemoryServer {
                             )
                         }
                     }
+                    } else {
+                        (None, Some("answer context budget leaves no meaningful evidence; returning hits without an answer".into()))
+                    }
                 }
                 None => (
                     None,
@@ -3359,6 +3386,7 @@ impl AiMemoryServer {
             hits,
             answer,
             answer_unavailable,
+            answer_context,
             raw_hits,
             global_hits: Vec::new(),
             global_scope_hits,
@@ -7758,6 +7786,156 @@ fn validate_answer_citations(
     })
 }
 
+/// Accounting uses one UTF-8 byte per estimated input token. The fixed
+/// envelope allowance covers unrepresented provider framing approximately.
+const ANSWER_ENVELOPE_RESERVE: usize = 1_024;
+const MIN_CLIPPED_EVIDENCE_CHARS: usize = 16;
+
+#[derive(Debug, Serialize)]
+struct AnswerContext {
+    admitted: usize,
+    omitted: usize,
+    clipped: usize,
+    estimated_input_tokens: usize,
+    reserved_output_tokens: u32,
+    max_context_tokens: usize,
+}
+
+struct AnswerRequestPlan<'a> {
+    request: Option<ai_memory_llm::ChatRequest>,
+    sources: AnswerSources<'a>,
+    context: Option<AnswerContext>,
+}
+
+fn answer_context_notice(admitted: usize, omitted: usize, clipped: usize) -> String {
+    format!(
+        "\n[Answer context: {admitted} admitted, {omitted} omitted, {clipped} clipped. Retrieval hits are unchanged.]\n"
+    )
+}
+
+fn prepare_answer_request<'a>(
+    query: &str,
+    hits: &'a [QueryHit],
+    global_scope_hits: &'a [QueryHit],
+    reasoning: ReasoningTier,
+    max_context_tokens: Option<usize>,
+) -> AnswerRequestPlan<'a> {
+    let Some(limit) = max_context_tokens else {
+        let (request, sources) = build_answer_request(query, hits, global_scope_hits, reasoning);
+        return AnswerRequestPlan {
+            request: Some(request),
+            sources,
+            context: None,
+        };
+    };
+    let output = reasoning.scale_max_tokens(2_000);
+    let total = hits.len().saturating_add(global_scope_hits.len());
+    let schema_bytes = serde_json::to_vec(&schemars::schema_for!(AnswerSynthesis))
+        .map(|schema| schema.len())
+        .unwrap_or(usize::MAX);
+    let fixed = ANSWER_SYSTEM_PROMPT
+        .len()
+        .saturating_add(schema_bytes)
+        .saturating_add(ANSWER_ENVELOPE_RESERVE);
+    let mut user = format!("## Question\n\n{query}\n\n## Memory page snippets\n\n");
+    // Reserving the largest count widths keeps the final notice inside the
+    // allowance even when clipping leaves fewer sources than anticipated.
+    let notice_reserve = answer_context_notice(total, total, 1).len();
+    let input_limit = limit.saturating_sub(output as usize);
+    let mut remaining = input_limit.saturating_sub(
+        fixed
+            .saturating_add(user.len())
+            .saturating_add(notice_reserve),
+    );
+    // Full retrieval hits remain visible. Even if admission omits one of two
+    // distinct rows sharing a path, a path-only response would be ambiguous.
+    let mut all_sources = AnswerSources::new();
+    for hit in hits.iter().chain(global_scope_hits) {
+        all_sources
+            .entry(hit.hit.path.as_str())
+            .and_modify(|id| {
+                if *id != Some(hit.hit.id) {
+                    *id = None;
+                }
+            })
+            .or_insert(Some(hit.hit.id));
+    }
+    let mut sources = AnswerSources::new();
+    let mut admitted = 0;
+    let mut clipped = 0;
+    for hit in hits.iter().chain(global_scope_hits) {
+        let snippet = ai_memory_store::plain_snippet(&hit.hit.snippet);
+        if !snippet.chars().any(char::is_alphanumeric) {
+            continue;
+        }
+        let prefix = format!(
+            "{}. path: `{}`\n   title: {}\n   superseded: {}\n   snippet: ",
+            admitted + 1,
+            hit.hit.path.as_str(),
+            hit.hit.title,
+            hit.hit.superseded
+        );
+        let available = remaining.saturating_sub(prefix.len().saturating_add(2));
+        let is_clipped = snippet.len() > available;
+        let selected = if is_clipped {
+            ai_memory_core::truncate_utf8_bytes(&snippet, available)
+        } else {
+            snippet
+        };
+        if selected.trim().is_empty()
+            || (is_clipped
+                && selected
+                    .trim_end_matches('…')
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .count()
+                    < MIN_CLIPPED_EVIDENCE_CHARS)
+        {
+            break;
+        }
+        let used = prefix
+            .len()
+            .saturating_add(selected.len())
+            .saturating_add(2);
+        if used > remaining {
+            break;
+        }
+        user.push_str(&prefix);
+        user.push_str(&selected);
+        user.push_str("\n\n");
+        remaining -= used;
+        admitted += 1;
+        clipped += usize::from(is_clipped);
+        sources.insert(hit.hit.path.as_str(), all_sources[hit.hit.path.as_str()]);
+        if is_clipped {
+            break;
+        }
+    }
+    user.push_str(&answer_context_notice(admitted, total - admitted, clipped));
+    let context = AnswerContext {
+        admitted,
+        omitted: total - admitted,
+        clipped,
+        estimated_input_tokens: fixed.saturating_add(user.len()),
+        reserved_output_tokens: output,
+        max_context_tokens: limit,
+    };
+    let request = (admitted > 0).then(|| ai_memory_llm::ChatRequest {
+        system: Some(ANSWER_SYSTEM_PROMPT.into()),
+        messages: vec![ai_memory_llm::ChatMessage {
+            role: ai_memory_llm::Role::User,
+            content: user,
+        }],
+        max_tokens: output,
+        temperature: Some(0.1),
+    });
+    AnswerRequestPlan {
+        request,
+        sources,
+        context: Some(context),
+    }
+}
+
 /// Build the structured-output request for `memory_query(answer=true)`. Inlines
 /// the retrieved hit snippets (project hits first, then any `_global` scope
 /// hits) as numbered, path-labelled context so the model can ground its answer
@@ -8214,6 +8392,309 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    #[ignore = "local builder microbenchmark; no provider calls"]
+    fn answer_budget_measurements() {
+        fn sample(mut run: impl FnMut()) -> (u128, u128) {
+            for _ in 0..20 {
+                run();
+            }
+            let mut samples = Vec::new();
+            for _ in 0..31 {
+                let start = std::time::Instant::now();
+                for _ in 0..20 {
+                    run();
+                }
+                samples.push(start.elapsed().as_nanos() / 20);
+            }
+            samples.sort_unstable();
+            (samples[15], samples[29])
+        }
+        println!(
+            "C2CSV,fixture,hits,mode,request_built,content_bytes,content_scalars,admitted,omitted,clipped,estimated_input_tokens,reserved_output_tokens,p50_ns,p95_ns"
+        );
+        for (name, text) in [
+            (
+                "ascii",
+                "The deployment uses a worker queue with retry policy and bounded concurrency. ",
+            ),
+            (
+                "pt-BR",
+                "A implantação usa uma fila de tarefas com repetição e concorrência limitada. ",
+            ),
+            ("CJK", "部署使用任务队列、重试策略和受限并发。"),
+            (
+                "code",
+                "fn retry(attempt: usize) -> bool { attempt < 3 && queue.len() < 64 }\n",
+            ),
+        ] {
+            let snippet: String = text.repeat(20).chars().take(240).collect();
+            for n in [1, 10, 50, 100] {
+                let mut hits = answer_budget_hits(&vec![snippet.as_str(); n]);
+                for hit in &mut hits {
+                    hit.hit.title = "Deployment decision".into();
+                }
+                for (suffix, query) in [
+                    ("short", "What is the deployment decision?".to_owned()),
+                    ("long", "Which decision? ".repeat(10_000)),
+                ] {
+                    for (mode, budget) in [("disabled", None), ("16000", Some(16_000))] {
+                        let (p50, p95) = sample(|| {
+                            std::hint::black_box(prepare_answer_request(
+                                std::hint::black_box(&query),
+                                &hits,
+                                &[],
+                                ReasoningTier::Minimal,
+                                budget,
+                            ));
+                        });
+                        let plan = prepare_answer_request(
+                            &query,
+                            &hits,
+                            &[],
+                            ReasoningTier::Minimal,
+                            budget,
+                        );
+                        let (bytes, scalars) = plan
+                            .request
+                            .as_ref()
+                            .map(|request| {
+                                let system = request.system.as_deref().unwrap_or_default();
+                                (
+                                    system.len() + request.messages[0].content.len(),
+                                    system.chars().count()
+                                        + request.messages[0].content.chars().count(),
+                                )
+                            })
+                            .unwrap_or_default();
+                        let (admitted, omitted, clipped, estimated) = plan
+                            .context
+                            .as_ref()
+                            .map(|context| {
+                                (
+                                    context.admitted,
+                                    context.omitted,
+                                    context.clipped,
+                                    context.estimated_input_tokens.to_string(),
+                                )
+                            })
+                            .unwrap_or((n, 0, 0, "NA".into()));
+                        println!(
+                            "C2CSV,{name}-{suffix},{n},{mode},{},{bytes},{scalars},{admitted},{omitted},{clipped},{estimated},2000,{p50},{p95}",
+                            plan.request.is_some()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn answer_budget_hits(snippets: &[&str]) -> Vec<QueryHit> {
+        rerank_test_hits(snippets.len())
+            .into_iter()
+            .zip(snippets)
+            .map(|((mut hit, _), snippet)| {
+                hit.snippet = (*snippet).into();
+                QueryHit::from(hit)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn answer_budget_disabled_preserves_request_and_sources() {
+        let hits = answer_budget_hits(&["The current deployment uses the queue."]);
+        let (original, sources) = build_answer_request("question", &hits, &[], ReasoningTier::Max);
+        let plan = prepare_answer_request("question", &hits, &[], ReasoningTier::Max, None);
+        let actual = plan.request.unwrap();
+        assert_eq!(actual.system, original.system);
+        assert_eq!(actual.messages[0].content, original.messages[0].content);
+        assert_eq!(actual.max_tokens, original.max_tokens);
+        assert_eq!(actual.temperature, original.temperature);
+        assert_eq!(plan.sources, sources);
+        assert!(plan.context.is_none());
+    }
+
+    #[test]
+    fn answer_budget_exact_boundary_and_one_byte_over() {
+        for snippet in [
+            "The current architecture uses a bounded queue with retries.",
+            "A implantação usa uma fila com repetição e concorrência limitada.",
+            "当前部署使用任务队列、重试策略和受限并发。当前决定已替代之前的同步调用。",
+            "fn retry(n: usize) -> bool { n < 3 && queue.len() < 64 }",
+        ] {
+            let hits = answer_budget_hits(&[snippet]);
+            let full = prepare_answer_request(
+                "question",
+                &hits,
+                &[],
+                ReasoningTier::Minimal,
+                Some(100_000),
+            );
+            let context = full.context.unwrap();
+            let exact = context.estimated_input_tokens + context.reserved_output_tokens as usize;
+            let plan =
+                prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(exact));
+            assert_eq!(plan.context.as_ref().unwrap().clipped, 0);
+            assert_eq!(plan.context.as_ref().unwrap().admitted, 1);
+            let plan = prepare_answer_request(
+                "question",
+                &hits,
+                &[],
+                ReasoningTier::Minimal,
+                Some(exact - 1),
+            );
+            let context = plan.context.unwrap();
+            assert_eq!(context.clipped, 1, "{snippet}");
+            assert!(
+                context.estimated_input_tokens + context.reserved_output_tokens as usize
+                    <= exact - 1
+            );
+            assert!(plan.request.unwrap().messages[0].content.contains('…'));
+        }
+    }
+
+    #[test]
+    fn answer_budget_refuses_empty_or_meaningless_evidence() {
+        let hits = answer_budget_hits(&["An actual supported architecture decision."]);
+        for query in ["question".to_owned(), "long question ".repeat(10_000)] {
+            let plan = prepare_answer_request(&query, &hits, &[], ReasoningTier::Max, Some(1_000));
+            assert!(plan.request.is_none());
+            assert!(plan.sources.is_empty());
+        }
+        for snippets in [&[][..], &["   "][..], &["---```---```---```---```---"][..]] {
+            let empty = answer_budget_hits(snippets);
+            assert!(
+                prepare_answer_request(
+                    "question",
+                    &empty,
+                    &[],
+                    ReasoningTier::Minimal,
+                    Some(100_000)
+                )
+                .request
+                .is_none()
+            );
+        }
+        let full = prepare_answer_request(
+            "question",
+            &hits,
+            &[],
+            ReasoningTier::Minimal,
+            Some(100_000),
+        );
+        let context = full.context.unwrap();
+        let tiny = context.estimated_input_tokens + context.reserved_output_tokens as usize
+            - hits[0].hit.snippet.len()
+            + 10;
+        assert!(
+            prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(tiny))
+                .request
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn answer_budget_keeps_ranked_evidence_and_excludes_omitted_citations() {
+        let hits = answer_budget_hits(&[
+            "The current decision uses PostgreSQL for persistence.",
+            "An unrelated procedure fills the remaining context.",
+        ]);
+        let first = prepare_answer_request(
+            "question",
+            &hits[..1],
+            &[],
+            ReasoningTier::Minimal,
+            Some(100_000),
+        );
+        let context = first.context.unwrap();
+        let limit = context.estimated_input_tokens + context.reserved_output_tokens as usize;
+        let plan =
+            prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(limit));
+        let context = plan.context.unwrap();
+        assert_eq!(
+            (context.admitted, context.omitted, context.clipped),
+            (1, 1, 0)
+        );
+        assert_eq!(hits.len(), 2);
+        assert!(
+            validate_answer_citations(
+                AnswerSynthesis {
+                    answer: "supported".into(),
+                    citations: vec![hits[0].hit.path.to_string()]
+                },
+                &plan.sources
+            )
+            .is_some()
+        );
+        assert!(
+            validate_answer_citations(
+                AnswerSynthesis {
+                    answer: "unsupported".into(),
+                    citations: vec![hits[1].hit.path.to_string()]
+                },
+                &plan.sources
+            )
+            .is_none()
+        );
+        assert!(
+            plan.request.unwrap().messages[0]
+                .content
+                .contains("1 omitted")
+        );
+    }
+
+    #[test]
+    fn answer_budget_does_not_hide_same_path_ambiguity_by_omission() {
+        let mut hits = answer_budget_hits(&[
+            "Current evidence supplies a real supported answer.",
+            "Other-scope evidence must not be confused with it.",
+        ]);
+        hits[1].hit.path = hits[0].hit.path.clone();
+        let full = prepare_answer_request(
+            "question",
+            &hits[..1],
+            &[],
+            ReasoningTier::Minimal,
+            Some(100_000),
+        );
+        let context = full.context.unwrap();
+        let limit = context.estimated_input_tokens + context.reserved_output_tokens as usize;
+        let plan =
+            prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(limit));
+        assert_eq!(plan.context.unwrap().admitted, 1);
+        assert!(
+            validate_answer_citations(
+                AnswerSynthesis {
+                    answer: "ambiguous".into(),
+                    citations: vec![hits[0].hit.path.to_string()]
+                },
+                &plan.sources
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn answer_budget_labels_superseded_decisions_and_preserves_corrections() {
+        let mut hits = answer_budget_hits(&[
+            "Correction: current deployments use PostgreSQL, replacing SQLite.",
+            "Historical decision: deployments use SQLite.",
+        ]);
+        hits[1].hit.superseded = true;
+        let plan = prepare_answer_request(
+            "current deployment?",
+            &hits,
+            &[],
+            ReasoningTier::Minimal,
+            Some(10_000),
+        );
+        let body = &plan.request.as_ref().unwrap().messages[0].content;
+        assert!(body.contains("superseded: false"));
+        assert!(body.contains("superseded: true"));
+        assert!(body.contains("Correction: current deployments use PostgreSQL, replacing SQLite."));
+        assert_eq!(plan.context.unwrap().admitted, 2);
     }
 
     #[test]
