@@ -80,8 +80,18 @@ version in [`docs/changelog/`](docs/changelog/):
   side is upgraded, and nothing showed it. When they differ in major version,
   the text report adds a warning to upgrade the older side (#1644).
 
+## [3.2.3] - 2026-10-24
+
 ### Changed
 
+- `memory_install_self_routing(compact: true)` and `ai-memory
+  install-instructions --compact` now return a block that is actually compact:
+  2.1 KB instead of 5.9 KB, close to the 7.9 KB full block it was supposed to
+  replace. It keeps the rules a session needs without reading anything else
+  (scope selection for session-aware and static clients, managed-run resume,
+  capture, the untrusted-memory trust rule, and where rules belong) and points
+  at the installed `ai-memory-*` Agent Skills for the rest, which it already
+  required to be installed (#1672).
 - When the native session linked to a workstream is missing from its store,
   an interactive `ai-memory run <harness>` now also names the newest session
   this checkout still holds for that harness and the native selector that
@@ -2795,7 +2805,8 @@ version in [`docs/changelog/`](docs/changelog/):
   session-timeline owner rule. Another operator's observations still rank
   shared session pages.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.2...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.3...HEAD
+[3.2.3]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.3
 [3.2.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.2
 [3.2.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.1
 [3.2.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.0
