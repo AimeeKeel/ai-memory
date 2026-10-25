@@ -13,6 +13,15 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- `ai-memory llm-test --server` probes the server's own configured provider
+  instead of building one from the caller's environment, through a new
+  root-only `POST /admin/llm-test`. The retry hint that `status` and the health
+  panel print now names it: with the server in a container or on another host
+  its keys exist only there, so the old client-side hint failed with "no API
+  key" or a provider `400` while the server was healthy. The probe runs one
+  fixed short prompt, reports provider, model, latency and the error class, and
+  scrubs the provider's message before printing it (#1639).
+
 - Added `[handoff] deliver_on_session_start = false` to `.ai-memory.toml`. A
   project that sets it no longer gets its handoff, or the continuity notice, at
   session start; the handoff is still created when the session ends and stays

@@ -3197,15 +3197,29 @@ pub struct PendingWriteRejectArgs {
 /// Arguments for `llm-test`.
 #[derive(Debug, Args)]
 pub struct LlmTestArgs {
+    /// Probe the server's own configured provider instead of building one
+    /// from this shell's environment.
+    ///
+    /// The retry hint the server and `/web` print uses this form: a server in
+    /// a container or on another host holds the keys, so a client-side
+    /// `llm-test` fails while the server is healthy (#1639). Takes no
+    /// `--provider`/`--model`/`--prompt`/`--base-url`/`--api-key`: the probe
+    /// runs what the server is configured with, and a client cannot point it
+    /// at another URL or hand it a key.
+    #[arg(
+        long,
+        conflicts_with_all = ["provider", "model", "prompt", "structured", "base_url", "api_key"]
+    )]
+    pub server: bool,
     /// Provider to test.
-    #[arg(long, value_enum)]
-    pub provider: LlmProviderChoice,
+    #[arg(long, value_enum, required_unless_present = "server")]
+    pub provider: Option<LlmProviderChoice>,
     /// Model identifier (e.g. `claude-haiku-4-5`, `gpt-5.4-mini`, `llama3.1:8b`).
-    #[arg(long)]
-    pub model: String,
+    #[arg(long, required_unless_present = "server")]
+    pub model: Option<String>,
     /// Prompt to send.
-    #[arg(long)]
-    pub prompt: String,
+    #[arg(long, required_unless_present = "server")]
+    pub prompt: Option<String>,
     /// Request a small JSON-schema response instead of plain text.
     #[arg(long)]
     pub structured: bool,
@@ -5566,9 +5580,13 @@ mod tests {
         let Command::LlmTest(args) = cli.command else {
             panic!("expected llm-test command");
         };
-        assert!(matches!(args.provider, LlmProviderChoice::AnthropicOauth));
-        assert_eq!(args.model, "claude-sonnet-4-6");
-        assert_eq!(args.prompt, "ping");
+        assert!(matches!(
+            args.provider,
+            Some(LlmProviderChoice::AnthropicOauth)
+        ));
+        assert_eq!(args.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(args.prompt.as_deref(), Some("ping"));
+        assert!(!args.server);
     }
 
     #[test]
@@ -5589,8 +5607,41 @@ mod tests {
         let Command::LlmTest(args) = cli.command else {
             panic!("expected llm-test command");
         };
-        assert!(matches!(args.provider, LlmProviderChoice::Codex));
+        assert!(matches!(args.provider, Some(LlmProviderChoice::Codex)));
         assert!(args.structured);
+    }
+
+    /// `--server` runs the probe on the server, so none of the client-side
+    /// provider flags apply and passing one is a parse error rather than a
+    /// silently ignored key (#1639).
+    #[test]
+    fn llm_test_server_takes_no_client_side_provider_flags() {
+        let cli = Cli::try_parse_from(["ai-memory", "llm-test", "--server"]).unwrap();
+        let Command::LlmTest(args) = cli.command else {
+            panic!("expected llm-test command");
+        };
+        assert!(args.server);
+        assert!(args.provider.is_none() && args.model.is_none() && args.prompt.is_none());
+
+        for flag in [
+            "--provider",
+            "--model",
+            "--prompt",
+            "--api-key",
+            "--base-url",
+        ] {
+            let mut argv = vec!["ai-memory", "llm-test", "--server", flag];
+            let value = match flag {
+                "--provider" => "anthropic",
+                "--api-key" => "sk-x",
+                _ => "x",
+            };
+            argv.push(value);
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "`{flag}` must conflict with --server"
+            );
+        }
     }
 
     #[test]
