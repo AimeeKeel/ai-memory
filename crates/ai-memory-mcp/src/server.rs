@@ -8548,8 +8548,7 @@ mod tests {
             let context = plan.context.unwrap();
             assert_eq!(context.clipped, 1, "{snippet}");
             assert!(
-                context.estimated_input_tokens + context.reserved_output_tokens as usize
-                    <= exact - 1
+                context.estimated_input_tokens + (context.reserved_output_tokens as usize) < exact
             );
             assert!(plan.request.unwrap().messages[0].content.contains('…'));
         }
@@ -8563,6 +8562,20 @@ mod tests {
             assert!(plan.request.is_none());
             assert!(plan.sources.is_empty());
         }
+        // With the same sufficient budget and evidence, only the long question
+        // prevents admission: fixed question content is charged before snippets.
+        let short =
+            prepare_answer_request("question", &hits, &[], ReasoningTier::Minimal, Some(10_000));
+        assert!(short.request.is_some());
+        let long = prepare_answer_request(
+            &"long question ".repeat(10_000),
+            &hits,
+            &[],
+            ReasoningTier::Minimal,
+            Some(10_000),
+        );
+        assert!(long.request.is_none());
+        assert!(long.sources.is_empty());
         for snippets in [&[][..], &["   "][..], &["---```---```---```---```---"][..]] {
             let empty = answer_budget_hits(snippets);
             assert!(

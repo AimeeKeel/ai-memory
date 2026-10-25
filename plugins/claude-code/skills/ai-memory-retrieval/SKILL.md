@@ -100,6 +100,12 @@ The tier only matters when the LLM path actually runs: with `answer: false` (or
 no provider configured) it is inert and no LLM call is made. An unknown value is
 rejected by the schema.
 
+If the server configures an answer context budget, `answer_context` reports
+admitted, omitted and clipped snippet counts. All retrieval hits remain
+available. Inspect those hits when the receipt reports omissions or clipping;
+a clipped snippet can lose a qualification. If no evidence fits, the server
+returns `answer_unavailable` without a model call. The default has no budget.
+
 ## Snippets are not full pages
 
 Search returns snippets, not complete bodies. An empty-looking or short snippet does not prove the page is empty because the match can be outside the snippet window. Fetch the full page when the path or title looks relevant, especially for rules, procedures, decisions, and gotchas.
