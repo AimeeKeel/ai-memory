@@ -9,8 +9,8 @@ One Rust binary (`ai-memory-eval`) with three subcommands:
 - **`projection`** — the zero-LLM half of that scoring: which fixture
   facts the observation projection lets into the prompt at all. No
   provider, no network.
-- **`retrieval`** — the LongMemEval retrieval benchmark, driven end to
-  end through a real `ai-memory serve` subprocess. Published baselines
+- **`retrieval`** — LongMemEval and bundled coding-session retrieval checks,
+  driven through a real `ai-memory serve` subprocess. Published baselines
   live in `docs/benchmarks/`.
 
 **This is not part of the shipped binary.** It's a workspace member
@@ -345,6 +345,56 @@ not representative quality estimates or numbers comparable to LongMemEval.
 If a fixture changes, update its pin and record the new corpus version beside
 any reported results. `--fetch` cannot download a missing bundled fixture;
 restore it from the repository instead.
+
+### coding-v1 baseline receipt (2026-10-25 UTC)
+
+Measured with debug evaluator and server binaries from
+`e5ac18d8a819a76990d079ee70329973dd1a2e55`, based on `release/3.3` at
+`e7e17555efb6a95596480249598ad517ff587310`. The change adds evaluation inputs;
+production code is unchanged. Both A/B sides used that same source and
+configuration. The published source commit
+`7e9ea65b15215d50cb1593956fb57e45954d5347` has the same Git tree
+(`5b896e1bbe3550341f25f64529656b919ee16970`) as that locally built commit.
+This is a repeatability baseline, not a measured improvement.
+
+- Corpus SHA-256: `af3382663a3e4e969c8bcfa744b3a794de86cb5932393a88bea16f014193d467`.
+- Server binary SHA-256: `2f501060445ff2bae166117b8143622c9f3bee606a8aa4ce34911ba7c827f84a`.
+- Evaluator binary SHA-256: `498ee8917655b71438111afc30936a97bb213f8c722fb8dd5635efd16dfed29f`.
+- Rust `1.95.0 (59807616e 2026-04-14)`; Linux `6.18.55`, x86_64;
+  AMD EPYC 9V74, eight available threads.
+- Three A/B trials, four questions and 48 sessions per side, concurrency one.
+  Default hook ingestion and per-turn dates; embeddings and reranker off;
+  no LLM provider or QA calls.
+
+| Metric | Baseline | Identical candidate | Delta |
+|---|---:|---:|---:|
+| hit@1 / hit@5 / hit@10 | 1.000 | 1.000 | 0.000 |
+| recall@1 | 0.750 | 0.750 | 0.000 |
+| recall-all@1 | 0.500 | 0.500 | 0.000 |
+| recall@5 / recall@10 | 1.000 | 1.000 | 0.000 |
+| recall-all@5 / recall-all@10 | 1.000 | 1.000 | 0.000 |
+| Estimated context tokens, mean | 225.0 | 225.0 | 0.0 |
+
+Every question's retrieval scores and context estimate matched across all six
+runs. Context tokens use the existing Unicode-character-count divided by four
+estimator over returned titles and snippets; no provider token count was taken.
+
+| Trial | Baseline p50 / p95 (ms) | Candidate p50 / p95 (ms) |
+|---|---:|---:|
+| 1 | 8 / 8 | 7 / 8 |
+| 2 | 10 / 11 | 8 / 25 |
+| 3 | 7 / 9 | 8 / 12 |
+
+Latency covers the MCP round trip. Each percentile uses only four questions,
+and unrelated compilation ran on the same host, so these timings are descriptive
+and do not establish a performance difference. A separate offline grep run on
+the same fixture found the same retrieval scores. Its zero latency/context
+fields are evaluator placeholders and are not server measurements.
+
+Reproduce with the `coding-v1 --candidate --concurrency 1` command above, three
+times. The ignored `coding_corpus_replays_offline_with_identical_ab_results`
+smoke test also asserts full evidence recall@10 and identical A/B scores/context;
+it needs a server binary at `target/release/ai-memory`.
 
 ### The triple: accuracy + latency + context-tokens
 
