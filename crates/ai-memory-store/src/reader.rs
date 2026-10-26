@@ -2242,7 +2242,7 @@ pub struct ProjectSummary {
 /// operator is about to delete.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct ProjectRecordCounts {
-    /// Unxpired latest pages.
+    /// Unexpired latest pages.
     pub pages: u64,
     /// Sessions recorded in the project.
     pub sessions: u64,
@@ -12480,6 +12480,7 @@ impl ReaderPool {
         home: Option<&str>,
     ) -> StoreResult<ContaminationReport> {
         let scoped = scope.is_some();
+        let scoped_project = scope.as_ref().map(|(_, project)| *project);
         let home = home.map(|h| normalize_cwd(h).into_owned());
         let scope_params: Vec<Value> = match &scope {
             Some((ws, proj)) => vec![
@@ -12495,7 +12496,9 @@ impl ReaderPool {
         // boundary and safety rules as the runtime resolver.
         type Candidate = (String, WorkspaceId, ProjectId, String, String, String);
         type Prefix = (WorkspaceId, ProjectId, String, String);
-        // CHECK B's input: every project in scope with its counts.
+        // CHECK B's input: every project in scope's workspace with its counts.
+        // A project-scoped audit still needs its peers to detect a collision;
+        // only the emitted findings are restricted to the requested project.
         type ProjectRow = (String, String, Vec<u8>, String, u64, u64);
         let (mut findings, candidates, prefixes, projects): (
             Vec<ContaminationFinding>,
@@ -12630,12 +12633,17 @@ impl ReaderPool {
                      FROM projects p JOIN workspaces wl ON wl.id = p.workspace_id",
                 );
                 if scoped {
-                    p_sql.push_str(" WHERE p.workspace_id = ? AND p.id = ?");
+                    p_sql.push_str(" WHERE p.workspace_id = ?");
                 }
                 let mut projects: Vec<ProjectRow> = Vec::new();
                 {
                     let mut stmt = conn.prepare(&p_sql)?;
-                    let rows = stmt.query_map(params_from_iter(scope_params.iter()), |row| {
+                    let params = if scoped {
+                        &scope_params[..1]
+                    } else {
+                        &scope_params[..0]
+                    };
+                    let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -12696,6 +12704,11 @@ impl ReaderPool {
         }
         for (_, peers) in groups.iter().filter(|(_, peers)| peers.len() > 1) {
             for project in peers {
+                if scoped_project
+                    .is_some_and(|selected| project.2.as_slice() != selected.as_bytes())
+                {
+                    continue;
+                }
                 let others: Vec<&str> = peers
                     .iter()
                     .filter(|peer| peer.0 != project.0)
