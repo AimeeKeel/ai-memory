@@ -29,6 +29,17 @@ version in [`docs/changelog/`](docs/changelog/):
   removal of non-spacing marks. Findings distinguish case from accent
   differences and include page/session counts plus last activity (#1645).
 
+- Added an offline `ai-memory-eval abstention` benchmark with versioned
+  clean-room answerable, hard-negative, conflicting, partial and
+  missing-channel fixtures; raw lexical/score/density/belief signals;
+  FSR/FAR/coverage threshold sweeps with undefined denominators preserved;
+  optional reuse of pinned LongMemEval `*_abs` cases; and optional structured
+  LLM answerability through the existing QA provider path. Conflicting and
+  partial cases remain separate from binary ground truth, no threshold is
+  presented as calibrated, and production runtime behavior is unchanged.
+  The retrieval evaluator now also parses production's structured
+  `{text,citations}` answer shape instead of a stale string (#1717).
+
 - Added `[briefing] inject_on_subagent_start` to `.ai-memory.toml`. A project
   that sets it hands each `claude-code` subagent the project brief when the
   subagent starts: the same pinned, `_rules/` and `_slots/` brief that
@@ -40,14 +51,6 @@ version in [`docs/changelog/`](docs/changelog/):
   404 and the subagent starts as before. The native hook and the
   `hooks/claude-code` shell and PowerShell scripts deliver it, and every marker
   parser treats the key as a settings boundary. It is off by default (#1715).
-
-- `ai-memory audit-contamination` reports projects whose names differ only by
-  spelling: two rows whose names are equal after case folding, Unicode
-  composition and separators (`renato` / `Renato` / `Rénato`). That is the
-  signature of one working copy reaching the server twice, which no
-  cwd-anchored check can see; each finding names the peer projects and their
-  page and session counts, and suggests a marker or a merge. Read-only, and it
-  never fires for a project that merely shares a prefix (#1645).
 
 - Added an optional `[query_answer] max_context_tokens` admission budget for
   answer synthesis. It preserves retrieval hits, reports omitted or clipped
@@ -149,6 +152,11 @@ version in [`docs/changelog/`](docs/changelog/):
   the text report adds a warning to upgrade the older side (#1644).
 
 ### Changed
+
+- `memory_lint` now reports embedding-band pairs as
+  `similarity_candidate` instead of `contradiction`, and no longer infers that
+  a newer page supersedes an older one from timestamps alone. Explicit
+  `contradicts` edges remain `contradiction` findings (#1685).
 
 - `move-project` now refuses the **copy+purge merge** — the path taken when the
   destination workspace already holds a project of the same name — unless

@@ -440,6 +440,7 @@ mod tests {
     fn qa(correct: bool, latency_ms: u128, tokens: usize) -> QaOutcome {
         QaOutcome {
             correct,
+            answerability: crate::retrieval::qa::Answerability::Answerable,
             answer_source: "synthesized",
             answer: "a".into(),
             grade_reason: "r".into(),
