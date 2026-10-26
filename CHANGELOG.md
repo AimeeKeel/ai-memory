@@ -13,6 +13,17 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added an offline `ai-memory-eval abstention` benchmark with versioned
+  clean-room answerable, hard-negative, conflicting, partial and
+  missing-channel fixtures; raw lexical/score/density/belief signals;
+  FSR/FAR/coverage threshold sweeps with undefined denominators preserved;
+  optional reuse of pinned LongMemEval `*_abs` cases; and optional structured
+  LLM answerability through the existing QA provider path. Conflicting and
+  partial cases remain separate from binary ground truth, no threshold is
+  presented as calibrated, and production runtime behavior is unchanged.
+  The retrieval evaluator now also parses production's structured
+  `{text,citations}` answer shape instead of a stale string (#1717).
+
 - Added `[briefing] inject_on_subagent_start` to `.ai-memory.toml`. A project
   that sets it hands each `claude-code` subagent the project brief when the
   subagent starts: the same pinned, `_rules/` and `_slots/` brief that
