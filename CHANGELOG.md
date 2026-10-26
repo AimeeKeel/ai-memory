@@ -11,6 +11,13 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Changed
+
+- `memory_lint` now reports embedding-band pairs as
+  `similarity_candidate` instead of `contradiction`, and no longer infers that
+  a newer page supersedes an older one from timestamps alone. Explicit
+  `contradicts` edges remain `contradiction` findings (#1685).
+
 ### Added
 
 - Added `[briefing] inject_on_subagent_start` to `.ai-memory.toml`. A project
