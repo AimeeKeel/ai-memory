@@ -529,6 +529,40 @@ async fn a_copy_purge_merge_requires_its_own_acknowledgement() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// The acknowledgement refusal reports the source rows the merge would lose.
+/// If those counts cannot be read, it must fail closed rather than displaying
+/// zeros that could mislead the operator into approving the destructive path.
+#[tokio::test]
+async fn a_copy_purge_preflight_propagates_count_failures() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_state(&tmp).await;
+    seed_page(&store, &state.wiki, "src", "proj", "notes/a.md", "body a").await;
+    seed_page(&store, &state.wiki, "dst", "proj", "notes/b.md", "body b").await;
+    rusqlite::Connection::open(store.db_path())
+        .unwrap()
+        .execute_batch("ALTER TABLE handoffs RENAME TO unavailable_handoffs")
+        .unwrap();
+
+    let resp = post(
+        state,
+        "/admin/move-project",
+        json!({ "from_workspace": "src", "project": "proj", "to_workspace": "dst", "confirm": true }),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_json(resp).await;
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(error.contains("handoffs"), "{body}");
+    assert!(body.get("discarded").is_none(), "{body}");
+    assert!(body.get("strategy").is_none(), "{body}");
+    assert_eq!(
+        store.reader.list_pages("src", "proj").await.unwrap().len(),
+        1,
+        "a failed preflight must leave the source untouched"
+    );
+}
+
 #[tokio::test]
 async fn move_project_merges_into_existing_dest() {
     let tmp = TempDir::new().unwrap();
