@@ -16,10 +16,10 @@ use ai_memory_workstream::{
     AmbiguousNativeSession, ClaudeContinuation, ExportedTranscript, FORWARDED_ENV_NAMES,
     JailChecklistItem, JailHostFacts, JailSupport, JailToggleChoice, JailToggleKind, LaunchMode,
     LaunchPlan, LaunchRoots, ManagedHarness, NativeSessionCandidate, ai_jail_support,
-    allows_native_session_adoption, apply_claude_true_yolo, apply_yolo, build_ai_jail_invocation,
-    build_launch_plan, build_launch_plan_with_env_lookup, claude_continued_session,
-    claude_live_background_attach_id, claude_session_ran_in_background, clean_path,
-    crush_global_config_path, discover_native_session, export_transcript,
+    allows_native_session_adoption, apply_claude_true_yolo, apply_jail_process_isolation,
+    apply_yolo, build_ai_jail_invocation, build_launch_plan, build_launch_plan_with_env_lookup,
+    claude_continued_session, claude_live_background_attach_id, claude_session_ran_in_background,
+    clean_path, crush_global_config_path, discover_native_session, export_transcript,
     has_native_session_selector, inside_ai_jail_here, inspect_repository,
     is_interactive_session_invocation, jail_checklist, jail_toggle, kiro_explicit_session_id,
     kiro_harness_from_source_cursor, kiro_selects_non_default_engine, kiro_selects_v2_engine,
@@ -689,6 +689,11 @@ async fn run_once_with_wiring(
             return Err(augment_connect_error(probe_error, &endpoint, &url)
                 .context("opening managed workstream; the agent was not started"));
         }
+        if jailed && apply_jail_process_isolation(provisional_harness, &mut native_args) {
+            eprintln!(
+                "ai-memory: OpenCode is running --standalone so its server and tool processes stay inside ai-jail"
+            );
+        }
         return run_degraded_offline(
             config,
             DegradedLaunch {
@@ -820,6 +825,11 @@ async fn run_once_with_wiring(
     } else {
         resolved_harness
     };
+    if jailed && apply_jail_process_isolation(harness, &mut native_args) {
+        eprintln!(
+            "ai-memory: OpenCode is running --standalone so its server and tool processes stay inside ai-jail"
+        );
+    }
     if automatic_harness
         && matches!(
             harness,

@@ -134,6 +134,14 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Changed
 
+- Jailed OpenCode managed runs now add the native `--standalone` flag unless
+  the caller explicitly supplies `--standalone` or `--server`. The private
+  server keeps tool processes inside ai-jail's Linux PID namespace, so a
+  detached job cannot survive the jail. Current documentation presents
+  `opencode` as the single auto-detected integration; `opencode2`,
+  `opencode-v2`, and `open-code2` remain supported legacy force-V2 aliases for
+  existing scripts rather than a separately advertised beta harness.
+
 - `move-project` now refuses the **copy+purge merge** — the path taken when the
   destination workspace already holds a project of the same name — unless
   `--allow-lossy-merge` is passed as well as `--confirm`. That path keeps only

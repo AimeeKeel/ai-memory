@@ -811,7 +811,7 @@ above it and never overrides them:
 
 1. The user's current instructions in the conversation.
 2. The repository's rules file: `CLAUDE.md` for Claude Code; for Codex, Devin
-   CLI, OpenCode, OpenCode 2 beta, Cursor, Gemini CLI, Grok Build CLI, Kimi
+   CLI, OpenCode, Cursor, Gemini CLI, Grok Build CLI, Kimi
    Code, Kiro CLI, and Command Code it is usually `AGENTS.md`.
 3. The project's memory: its pages, `_rules/`, decisions and gotchas.
 4. The cross-project profile: the user's usual choices from other projects
