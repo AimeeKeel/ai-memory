@@ -213,6 +213,17 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Fixed `ai-memory doctor` native memory inspection omitting Antigravity CLI
+  and using a Claude-only synthetic probe (#1745).
+- Fixed native hook backlogs repeatedly missing their 250 ms mid-session
+  delivery window on loaded macOS hosts. Threshold catch-up now launches the
+  long-budget detached drainer, and POSIX fallback hooks use macOS's real
+  Application Support data directory for spool and auth state (#1744).
+
+## [3.2.6] - 2026-10-26
+
+### Fixed
+
 - Fixed `ai-memory-wikisync` scope-adoption warnings containing long runs of
   spaces where source formatting had leaked into the displayed sentence.
 - Fixed opt-in cold-page compaction replacing a newer user edit with the stale
@@ -3039,7 +3050,8 @@ version in [`docs/changelog/`](docs/changelog/):
   session-timeline owner rule. Another operator's observations still rank
   shared session pages.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.5...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.6...HEAD
+[3.2.6]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.6
 [3.2.5]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.5
 [3.2.4]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.4
 [3.2.3]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.3
