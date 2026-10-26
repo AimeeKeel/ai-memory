@@ -28,6 +28,18 @@ Methods: `pages.write`, `pages.update`
 | `expected_page_id` | `expectedPageId` |
 | `create_only` | `createOnly` |
 
+## `memory_patch_page`
+
+Methods: `pages.patch`
+
+| Wire name | SDK name |
+|---|---|
+| `workspace` | `workspace` |
+| `project` | `project` |
+| `path` | `path` |
+| `expected_page_id` | `expectedPageId` |
+| `edits` | `edits` |
+
 ## `memory_read_page`
 
 Methods: `pages.read`, `pages.update`

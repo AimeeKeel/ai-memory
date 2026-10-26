@@ -13,6 +13,14 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added `memory_patch_page` for atomic, heading-anchored edits to an existing
+  Markdown page without re-emitting its body or metadata. It requires the
+  page's current `page_id`; section replacement additionally requires the
+  bounded SHA-256 token returned by `memory_read_page`. Missing, duplicate or
+  fenced-code headings, stale tokens, conflicting edits, failed admission and
+  concurrent writes leave the page unchanged. The typed TypeScript client
+  exposes the same contract as `pages.patch` (#1697).
+
 - Added `[briefing] inject_on_subagent_start` to `.ai-memory.toml`. A project
   that sets it hands each `claude-code` subagent the project brief when the
   subagent starts: the same pinned, `_rules/` and `_slots/` brief that
