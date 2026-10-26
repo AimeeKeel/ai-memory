@@ -9,6 +9,9 @@
 # currently produces no barrier node. The error variant contains no path value,
 # so treating the whole return as the barrier preserves the runtime contract.
 # Request-derived values that bypass these functions remain tainted.
+# `repository_root` similarly returns the configured wiki root only after the
+# repository boundary has been initialized and inspected; this prevents Axum's
+# request-source model from tainting the retained application state itself.
 #
 # The CLI test `codeql_model_targets_exist` fails if the modeled function is
 # renamed or moved.
@@ -21,3 +24,4 @@ extensions:
       - ["ai_memory_wiki::confinement::project_path", "ReturnValue", "path-injection", "manual"]
       - ["ai_memory_wiki::confinement::workspace_path", "ReturnValue", "path-injection", "manual"]
       - ["ai_memory_wiki::confinement::tree_path", "ReturnValue", "path-injection", "manual"]
+      - ["ai_memory_wiki::git::repository_root", "ReturnValue", "path-injection", "manual"]

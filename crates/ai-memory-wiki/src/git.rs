@@ -331,6 +331,13 @@ fn validate_cli_fallback_root(root: &Path) -> WikiResult<()> {
     validate_resolved_repository_paths(root, &git_dir, &worktree, &resolved_git_dir, &common_dir)
 }
 
+/// Establish the configured repository root as a validated filesystem
+/// boundary before it is retained by [`GitAdapter`].
+fn repository_root(root: &Path) -> WikiResult<PathBuf> {
+    crate::confinement::initialize_root(root)?;
+    Ok(root.to_path_buf())
+}
+
 fn git_resolved_path(root: &Path, argument: &str) -> WikiResult<PathBuf> {
     let output = git_command(root)
         .args(["rev-parse", "--path-format=absolute", argument])
@@ -409,21 +416,21 @@ impl GitAdapter {
     /// # Errors
     /// Propagates any underlying libgit2 error.
     pub fn open_or_init(root: &Path) -> WikiResult<Self> {
-        crate::confinement::initialize_root(root)?;
+        let root = repository_root(root)?;
         match std::fs::symlink_metadata(root.join(".git")) {
             Ok(_) => debug!(root = %root.display(), "wiki repo already initialised"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 debug!(root = %root.display(), "initialising wiki repo");
-                init_repo(root)?;
+                init_repo(&root)?;
             }
             Err(error) => return Err(error.into()),
         }
-        write_libgit2_config(&crate::confinement::inspect_git_directory(root)?)?;
-        if let Some(repo) = validate_repository_or_allow_cli_fallback(root)? {
-            check_repository_durability(root, &repo);
+        write_libgit2_config(&crate::confinement::inspect_git_directory(&root)?)?;
+        if let Some(repo) = validate_repository_or_allow_cli_fallback(&root)? {
+            check_repository_durability(&root, &repo);
         }
         Ok(Self {
-            root: root.to_path_buf(),
+            root,
             commit_lock: Arc::new(Mutex::new(None)),
             written: Arc::new(Mutex::new(Written::default())),
         })
