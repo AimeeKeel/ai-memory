@@ -662,8 +662,6 @@ impl Wiki {
         pages: Vec<MergeProjectFile>,
         admission_ctx: Option<AdmissionContext>,
     ) -> WikiResult<ai_memory_store::MergeProjectSummary> {
-        self.inspect_project_tree(workspace_id, source_project)?;
-        self.inspect_project_tree(workspace_id, target_project)?;
         let _guard = self.mutation_lock.write().await;
         self.inspect_project_tree(workspace_id, source_project)?;
         self.inspect_project_tree(workspace_id, target_project)?;

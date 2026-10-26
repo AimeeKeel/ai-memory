@@ -3742,18 +3742,20 @@ async fn concurrent_project_merges_have_one_winner_without_losing_the_page() {
         post(state.clone(), "/admin/merge-project", request),
     );
     let statuses = [first.status(), second.status()];
+    let bodies = [body_json(first).await, body_json(second).await];
     assert_eq!(
         statuses
             .iter()
             .filter(|status| **status == StatusCode::OK)
             .count(),
         1,
-        "exactly one concurrent merge may commit: {statuses:?}"
+        "exactly one concurrent merge may commit: {statuses:?} {bodies:?}"
     );
     assert!(
         statuses
             .iter()
-            .any(|status| matches!(*status, StatusCode::NOT_FOUND | StatusCode::CONFLICT))
+            .any(|status| matches!(*status, StatusCode::NOT_FOUND | StatusCode::CONFLICT)),
+        "the losing merge must fail as missing or stale: {statuses:?} {bodies:?}"
     );
     assert_eq!(
         state
