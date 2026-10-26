@@ -2227,10 +2227,10 @@ and launch share the same captured environment plus `--env` / `--env-file`
 overrides. Malformed output, a timeout, or an unsupported future major fails with
 an actionable error instead of guessing.
 
-### OpenCode 2 (beta)
+### OpenCode V2 compatibility
 
 The generated plugin targets the OpenCode 2.0.10+ event API (checked against
-2.0.14). OpenCode 2 runs one long-lived service behind every CLI, so closing a
+2.0.14). OpenCode V2 runs one long-lived service behind every CLI, so closing a
 terminal is not a session end: each completed root turn instead writes a
 deterministic checkpoint (no LLM call) of `sessions/<id>.md` and refreshes the
 session's automatic handoff, keeping one open baton per live session. The next
@@ -2255,9 +2255,10 @@ For a commented `opencode.jsonc`, preview `install-mcp --client opencode2` and
 merge the entry into the existing `mcp.servers` object by hand: the apply path
 writes strict JSON.
 
-The `opencode2`, `opencode-v2`, and `open-code2` spellings remain compatibility
-aliases that force the V2 contracts without probing. They share V1's config dir
-and session store. Prefer the generic `opencode` spelling for normal installs:
+The `opencode2`, `opencode-v2`, and `open-code2` spellings are legacy
+compatibility aliases that force the V2 contracts without probing. They share
+the generic OpenCode config directory and session store and are not a separate
+harness. Prefer the generic `opencode` spelling for normal installs:
 
 ```bash
 # Host-side generic commands auto-detect V2; compatibility aliases force it.
@@ -2282,19 +2283,13 @@ preserved. Repeating either install is
 byte-idempotent, and `uninstall` continues to recognize both historical files
 and MCP locations.
 
-> **Back up `~/.local/share/opencode` before running the beta against
-> your real data.** The two binaries share the one `opencode.db` file and
-> the beta has migrated its schema in place before, leaving stable
-> `opencode` 1.x broken
-> ([upstream #42260](https://github.com/anomalyco/opencode/issues/42260)).
-> ai-memory only ever opens that database read-only; the migration risk
-> comes from launching `opencode2` itself, not from this integration.
->
-> **The beta's background service defaults to port 49374, which is also ai-memory's
-> default.** Running both on defaults crash-loops the opencode2 service
+> **OpenCode V2's shared background service defaults to port 49374, which is
+> also ai-memory's default.** Running both on defaults prevents the OpenCode service
 > (`Managed service port 49374 ... is already in use`). Move one side:
-> `opencode2 service set port <free-port>`, or start ai-memory with
+> `opencode service set port <free-port>`, or start ai-memory with
 > `--bind 127.0.0.1:<free-port>` (and matching `--server-url` installs).
+> `ai-memory run --jail opencode` avoids the shared-service collision by using
+> OpenCode's private `--standalone` server inside the jail.
 
 **On a Gemini/Vertex model, serve Gemini-safe schemas.** OpenCode forwards MCP
 tool schemas to the configured provider verbatim, and Google's `Schema`

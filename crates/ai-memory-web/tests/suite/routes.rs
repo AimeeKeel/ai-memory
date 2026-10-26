@@ -4670,6 +4670,8 @@ async fn send_mail(
             to_project_id: to.1,
             subject: Some(subject.to_owned()),
             body: body.to_owned(),
+            nature: ai_memory_core::MessageNature::Unknown,
+            evidence: None,
         })
         .await
         .unwrap();
@@ -4731,6 +4733,7 @@ async fn web_mailbox_lists_only_this_projects_inbox_and_never_consumes_it() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Add retry to relay"), "{body}");
     assert!(body.contains("from default/sender"), "{body}");
+    assert!(body.contains(">unknown</span>"), "{body}");
     assert!(body.contains("1 pending"), "{body}");
     assert!(
         body.contains("&lt;script&gt;") || body.contains("&#60;script&#62;"),

@@ -27,6 +27,10 @@ ever sees mail addressed **to** it (its inbox) or sent **from** it (its outbox).
   turned into a dead inbox nobody reads.
 - **Bounded.** Each recipient inbox holds at most 256 pending messages; a full
   inbox rejects new sends.
+- **Epistemic provenance.** A sender may classify a claim as `measured`,
+  `reported`, `inferred`, or `unknown` (the compatibility default). A measured
+  claim is refused unless it includes non-empty supporting `evidence`; both
+  fields are scrubbed, bounded, and shown by inbox list and pop responses.
 
 A wiki page is not a message. `memory_message_send` is the only thing that
 lands in a project's inbox; writing a page into the target project with
@@ -54,7 +58,10 @@ Four MCP tools (documented in the installed `ai-memory-messaging` skill):
 
 Kimi calls `memory_message_send` with `to_workspace: "default"`,
 `to_project: "project-b"`, and a self-contained `body`. Compose the body as a
-complete prompt, because the recipient cannot see project A.
+complete prompt, because the recipient cannot see project A. When the body
+states a direct measurement, also send `nature: "measured"` and evidence such
+as the command, query, `file:line`, or source message id. Relayed claims should
+remain `reported` unless the sender measures them again.
 
 **In Claude (project B), receiving:**
 
@@ -110,6 +117,9 @@ whose mailbox it read.
 ```
 ai-memory message send --to-workspace default --to-project project-b \
     --subject "export endpoint" "Add a /v1/export endpoint that streams NDJSON…"
+ai-memory message send --to-workspace default --to-project project-b \
+    --nature measured --evidence "tests/export.rs:42 (100/100 runs)" \
+    "The export retry test passed 100 times."
 # body may also be piped on stdin:
 echo "…request…" | ai-memory message send --to-workspace default --to-project project-b
 

@@ -29,6 +29,19 @@ version in [`docs/changelog/`](docs/changelog/):
   removal of non-spacing marks. Findings distinguish case from accent
   differences and include page/session counts plus last activity (#1645).
 
+- Cross-project messages can carry an optional epistemic `nature` (`unknown`,
+  `measured`, `reported`, or `inferred`) and bounded supporting `evidence`.
+  The server refuses a `measured` send without non-empty evidence; existing
+  messages and callers remain `unknown` by default (#1428).
+
+- Added `memory_patch_page` for atomic, heading-anchored edits to an existing
+  Markdown page without re-emitting its body or metadata. It requires the
+  page's current `page_id`; section replacement additionally requires the
+  bounded SHA-256 token returned by `memory_read_page`. Missing, duplicate or
+  fenced-code headings, stale tokens, conflicting edits, failed admission and
+  concurrent writes leave the page unchanged. The typed TypeScript client
+  exposes the same contract as `pages.patch` (#1697).
+
 - Added an offline `ai-memory-eval abstention` benchmark with versioned
   clean-room answerable, hard-negative, conflicting, partial and
   missing-channel fixtures; raw lexical/score/density/belief signals;

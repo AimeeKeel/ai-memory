@@ -799,6 +799,12 @@ pub struct MessageSendArgs {
     /// Optional one-line subject.
     #[arg(long)]
     pub subject: Option<String>,
+    /// How the sender knows the claim.
+    #[arg(long, default_value = "unknown", value_parser = ["unknown", "measured", "reported", "inferred"])]
+    pub nature: String,
+    /// Supporting evidence. Required by the server for `--nature measured`.
+    #[arg(long)]
+    pub evidence: Option<String>,
     /// Message body. Omitted reads the full body from stdin.
     pub body: Option<String>,
     /// Sender workspace (defaults to the resolved scope).
@@ -4717,7 +4723,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode2_aliases_parse_to_the_beta_variants() {
+    fn opencode2_aliases_parse_to_the_v2_compatibility_variants() {
         for alias in ["opencode2", "opencode-v2", "open-code2"] {
             let cli = Cli::try_parse_from([
                 "ai-memory",

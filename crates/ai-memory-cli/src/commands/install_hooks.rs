@@ -3989,7 +3989,7 @@ pub(crate) fn opencode2_plugin_path() -> anyhow::Result<std::path::PathBuf> {
         .join("ai-memory-opencode2.ts"))
 }
 
-/// Generate an OpenCode 2.0 beta plugin at
+/// Generate an OpenCode V2 plugin at
 /// `~/.config/opencode/plugins/ai-memory-opencode2.ts`.
 ///
 /// The V2 plugin API (`{ id, setup }` with `ctx.session.hook` /
@@ -4044,11 +4044,9 @@ fn render_opencode2_plugin(
     capture_mode: &str,
     capture_assistant: bool,
 ) -> Result<()> {
-    println!(
-        "// OpenCode 2.0 beta plugin — write to ~/.config/opencode/plugins/ai-memory-opencode2.ts"
-    );
+    println!("// OpenCode V2 plugin — write to ~/.config/opencode/plugins/ai-memory-opencode2.ts");
     println!("// Or re-run with `--apply` to install it automatically.");
-    println!("// Restart OpenCode 2 after changing plugins; config is loaded at startup.");
+    println!("// Restart OpenCode V2 after changing plugins; config is loaded at startup.");
     println!();
     println!(
         "{}",

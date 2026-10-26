@@ -64,6 +64,9 @@ import type {
   Page,
   PageChange,
   PageMetadata,
+  PagePatchEdit,
+  PatchPageArgs,
+  PatchPageResult,
   PopMessageArgs,
   ProjectQueryArgs,
   PopMessageResult,
@@ -219,6 +222,66 @@ export class PagesNamespace {
   }
 
   /**
+   * Atomically patch an existing page by Markdown heading while preserving
+   * all frontmatter. Every edit is resolved against the same base version.
+   */
+  async patch(args: PatchPageArgs, options?: CallOptions): Promise<PatchPageResult> {
+    const where = "pages.patch";
+    const a = argsObject(args, where);
+    const scope = this.#core.scope(a.scope, where);
+    requireText(a.path, "path", where);
+    requireText(a.expectedPageId, "expectedPageId", where);
+    if (!Array.isArray(a.edits) || a.edits.length === 0) {
+      throw new ArgumentError(`${where}: edits must be a non-empty array`);
+    }
+    const edits = a.edits.map((edit: PagePatchEdit, index: number) => {
+      const item = argsObject(edit, `${where}.edits[${index}]`);
+      requireText(item.op, "op", `${where}.edits[${index}]`);
+      if (typeof item.content !== "string") {
+        throw new ArgumentError(`${where}.edits[${index}]: content must be a string`);
+      }
+      if (item.op === "replace_section") {
+        requireText(item.anchor, "anchor", `${where}.edits[${index}]`);
+        requireText(item.sectionSha256, "sectionSha256", `${where}.edits[${index}]`);
+      } else if (item.op === "add_section") {
+        requireText(item.anchor, "anchor", `${where}.edits[${index}]`);
+      } else if (item.op === "append") {
+        if (item.target === "section") requireText(item.anchor, "anchor", `${where}.edits[${index}]`);
+        else if (item.target !== "end_of_page") {
+          throw new ArgumentError(`${where}.edits[${index}]: unknown append target`);
+        }
+      } else {
+        throw new ArgumentError(`${where}.edits[${index}]: unknown operation`);
+      }
+      return wire({
+        op: item.op,
+        target: "target" in item ? item.target : undefined,
+        anchor: item.anchor,
+        section_sha256: "sectionSha256" in item ? item.sectionSha256 : undefined,
+        content: item.content,
+      });
+    });
+    const decoded = await this.#core.invoke(
+      "memory_patch_page",
+      wire({
+        ...scopeWire(scope),
+        path: a.path,
+        expected_page_id: a.expectedPageId,
+        edits,
+      }),
+      true,
+      options,
+    );
+    const o = record(decoded, "memory_patch_page");
+    return {
+      pageId: str(o, "page_id", "memory_patch_page"),
+      path: str(o, "path", "memory_patch_page"),
+      checkpoint: nullableStr(o, "checkpoint", "memory_patch_page"),
+      raw: o,
+    };
+  }
+
+  /**
    * Read one page by exact `path`, or the top hit of a `query`.
    *
    * Calls `memory_read_page`. Reads never create a scope: a missing
@@ -250,6 +313,14 @@ export class PagesNamespace {
     );
     const o = record(decoded, "memory_read_page");
     const frontmatter = o["frontmatter"];
+    const sections = requiredList(o, "sections", "memory_read_page", (value, where) => {
+      const section = record(value, where);
+      return {
+        anchor: str(section, "anchor", where),
+        level: num(section, "level", where),
+        sha256: str(section, "sha256", where),
+      };
+    });
     return {
       pageId: str(o, "page_id", "memory_read_page"),
       path: str(o, "path", "memory_read_page"),
@@ -259,6 +330,8 @@ export class PagesNamespace {
         frontmatter !== null && typeof frontmatter === "object" && !Array.isArray(frontmatter)
           ? (frontmatter as Raw)
           : {},
+      sections,
+      sectionsTruncated: bool(o, "sections_truncated", "memory_read_page"),
       related: Array.isArray(o["related"])
         ? list(o, "related", "memory_read_page", relatedPage)
         : undefined,
@@ -510,6 +583,8 @@ export class MessagesNamespace {
         from_project: from.project,
         body: a.body,
         subject: a.subject,
+        nature: a.nature,
+        evidence: a.evidence,
       }),
       true,
       options,

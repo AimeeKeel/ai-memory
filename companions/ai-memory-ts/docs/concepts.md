@@ -132,6 +132,12 @@ written into another project is not a message and nobody is notified about it.
 
 ```ts
 await memory.messages.send({ to: { workspace: "acme", project: "infra" }, body: "Please rotate the queue credentials." });
+await memory.messages.send({
+  to: { workspace: "acme", project: "infra" },
+  body: "The retry test passed 100 times.",
+  nature: "measured",
+  evidence: "tests/retry.test.ts (100/100 runs)",
+});
 const { message } = await memory.messages.pop({ scope: { workspace: "acme", project: "infra" } });
 ```
 

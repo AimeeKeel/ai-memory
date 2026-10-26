@@ -136,8 +136,7 @@ caveats is in [`docs/support-matrix.md`](docs/support-matrix.md).
 | Codex | Supported |
 | Command Code | Supported |
 | Devin CLI | Supported |
-| OpenCode (V1/V2 auto-detected) | Supported |
-| OpenCode V2 compatibility aliases (`opencode2`, `opencode-v2`, `open-code2`) | Supported |
+| OpenCode (V1/V2 auto-detected; legacy force-V2 aliases retained) | Supported |
 | Cursor | Supported |
 | Gemini CLI | Supported |
 | Oh My Pi / OMP | Supported |
@@ -436,9 +435,10 @@ Wiring another agent is the same two commands with a different name:
 matrix. OpenCode is version-detected by host-side commands; when generating its
 artifacts inside a container, use `setup-agent --agent opencode
 --opencode-dialect v1|v2 --to /tmp/unused` because the container cannot inspect
-the host executable. The `opencode2` aliases remain force-V2 compatibility
-spellings. The full per-agent guide, including Windows and remote servers, is
-[`docs/install.md`](docs/install.md).
+the host executable. The legacy `opencode2`, `opencode-v2`, and `open-code2`
+aliases remain force-V2 compatibility spellings for old scripts; use
+`opencode` for new commands. The full per-agent guide, including Windows and
+remote servers, is [`docs/install.md`](docs/install.md).
 
 Two agents in the same project at once, or teammates on one server, work
 out of the box: the "current project" pointer is isolated per caller
