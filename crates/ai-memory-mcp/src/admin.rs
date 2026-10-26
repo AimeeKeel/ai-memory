@@ -6927,7 +6927,7 @@ async fn move_project_core(
             .reader
             .project_record_counts(src_ws, src_proj)
             .await
-            .unwrap_or_default();
+            .map_err(|error| internal_err(error.to_string()))?;
         return Err((
             StatusCode::CONFLICT,
             Json(serde_json::json!({
