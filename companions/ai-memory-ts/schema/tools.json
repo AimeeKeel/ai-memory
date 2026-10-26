@@ -548,6 +548,39 @@
       "to_workspace"
     ]
   },
+  "memory_patch_page": {
+    "properties": {
+      "edits": {
+        "items": {
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "expected_page_id": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "project": {
+        "type": [
+          "null",
+          "string"
+        ]
+      },
+      "workspace": {
+        "type": [
+          "null",
+          "string"
+        ]
+      }
+    },
+    "required": [
+      "edits",
+      "expected_page_id",
+      "path"
+    ]
+  },
   "memory_query": {
     "properties": {
       "answer": {

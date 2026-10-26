@@ -94,6 +94,40 @@ describe("pages", () => {
     );
   });
 
+  it("patch sends typed anchored edits and decodes the new version", async () => {
+    const { server, memory } = setup();
+    server.tools.set("memory_patch_page", () => payloads.patch);
+    const result = await memory.pages.patch({
+      path: "notes/retries.md",
+      expectedPageId: payloads.PAGE_ID,
+      edits: [
+        { op: "append", target: "section", anchor: "Log", content: "next" },
+        {
+          op: "replace_section",
+          anchor: "Open",
+          sectionSha256: "a".repeat(64),
+          content: "none",
+        },
+      ],
+    });
+    assert.deepEqual(server.lastArgs(), {
+      workspace: "demo",
+      project: "app",
+      path: "notes/retries.md",
+      expected_page_id: payloads.PAGE_ID,
+      edits: [
+        { op: "append", target: "section", anchor: "Log", content: "next" },
+        {
+          op: "replace_section",
+          anchor: "Open",
+          section_sha256: "a".repeat(64),
+          content: "none",
+        },
+      ],
+    });
+    assert.equal(result.pageId, payloads.NEXT_PAGE_ID);
+  });
+
   it("read by path or query, never both, and decodes the page", async () => {
     const { server, memory } = setup();
     server.tools.set("memory_read_page", () => payloads.read);
@@ -101,6 +135,8 @@ describe("pages", () => {
     assert.deepEqual(server.lastArgs(), { workspace: "demo", project: "app", path: "notes/retries.md" });
     assert.equal(page.pageId, payloads.PAGE_ID);
     assert.equal(page.body, payloads.read.body);
+    assert.equal(page.sections[0]?.anchor, "Retry policy");
+    assert.equal(page.sectionsTruncated, false);
     assert.equal(page.related, undefined);
     await memory.pages.read({ query: "retry", includeRelated: true, relatedDepth: 2 });
     assert.deepEqual(server.lastArgs(), {
@@ -546,6 +582,16 @@ describe("wire names", () => {
         expectedPageId: "v",
       }),
       memory.pages.write({ path: "p", body: "b", createOnly: true }),
+      memory.pages.patch({
+        path: "p",
+        expectedPageId: "v",
+        edits: [
+          { op: "append", target: "section", anchor: "A", content: "a" },
+          { op: "append", target: "end_of_page", content: "b" },
+          { op: "add_section", anchor: "## B", content: "c" },
+          { op: "replace_section", anchor: "C", sectionSha256: "h", content: "d" },
+        ],
+      }),
       memory.pages.read({ path: "p", includeRelated: true, relatedDepth: 2 }),
       memory.pages.read({ query: "q" }),
       memory.pages.delete({ path: "p", expectedPageId: "v" }),

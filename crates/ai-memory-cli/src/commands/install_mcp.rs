@@ -6455,6 +6455,9 @@ mod tests {
              [mcp_servers.ai-memory.tools.memory_message_pop]\n\
              approval_mode = \"prompt\"\n\
              \n\
+             [mcp_servers.ai-memory.tools.memory_patch_page]\n\
+             approval_mode = \"prompt\"\n\
+             \n\
              [mcp_servers.ai-memory.tools.memory_restore_page]\n\
              approval_mode = \"prompt\"\n"
         );
@@ -6493,6 +6496,9 @@ mod tests {
              approval_mode = \"prompt\"\n\
              \n\
              [mcp_servers.ai-memory.tools.memory_message_pop]\n\
+             approval_mode = \"prompt\"\n\
+             \n\
+             [mcp_servers.ai-memory.tools.memory_patch_page]\n\
              approval_mode = \"prompt\"\n\
              \n\
              [mcp_servers.ai-memory.tools.memory_restore_page]\n\
@@ -6536,6 +6542,9 @@ mod tests {
                  approval_mode = \"prompt\"\n\
                  \n\
                  [mcp_servers.ai-memory.tools.memory_message_pop]\n\
+                 approval_mode = \"prompt\"\n\
+                 \n\
+                 [mcp_servers.ai-memory.tools.memory_patch_page]\n\
                  approval_mode = \"prompt\"\n\
                  \n\
                  [mcp_servers.ai-memory.tools.memory_restore_page]\n\
