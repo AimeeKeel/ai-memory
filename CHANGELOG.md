@@ -11,13 +11,6 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
-### Changed
-
-- `memory_lint` now reports embedding-band pairs as
-  `similarity_candidate` instead of `contradiction`, and no longer infers that
-  a newer page supersedes an older one from timestamps alone. Explicit
-  `contradicts` edges remain `contradiction` findings (#1685).
-
 ### Added
 
 - Added `[briefing] inject_on_subagent_start` to `.ai-memory.toml`. A project
@@ -140,6 +133,11 @@ version in [`docs/changelog/`](docs/changelog/):
   the text report adds a warning to upgrade the older side (#1644).
 
 ### Changed
+
+- `memory_lint` now reports embedding-band pairs as
+  `similarity_candidate` instead of `contradiction`, and no longer infers that
+  a newer page supersedes an older one from timestamps alone. Explicit
+  `contradicts` edges remain `contradiction` findings (#1685).
 
 - `move-project` now refuses the **copy+purge merge** — the path taken when the
   destination workspace already holds a project of the same name — unless
