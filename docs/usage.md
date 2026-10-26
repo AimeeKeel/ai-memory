@@ -220,6 +220,7 @@ at the managed ai-memory Agent Skills that carry detailed tool routing.
 | "Write this session's page yourself" / an in-session "consolidate this session" | `memory_read_session_observations`, then `memory_write_page` with `session_id` and `path: sessions/<id>.md` | The agent compiles the session page with its own model instead of the server's provider. To match the server's multi-page layout it may also write up to four more pages with the same `session_id`: `concepts/<slug>.md` (`tier: semantic`, `kind: fact`), `decisions/<short>.md` (`kind: decision`), `gotchas/<slug>.md` (`kind: gotcha`) and `_rules/<slug>.md` (`kind: rule`); the session page is `tier: episodic`, `kind: fact`. The session must belong to the project the page is written to; the page records it as evidence, gets the same session-page frontmatter (plus `consolidated_by: agent`) and duplicate-title suffix, and the session's queued SessionEnd job is marked completed. The write uses the `write_page` admission op, so a webhook that filters on `consolidate` does not see it. A pinned page is never overwritten this way. SessionEnd keeps the page: neither the rule-based summary nor the opt-in SessionEnd worker replaces it, even when the session went on after the write, and a PreCompact or PostCompaction checkpoint leaves it alone too. |
 | "What did we learn from this session?" / "what memory should we add?" | `memory_auto_improve` | Without a session ID, reviews the newest completed session with no persisted auto-improvement run, advancing past preflight skips on repeated calls; pass an ID for a targeted rerun. The server also runs scheduled auto-improvement for new completed sessions when an LLM is configured. `[auto_improve.scheduler] enabled = false` disables automatic review; `[auto_improve] require_approval = true` leaves scheduled and manual proposals in pending-writes for review. |
 | "Remember this permanently" / "add an annotation" | `memory_write_page` | Writes durable wiki knowledge; not a single-use handoff. |
+| "Append this action to the Log section" / "replace only Open issues" | `memory_read_page`, then `memory_patch_page` | Patches an existing Markdown page without re-emitting its full body or frontmatter. Pass the required `page_id`; section replacement also passes the section's returned `sha256`. The batch writes all edits or none. |
 | "Remember this until Friday" / "expire this after the migration" | `memory_write_page` with `expires_at` | Writes a time-bounded page. Use RFC3339 or `YYYY-MM-DD` (end of day UTC); normal retrieval hides it after expiry and the next forget sweep deletes it; a `memory_read_page` by exact path still returns it, marked `expired: true`. TTL outranks `pinned`. |
 | "Search expired notes for X" | `memory_query` with `include_expired: true` | Opts an explicit project, sibling-scope, or global search into expired historical pages; ordinary searches exclude them. |
 | "Search only Rust release runbooks" | `memory_query` with `path_prefix: "procedures/"`, `tag: "rust"`, and optionally `kind` / `tier` | Narrows every page retrieval stream before ranking. Filters also constrain global, time-travel, profile, and `pin_first` results. A filtered miss has no raw-observation fallback because observations have no page metadata. |
@@ -404,6 +405,45 @@ fields are never copied from metadata. Without `expected_page_id` or
 neither. See
 [Change a page only if nobody else has](programmatic-memory.md#change-a-page-only-if-nobody-else-has)
 for conditional writes.
+
+### Patching a section without replacing the page
+
+`memory_read_page` returns at most 100 parsed Markdown headings in `sections`,
+each with its `anchor`, `level`, and exact `sha256`; `sections_truncated` says
+whether more exist. Headings inside fenced code are not sections. Read the page
+immediately before patching, then call `memory_patch_page` with that required
+`page_id`:
+
+```json
+{
+  "workspace": "customers",
+  "project": "aran",
+  "path": "STATUS.md",
+  "expected_page_id": "019...",
+  "edits": [
+    {
+      "op": "append",
+      "target": "section",
+      "anchor": "Recent actions",
+      "content": "| 2026-10-26 | SMTP fixed |"
+    },
+    {
+      "op": "replace_section",
+      "anchor": "Open issues",
+      "section_sha256": "9f...",
+      "content": "| None |"
+    }
+  ]
+}
+```
+
+Use `target: "end_of_page"` with no anchor to append at EOF. `add_section`
+requires an ATX level 2-6 heading such as `## Decisions` and rejects a heading
+that already exists after whitespace/case normalization. Duplicate headings,
+stale page or section tokens, overlapping targets, failed admission, or a
+concurrent writer reject the whole batch. Existing frontmatter is preserved;
+the final body still passes through the normal sanitizer, admission,
+attribution, versioning, index and git-checkpoint path.
 
 ## Install the routing snippet and Agent Skills
 

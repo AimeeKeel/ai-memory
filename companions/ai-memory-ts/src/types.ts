@@ -102,6 +102,70 @@ export interface WritePageResult {
   readonly raw: Raw;
 }
 
+/** A bounded heading token returned by `memory_read_page`. */
+export interface PageSection {
+  /** Heading text without Markdown markers. */
+  readonly anchor: string;
+  /** ATX heading level, 1 through 6. */
+  readonly level: number;
+  /** SHA-256 of the exact section bytes, including its heading. */
+  readonly sha256: string;
+}
+
+/** One atomic anchored page edit. */
+export type PagePatchEdit =
+  | {
+      /** Append operation. */
+      op: "append";
+      /** Insert before the next same-or-higher-level heading. */
+      target: "section";
+      /** Unique existing heading. */
+      anchor: string;
+      /** Markdown to append. */
+      content: string;
+    }
+  | {
+      /** Append operation. */
+      op: "append";
+      /** Insert at the end of the page. */
+      target: "end_of_page";
+      /** An EOF append has no heading anchor. */
+      anchor?: never;
+      /** Markdown to append. */
+      content: string;
+    }
+  | {
+      /** Add a new section at EOF. */
+      op: "add_section";
+      /** Unique ATX level 2-6 heading, for example `## Decisions`. */
+      anchor: string;
+      /** New section body. */
+      content: string;
+    }
+  | {
+      /** Replace one existing section body. */
+      op: "replace_section";
+      /** Unique existing heading. */
+      anchor: string;
+      /** Exact section token returned by {@link Page.sections}. */
+      sectionSha256: string;
+      /** Replacement section body, excluding the heading. */
+      content: string;
+    };
+
+/** Arguments of {@link PagesNamespace.patch}. */
+export interface PatchPageArgs extends ScopedArgs {
+  /** Existing page path. */
+  path: string;
+  /** Required latest page version returned by a read or mutation. */
+  expectedPageId: string;
+  /** Bounded batch resolved against one base body and committed atomically. */
+  edits: readonly PagePatchEdit[];
+}
+
+/** Result of {@link PagesNamespace.patch}. */
+export type PatchPageResult = WritePageResult;
+
 /** Options shared by both forms of {@link ReadPageArgs}. */
 export interface ReadPageBase extends ScopedArgs {
   /** Also walk the link graph and return the reachable pages in `related`. */
@@ -157,6 +221,10 @@ export interface Page {
   readonly body: UntrustedText;
   /** Parsed frontmatter (tags, tier, pinned and other metadata). Untrusted. */
   readonly frontmatter: Readonly<Record<string, unknown>>;
+  /** Bounded heading hashes for anchored patches. */
+  readonly sections: readonly PageSection[];
+  /** True when the page has more sections than the response cap. */
+  readonly sectionsTruncated: boolean;
   /** Pages reachable through links, present only with `includeRelated`. */
   readonly related: readonly RelatedPage[] | undefined;
   /** The server's decoded JSON. */
