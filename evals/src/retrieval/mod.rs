@@ -30,11 +30,11 @@
 //!   through the real page write path instead of replaying hooks;
 //! - `--date-prefix turn|session-start|none` moves the per-turn date.
 
-mod dataset;
+pub(crate) mod dataset;
 mod grep;
 mod ingest;
-mod qa;
-mod query;
+pub(crate) mod qa;
+pub(crate) mod query;
 mod reachability;
 pub(crate) mod report;
 mod score;
@@ -195,66 +195,8 @@ pub struct RetrievalArgs {
     candidate_date_prefix: Option<DatePrefix>,
 
     // ---- QA-accuracy mode (R2b, opt-in, live LLM) ----
-    /// Enable end-to-end QA-accuracy grading (real LLM API calls). OFF by
-    /// default. Per scored question the harness synthesizes an answer from
-    /// the retrieved snippets (or uses a server-provided `answer` field when
-    /// present) and grades it against the gold answer with an LLM judge.
-    /// Requires `--qa-provider` + `--qa-model` and a resolvable key; if the
-    /// key/provider cannot be resolved the run SKIPS QA (retrieval metrics
-    /// are unaffected) instead of failing.
-    #[arg(long)]
-    qa: bool,
-
-    /// QA answerer/judge provider
-    /// (`anthropic|openai|openai-compat|openai-oauth|codex|copilot|gemini`).
-    #[arg(long)]
-    qa_provider: Option<String>,
-
-    /// QA answerer model id.
-    #[arg(long)]
-    qa_model: Option<String>,
-
-    /// QA answerer base URL (omit for native vendors).
-    #[arg(long)]
-    qa_base_url: Option<String>,
-
-    /// QA answerer API key (raw value). Prefer `--qa-api-key-env` or the
-    /// provider's default env var.
-    #[arg(long)]
-    qa_api_key: Option<String>,
-
-    /// Env var to read the QA answerer API key from (defaults to the
-    /// provider's canonical env var, e.g. `GEMINI_API_KEY`).
-    #[arg(long)]
-    qa_api_key_env: Option<String>,
-
-    /// Auth file for a QA answerer using `openai-oauth`/`codex`/`copilot`.
-    #[arg(long)]
-    qa_token_file: Option<PathBuf>,
-
-    /// QA grader provider; defaults to `--qa-provider`.
-    #[arg(long)]
-    qa_grader_provider: Option<String>,
-
-    /// QA grader model; defaults to `--qa-model`.
-    #[arg(long)]
-    qa_grader_model: Option<String>,
-
-    /// QA grader base URL; defaults to `--qa-base-url`.
-    #[arg(long)]
-    qa_grader_base_url: Option<String>,
-
-    /// QA grader API key (raw); defaults to `--qa-api-key`.
-    #[arg(long)]
-    qa_grader_api_key: Option<String>,
-
-    /// Env var for the QA grader API key; defaults to `--qa-api-key-env`.
-    #[arg(long)]
-    qa_grader_api_key_env: Option<String>,
-
-    /// Auth file for the QA grader; defaults to `--qa-token-file`.
-    #[arg(long)]
-    qa_grader_token_file: Option<PathBuf>,
+    #[command(flatten)]
+    qa: qa::QaArgs,
 }
 
 impl RetrievalArgs {
@@ -471,7 +413,7 @@ pub async fn run(args: RetrievalArgs) -> Result<()> {
     let run_dir = args.out.join(format!("{stamp}-retrieval"));
 
     if args.engine == Engine::Grep {
-        if args.ab_mode() || args.reachability || args.qa {
+        if args.ab_mode() || args.reachability || args.qa.enabled {
             bail!("--engine grep runs alone: no candidate, --reachability, or --qa");
         }
         let report = run_grep(&args, variant, &questions, abstention.len(), &commit);
@@ -538,8 +480,8 @@ pub async fn run(args: RetrievalArgs) -> Result<()> {
     // grader once and share them across both configs. If QA is requested but
     // a provider/key can't be resolved, SKIP cleanly (retrieval metrics are
     // unaffected) rather than failing the run — mirroring live-LLM tests.
-    let qa_engine = if args.qa {
-        match qa::QaEngine::resolve(&args) {
+    let qa_engine = if args.qa.enabled {
+        match qa::QaEngine::resolve(&args.qa) {
             Ok(engine) => {
                 println!("QA-accuracy mode ON (live LLM): {}", engine.summary());
                 tracing::info!(qa = engine.summary(), "QA-accuracy mode enabled");

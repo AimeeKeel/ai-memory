@@ -1,6 +1,6 @@
 # `evals/` — evaluation harnesses
 
-One Rust binary (`ai-memory-eval`) with three subcommands:
+One Rust binary (`ai-memory-eval`) with four subcommands:
 
 - **`ab`** — runs the EXACT consolidation prompt ai-memory uses in
   production against two LLM providers side by side, saves both
@@ -12,13 +12,65 @@ One Rust binary (`ai-memory-eval`) with three subcommands:
 - **`retrieval`** — LongMemEval and bundled coding-session retrieval checks,
   driven through a real `ai-memory serve` subprocess. Published baselines
   live in `docs/benchmarks/`.
+- **`abstention`** — offline evidence-sufficiency signals and threshold sweeps
+  over versioned answerable, hard-negative, conflicting, partial, and
+  missing-channel fixtures, with optional structured LLM answerability.
 
 **This is not part of the shipped binary.** It's a workspace member
 purely so it shares deps + builds with the rest. `cargo build` from
 the repo root will compile it, but it's never bundled into the
 docker image. CI builds it and runs its unit tests
-(`cargo nextest run --workspace --all-targets`); the `ab`,
-`projection` and `retrieval` commands themselves never run there.
+(`cargo nextest run --workspace --all-targets`); the `ab`, `projection`,
+`retrieval`, and `abstention` commands themselves never run there.
+
+## `abstention` — evidence sufficiency
+
+The default run is deterministic, offline, and keyless:
+
+```bash
+cargo run -p ai-memory-eval -- abstention
+```
+
+It reads `evals/fixtures/abstention/v1.json`, validates the version, unique
+ids, evidence paths, finite score/belief ranges, and required support for
+answerable cases, then writes `report.json` and `report.md` under a timestamped
+`evals/runs/*-abstention/` directory. Each case records raw normalized lexical
+coverage, top-score margin/distribution, matching-term density, snippet size,
+and belief aggregation only where the fixture actually supplies belief.
+
+The report sweeps lexical-coverage thresholds from 0.0 through 1.0 and records
+coverage, false-supported rate (FSR), and false-abstention rate (FAR), including
+undefined denominators. It does not designate a calibrated threshold: the
+clean-room corpus is a regression probe, not a representative sample.
+`answerable` maps to supported and `unanswerable` to unsupported;
+`conflicting` and `partial` remain separate slices and are excluded from both
+binary error-rate denominators.
+
+The fixture complements rather than relabels LongMemEval. To add the pinned
+LongMemEval-S `*_abs` questions as unanswerable cases, first fetch that dataset
+through the retrieval command, then opt in without any network access:
+
+```bash
+cargo run -p ai-memory-eval -- retrieval --fetch --sample 1
+cargo run -p ai-memory-eval -- abstention --longmemeval-abs
+```
+
+Optional `--qa` uses the exact `--qa-*` provider/auth construction shared with
+the retrieval evaluator. Synthesis returns a structured `answerability` enum
+(`answerable`, `insufficient`, `conflicting`, or `partial`); the evaluator never
+detects abstention from answer wording. Missing credentials produce a reported
+skip and leave the offline signal report intact. The retrieval QA path also
+parses production's `answer: { text, citations }` object; empty validated
+citations are an abstention, while nonempty citations are answerable for this
+evaluation metadata. This is still identity evidence, not a claim-level
+support proof.
+
+When adding cases, keep them clean-room and synthetic. `target_evidence` must
+name supplied paths, answerable cases require a `gold_answer`, and channel-loss
+cases declare `channels.fts` / `channels.vector` explicitly. Do not tune a
+threshold and the fixture against each other, and do not fold conflicting or
+partial evidence into binary ground truth without changing the documented
+mapping and report schema.
 
 ## When to reach for this
 
