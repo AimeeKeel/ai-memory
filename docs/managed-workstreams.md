@@ -1,11 +1,18 @@
 # Managed cross-harness workstreams
 
 `ai-memory run` is an opt-in launcher that lets one logical coding session move
-between Claude Code, Codex, OpenCode, OpenCode 2 beta, Pi, Crush, Kimi Code, Command Code, Kiro
+between Claude Code, Codex, OpenCode, Pi, Crush, Kimi Code, Command Code, Kiro
 CLI v2/v3, OMP, Grok Build CLI, Antigravity CLI, and GitHub Copilot CLI. Direct agent launches
 keep their existing ai-memory behavior. There is no global mode toggle and no
 `switch` command: using `run` selects the current workstream and transparently
 creates or resumes the correct native session for the requested harness.
+
+On Linux, a jailed OpenCode session uses a private `--standalone` server by
+default. This keeps its server and tool processes inside ai-jail's PID
+namespace so they cannot survive the jail. An explicit native `--server`
+still wins because it deliberately selects an external service. The legacy
+`opencode2`, `opencode-v2`, and `open-code2` names force the V2 adapter for old
+scripts; they are compatibility aliases, not a second OpenCode harness.
 
 When the server runs with `--enable-web`, root can inspect all managed ledgers
 at `/web/workstreams`. The read-only page shows trusted lifecycle state, the
@@ -421,15 +428,15 @@ flavor remains exact. OMP, Grok, Antigravity, and Copilot remain available expli
 but are not in the automatic pool. OpenCode's resolved major contributes one
 adapter to the pool, so shared V1/V2 storage never duplicates a candidate.
 
-OpenCode 2 sessions run inside a shared background service, so its plugin
-cannot see a managed run's environment the way in-process plugins do. Managed
-`run opencode2` legs launch with the correct resume selectors, capture through
-hooks, and import the beta transcript (all verified live), but the
+Non-jailed OpenCode V2 sessions normally run inside a shared background service,
+so its plugin cannot see a managed run's environment the way in-process plugins
+do. Managed OpenCode V2 legs launch with the correct resume selectors, capture
+through hooks, and import the V2 transcript (all verified live), but the
 ledger-delta acknowledgement (`context_delivered`) does not fire, because the
 accept path requires the run id on the session-start hook. When this fails the
 range is redelivered, never lost: a later leg into another harness may receive the range
-again. Until the beta offers per-invocation plugin context, cross-harness
-continuity into opencode2 arrives through the ordinary handoff loop rather
+again. Until the shared service offers per-invocation plugin context, cross-harness
+continuity into OpenCode V2 arrives through the ordinary handoff loop rather
 than the ledger delta.
 
 Bare mode accepts wrapper options but not harness-native arguments or

@@ -4686,7 +4686,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode2_aliases_parse_to_the_beta_variants() {
+    fn opencode2_aliases_parse_to_the_v2_compatibility_variants() {
         for alias in ["opencode2", "opencode-v2", "open-code2"] {
             let cli = Cli::try_parse_from([
                 "ai-memory",

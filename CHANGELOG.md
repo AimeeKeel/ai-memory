@@ -153,6 +153,14 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Changed
 
+- Jailed OpenCode managed runs now add the native `--standalone` flag unless
+  the caller explicitly supplies `--standalone` or `--server`. The private
+  server keeps tool processes inside ai-jail's Linux PID namespace, so a
+  detached job cannot survive the jail. Current documentation presents
+  `opencode` as the single auto-detected integration; `opencode2`,
+  `opencode-v2`, and `open-code2` remain supported legacy force-V2 aliases for
+  existing scripts rather than a separately advertised beta harness.
+
 - `memory_lint` now reports embedding-band pairs as
   `similarity_candidate` instead of `contradiction`, and no longer infers that
   a newer page supersedes an older one from timestamps alone. Explicit

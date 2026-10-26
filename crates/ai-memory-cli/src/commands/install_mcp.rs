@@ -2000,10 +2000,10 @@ fn build_mcp_entry_cline(args: &InstallMcpArgs) -> Result<serde_json::Value> {
     Ok(serde_json::Value::Object(entry))
 }
 
-/// OpenCode 2.0 beta MCP entry: `type: "remote"` + `url` + optional
+/// OpenCode V2 MCP entry: `type: "remote"` + `url` + optional
 /// `headers` under `mcp.servers`. V2 has no `enabled` field (servers
 /// connect unless `disabled: true`), and header-credentialed servers
-/// must set `oauth: false` so the beta does not attempt OAuth discovery
+/// must set `oauth: false` so V2 does not attempt OAuth discovery
 /// against ai-memory's local endpoint
 /// (https://opencode.ai/v2/docs/mcp-servers).
 fn build_mcp_entry_opencode2(args: &InstallMcpArgs) -> Result<serde_json::Value> {
@@ -2482,7 +2482,7 @@ fn render_opencode(args: &InstallMcpArgs) -> Result<String> {
 
 fn render_opencode2(args: &InstallMcpArgs) -> Result<String> {
     Ok(format!(
-        "# OpenCode 2.0 beta (`opencode2`) — merge into\n\
+        "# OpenCode V2 (`opencode2` compatibility alias) — merge into\n\
          # ~/.config/opencode/opencode.json(c) under \"mcp\" → \"servers\":\n\
          #\n\
          # V2 nests servers under `mcp.servers` (V1 used direct `mcp`)\n\
