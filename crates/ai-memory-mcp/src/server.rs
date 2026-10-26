@@ -375,6 +375,11 @@ should be proposed from a completed session, or at explicit wrap-up \
   page only if nobody else has, pass the `page_id` `memory_read_page` \
   returned as `expected_page_id` (or `create_only: true` for a new page); \
   a stale one fails with `precondition_failed` and writes nothing.\n\
+- `memory_patch_page` — when changing or appending to one or more Markdown \
+  sections of an existing page. Read the page first, then pass its required \
+  `page_id` and the returned section hash for every `replace_section`. The \
+  whole batch is atomic, preserves frontmatter, and rejects missing or \
+  ambiguous headings; use `memory_write_page` for a full replacement.\n\
 - `memory_read_page` — when the user asks to read, open, or show the \
   full content of a specific page. Accepts a `query` (searches FTS5 and \
   returns the top hit's full body) or a `path` (direct lookup). Follow \
@@ -1722,6 +1727,28 @@ struct ReadPageArgs {
     /// Ignored when `include_related` is false.
     #[serde(default)]
     related_depth: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct PatchPageArgs {
+    /// Existing page path to patch.
+    path: String,
+    /// Required latest page version from `memory_read_page`. The entire batch
+    /// fails if another writer changed or deleted the page.
+    expected_page_id: String,
+    /// Anchored edits, all resolved against the same captured base body.
+    edits: Vec<crate::page_patch::PagePatchEdit>,
+    /// Project containing the existing page. Session-aware clients may omit it
+    /// for the current project. Static MCP clients must pass it together with
+    /// `workspace` for every project-scoped call; partial explicit scope fails
+    /// closed.
+    #[serde(default)]
+    project: Option<String>,
+    /// Workspace containing the existing page, together with `project`.
+    /// Session-aware clients may omit both for the current project; static MCP
+    /// clients must pass both.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 /// Bounds for `memory_read_session_observations`. The defaults keep one call
@@ -4949,6 +4976,139 @@ impl AiMemoryServer {
         ok_json(&result)
     }
 
+    /// Apply a bounded batch of heading-anchored edits to an existing page.
+    #[tool(
+        annotations(
+            title = "Patch memory page",
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        ),
+        description = "Patch an existing Markdown page without re-emitting its full body or metadata. Requires `expected_page_id` from `memory_read_page`; every edit is materialized against that one base version and the whole batch either commits through the normal write path or writes nothing. `append` requires `target: section` plus an unambiguous heading anchor, or `target: end_of_page` with no anchor. `add_section` requires a unique ATX level 2-6 heading as its anchor. `replace_section` requires both an unambiguous heading anchor and the exact `section_sha256` returned by `memory_read_page`. Headings inside fenced code are ignored. All existing frontmatter is preserved. Static clients pass `workspace` and `project` together."
+    )]
+    async fn memory_patch_page(
+        &self,
+        Parameters(args): Parameters<PatchPageArgs>,
+        OptionalParts(parts): OptionalParts,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(wiki) = self.wiki.as_ref() else {
+            return Err(McpError::internal_error(
+                "memory_patch_page requires the server to be built with a wiki handle",
+                None,
+            ));
+        };
+        let expected = PageId::from_str(args.expected_page_id.trim()).map_err(|error| {
+            McpError::invalid_params(format!("invalid expected_page_id: {error}"), None)
+        })?;
+        let path = PagePath::new(args.path)
+            .and_then(|path| path.ensure_portable().map(|()| path))
+            .map_err(|error| McpError::invalid_params(format!("invalid path: {error}"), None))?;
+        let path = self.place_slot_write(path, &parts).await?;
+        let aps_actor = Self::actor_key_from_parts(Some(&parts));
+        let (workspace_id, project_id) = self
+            .effective_ids_for_mutation_args_with_actor(
+                args.workspace.as_deref(),
+                args.project.as_deref(),
+                &aps_actor,
+                Self::viewer_from_parts(Some(&parts)),
+            )
+            .await?;
+        let current = self
+            .reader
+            .latest_page_id_by_ids(workspace_id, project_id, path.to_string())
+            .await
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        if current != Some(expected) {
+            return Err(precondition_failed(
+                &path,
+                Some(ai_memory_store::PagePrecondition::Latest(expected)),
+                current,
+            ));
+        }
+        let page = wiki
+            .read_page(workspace_id, project_id, &path)
+            .map_err(|error| {
+                if is_missing_wiki_file(&error) {
+                    McpError::invalid_params(
+                        format!("page {} does not exist on disk", path.as_str()),
+                        Some(serde_json::json!({
+                            "reason": "not_found",
+                            "path": path.as_str(),
+                        })),
+                    )
+                } else {
+                    McpError::internal_error(error.to_string(), None)
+                }
+            })?;
+        let body = crate::page_patch::apply(&page.body, &args.edits)
+            .map_err(|error| page_patch_error(&path, error))?;
+        let tier_name = page
+            .frontmatter
+            .get("tier")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("semantic");
+        let tier = tier_name.parse::<Tier>().map_err(|_| {
+            McpError::invalid_params(
+                format!("existing page has unknown tier '{tier_name}'"),
+                Some(serde_json::json!({ "reason": "invalid_existing_page" })),
+            )
+        })?;
+        let pinned = page
+            .frontmatter
+            .get("pinned")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let actor = crate::actor::actor_from_parts(&parts);
+        let author_id = crate::actor::author_id_from_parts(&parts);
+        let skip_webhooks = crate::actor::skip_webhooks_from_parts(&parts);
+        let admission_ctx = if actor.has_any() || !skip_webhooks.is_empty() {
+            Some(ai_memory_wiki::AdmissionContext {
+                op: ai_memory_wiki::AdmissionOp::WritePage,
+                skip_webhooks,
+                ..ai_memory_wiki::AdmissionContext::default()
+            })
+        } else {
+            None
+        };
+        let result = wiki
+            .write_page_if(
+                WritePageRequest {
+                    workspace_id,
+                    project_id,
+                    path: path.clone(),
+                    frontmatter: page.frontmatter,
+                    body,
+                    tier,
+                    pinned,
+                    title: None,
+                    admission_ctx,
+                    author_id,
+                    actor,
+                    evidence: Vec::new(),
+                },
+                ai_memory_store::PagePrecondition::Latest(expected),
+            )
+            .await
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        let page_id = match result {
+            ai_memory_wiki::ConditionalWrite::Written(page_id) => page_id,
+            ai_memory_wiki::ConditionalWrite::Mismatch { current } => {
+                return Err(precondition_failed(
+                    &path,
+                    Some(ai_memory_store::PagePrecondition::Latest(expected)),
+                    current,
+                ));
+            }
+        };
+        let checkpoint = checkpoint_or_warn(wiki, format!("memory_patch_page: {}", path.as_str()));
+        ok_json(&serde_json::json!({
+            "page_id": page_id.to_string(),
+            "path": path.to_string(),
+            "checkpoint": checkpoint,
+        }))
+    }
+
     /// Fetch the full body of a single wiki page.
     #[tool(
         annotations(
@@ -4972,8 +5132,10 @@ impl AiMemoryServer {
         Follow the client-aware project-scope instructions: static clients pass \
         `workspace` + `project` together for every project-scoped call. Use \
         this when the user asks to read, open, or show a specific page by \
-        name or topic — not just snippets. Returns `{ path, title, body, \
-        frontmatter }` (plus `served_from` when a missing markdown file is \
+        name or topic — not just snippets. Returns `{ path, page_id, title, \
+        body, frontmatter, sections, sections_truncated }`; each bounded \
+        section entry has its heading `anchor`, `level`, and exact-content \
+        `sha256` for `memory_patch_page`. Also returns `served_from` when a missing markdown file is \
         served from the DB fallback, and `expired: true` when the page's \
         `expires_at` TTL has passed: an exact-path read still returns such a \
         page, which `memory_query` and `memory_recent` no longer surface). \
@@ -5149,12 +5311,15 @@ impl AiMemoryServer {
                 // frontmatter title was never filled otherwise read back
                 // titleless despite a proper `# Heading` (#599).
                 let title = ai_memory_wiki::derive_title(&md.frontmatter, &md.body, &page_path);
+                let (sections, sections_truncated) = crate::page_patch::section_hashes(&md.body);
                 ok_json(&annotate(serde_json::json!({
                     "path": page_path.to_string(),
                     "page_id": page_id.map(|id| id.to_string()),
                     "title": title,
                     "body": md.body,
                     "frontmatter": md.frontmatter,
+                    "sections": sections,
+                    "sections_truncated": sections_truncated,
                 })))
             }
             Err(disk_err) if is_missing_wiki_file(&disk_err) => {
@@ -5173,12 +5338,16 @@ impl AiMemoryServer {
                             .and_then(|v| v.as_str())
                             .map(str::to_string)
                             .or(Some(stored.title));
+                        let (sections, sections_truncated) =
+                            crate::page_patch::section_hashes(&stored.body);
                         ok_json(&annotate(serde_json::json!({
                             "path": page_path.to_string(),
                             "page_id": page_id.map(|id| id.to_string()),
                             "title": title,
                             "body": stored.body,
                             "frontmatter": frontmatter,
+                            "sections": sections,
+                            "sections_truncated": sections_truncated,
                             "served_from": "db-fallback",
                         })))
                     }
@@ -7675,6 +7844,35 @@ fn precondition_failed(
     )
 }
 
+fn page_patch_error(path: &PagePath, error: crate::page_patch::PatchError) -> McpError {
+    use crate::page_patch::PatchError;
+    let (reason, anchor) = match &error {
+        PatchError::AnchorNotFound(anchor) => ("anchor_not_found", Some(anchor.as_str())),
+        PatchError::AmbiguousAnchor(anchor) => ("ambiguous_anchor", Some(anchor.as_str())),
+        PatchError::HeadingExists(anchor) => ("heading_exists", Some(anchor.as_str())),
+        PatchError::SectionPreconditionFailed(anchor) => {
+            ("section_precondition_failed", Some(anchor.as_str()))
+        }
+        PatchError::DuplicateTarget(anchor) => ("duplicate_target", Some(anchor.as_str())),
+        PatchError::Overlapping => ("overlapping_edits", None),
+        PatchError::Empty
+        | PatchError::TooMany
+        | PatchError::ContentTooLarge
+        | PatchError::BatchTooLarge
+        | PatchError::MissingAnchor
+        | PatchError::UnexpectedAnchor
+        | PatchError::InvalidNewHeading => ("invalid_patch", None),
+    };
+    McpError::invalid_params(
+        format!("cannot patch {path}: {error}; nothing was changed"),
+        Some(serde_json::json!({
+            "reason": reason,
+            "path": path.as_str(),
+            "anchor": anchor,
+        })),
+    )
+}
+
 fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
     let s = serde_json::to_string_pretty(value)
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -9936,6 +10134,7 @@ mod tests {
         "memory_consolidate",
         "memory_auto_improve",
         "memory_write_page",
+        "memory_patch_page",
         "memory_read_page",
         "memory_read_session_observations",
         "memory_delete_page",
@@ -9963,6 +10162,7 @@ mod tests {
         "memory_consolidate",
         "memory_auto_improve",
         "memory_write_page",
+        "memory_patch_page",
         "memory_read_page",
         "memory_read_session_observations",
         "memory_delete_page",
@@ -18333,6 +18533,240 @@ mod tests {
                 "expected invalid path error for {bad:?}, got: {err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn memory_patch_page_preserves_metadata_and_enforces_both_preconditions() {
+        let (tmp, store, server, ws, proj) = setup_server().await;
+        let server = server.with_wiki(Wiki::new(tmp.path(), store.writer.clone()).unwrap());
+        let write = server
+            .memory_write_page(
+                Parameters(WritePageArgs {
+                    metadata: serde_json::from_value(serde_json::json!({
+                        "kind": "fact",
+                        "abstract": "preserve me"
+                    }))
+                    .unwrap(),
+                    path: "notes/status.md".into(),
+                    body: "# Status\n## Log\nold\n".into(),
+                    title: None,
+                    tier: Some("procedural".into()),
+                    tags: vec!["customer".into()],
+                    pinned: true,
+                    project: None,
+                    workspace: None,
+                    scope: None,
+                    expires_at: None,
+                    session_id: None,
+                    create_only: false,
+                    expected_page_id: None,
+                }),
+                OptionalParts(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let first = call_tool_json(write);
+        let page_id = first["page_id"].as_str().unwrap().to_owned();
+        let page = server
+            .memory_read_page(
+                Parameters(ReadPageArgs {
+                    path: Some("notes/status.md".into()),
+                    query: None,
+                    project: None,
+                    workspace: None,
+                    include_related: false,
+                    related_depth: None,
+                }),
+                OptionalParts(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let page = call_tool_json(page);
+        let section_sha256 = page["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|section| section["anchor"] == "Log")
+            .unwrap()["sha256"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let patch = |page_id: String, section_sha256: String, content: &str| PatchPageArgs {
+            path: "notes/status.md".into(),
+            expected_page_id: page_id,
+            edits: vec![crate::page_patch::PagePatchEdit::ReplaceSection {
+                anchor: "Log".into(),
+                section_sha256,
+                content: content.into(),
+            }],
+            project: None,
+            workspace: None,
+        };
+        let patched = server
+            .memory_patch_page(
+                Parameters(patch(page_id.clone(), section_sha256.clone(), "new")),
+                OptionalParts(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let patched = call_tool_json(patched);
+        assert_ne!(patched["page_id"], page_id);
+        let stored = server
+            .wiki
+            .as_ref()
+            .unwrap()
+            .read_page(ws, proj, &PagePath::new("notes/status.md").unwrap())
+            .unwrap();
+        assert_eq!(stored.body, "# Status\n## Log\nnew\n");
+        assert_eq!(stored.frontmatter["kind"], "fact");
+        assert_eq!(stored.frontmatter["abstract"], "preserve me");
+        assert_eq!(stored.frontmatter["tier"], "procedural");
+        assert_eq!(stored.frontmatter["pinned"], true);
+        assert_eq!(stored.frontmatter["tags"], serde_json::json!(["customer"]));
+
+        let stale_page = server
+            .memory_patch_page(
+                Parameters(patch(page_id, section_sha256.clone(), "lost")),
+                OptionalParts(test_parts_default()),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(stale_page.data.unwrap()["reason"], "precondition_failed");
+        let fresh_id = patched["page_id"].as_str().unwrap().to_owned();
+        let stale_section = server
+            .memory_patch_page(
+                Parameters(patch(fresh_id, section_sha256, "lost")),
+                OptionalParts(test_parts_default()),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            stale_section.data.unwrap()["reason"],
+            "section_precondition_failed"
+        );
+        let stored = server
+            .wiki
+            .as_ref()
+            .unwrap()
+            .read_page(ws, proj, &PagePath::new("notes/status.md").unwrap())
+            .unwrap();
+        assert!(!stored.body.contains("lost"));
+    }
+
+    #[tokio::test]
+    async fn memory_patch_page_requires_write_access_and_one_concurrent_writer_wins() {
+        let (tmp, store, server, _ws, proj) = setup_server().await;
+        let server = server.with_wiki(Wiki::new(tmp.path(), store.writer.clone()).unwrap());
+        store
+            .writer
+            .set_access_mode(proj, ai_memory_store::AccessMode::Restricted)
+            .await
+            .unwrap();
+        let user = store
+            .writer
+            .create_human_user(
+                NewUser {
+                    username: "patcher".into(),
+                    name: None,
+                    email: None,
+                },
+                ai_memory_core::UserRole::User,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        let write = server
+            .memory_write_page(
+                Parameters(WritePageArgs {
+                    metadata: Default::default(),
+                    path: "notes/shared.md".into(),
+                    body: "# Shared\n".into(),
+                    title: None,
+                    tier: None,
+                    tags: vec![],
+                    pinned: false,
+                    project: None,
+                    workspace: None,
+                    scope: None,
+                    expires_at: None,
+                    session_id: None,
+                    create_only: false,
+                    expected_page_id: None,
+                }),
+                OptionalParts(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let page_id = call_tool_json(write)["page_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let args = |content: &str| PatchPageArgs {
+            path: "notes/shared.md".into(),
+            expected_page_id: page_id.clone(),
+            edits: vec![crate::page_patch::PagePatchEdit::Append {
+                target: crate::page_patch::AppendTarget::EndOfPage,
+                anchor: None,
+                content: content.into(),
+            }],
+            project: Some("scratch".into()),
+            workspace: Some("default".into()),
+        };
+        let mut user_parts = test_parts_default();
+        user_parts.extensions.insert(AuthLevel::User);
+        user_parts.extensions.insert(user);
+        user_parts
+            .extensions
+            .insert(ai_memory_core::AuthorizedViewer(user));
+        let denied = server
+            .memory_patch_page(Parameters(args("denied")), OptionalParts(user_parts))
+            .await;
+        assert!(denied.is_err());
+
+        grant_writer(store.db_path(), user, proj);
+        let mut granted_parts = test_parts_default();
+        granted_parts.extensions.insert(AuthLevel::User);
+        granted_parts.extensions.insert(user);
+        granted_parts
+            .extensions
+            .insert(ai_memory_core::AuthorizedViewer(user));
+        server
+            .memory_patch_page(Parameters(args("granted")), OptionalParts(granted_parts))
+            .await
+            .unwrap();
+
+        let current = server
+            .reader
+            .latest_page_id_by_ids(
+                _ws,
+                proj,
+                PagePath::new("notes/shared.md").unwrap().to_string(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .to_string();
+        let concurrent = |content: &str| PatchPageArgs {
+            expected_page_id: current.clone(),
+            ..args(content)
+        };
+        let (left, right) = tokio::join!(
+            server.memory_patch_page(
+                Parameters(concurrent("left")),
+                OptionalParts(test_parts_default())
+            ),
+            server.memory_patch_page(
+                Parameters(concurrent("right")),
+                OptionalParts(test_parts_default())
+            )
+        );
+        assert_ne!(
+            left.is_ok(),
+            right.is_ok(),
+            "exactly one CAS writer must win"
+        );
     }
 
     /// A malformed path, tier or scope is the caller's mistake, so the page

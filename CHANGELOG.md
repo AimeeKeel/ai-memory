@@ -18,6 +18,14 @@ version in [`docs/changelog/`](docs/changelog/):
   The server refuses a `measured` send without non-empty evidence; existing
   messages and callers remain `unknown` by default (#1428).
 
+- Added `memory_patch_page` for atomic, heading-anchored edits to an existing
+  Markdown page without re-emitting its body or metadata. It requires the
+  page's current `page_id`; section replacement additionally requires the
+  bounded SHA-256 token returned by `memory_read_page`. Missing, duplicate or
+  fenced-code headings, stale tokens, conflicting edits, failed admission and
+  concurrent writes leave the page unchanged. The typed TypeScript client
+  exposes the same contract as `pages.patch` (#1697).
+
 - Added an offline `ai-memory-eval abstention` benchmark with versioned
   clean-room answerable, hard-negative, conflicting, partial and
   missing-channel fixtures; raw lexical/score/density/belief signals;
@@ -149,6 +157,14 @@ version in [`docs/changelog/`](docs/changelog/):
   the text report adds a warning to upgrade the older side (#1644).
 
 ### Changed
+
+- Jailed OpenCode managed runs now add the native `--standalone` flag unless
+  the caller explicitly supplies `--standalone` or `--server`. The private
+  server keeps tool processes inside ai-jail's Linux PID namespace, so a
+  detached job cannot survive the jail. Current documentation presents
+  `opencode` as the single auto-detected integration; `opencode2`,
+  `opencode-v2`, and `open-code2` remain supported legacy force-V2 aliases for
+  existing scripts rather than a separately advertised beta harness.
 
 - `memory_lint` now reports embedding-band pairs as
   `similarity_candidate` instead of `contradiction`, and no longer infers that

@@ -57,6 +57,12 @@ export const TOOL_COVERAGE: Readonly<Record<string, ToolClassification>> = {
       "create_only",
     ],
   },
+  memory_patch_page: {
+    status: "wrapped",
+    methods: ["pages.patch"],
+    phase: 2,
+    sends: [...SCOPE, "path", "expected_page_id", "edits"],
+  },
   memory_read_page: {
     status: "wrapped",
     methods: ["pages.read", "pages.update"],
