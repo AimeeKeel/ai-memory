@@ -359,6 +359,9 @@ pub enum Command {
     /// copy+purge (only durable pages migrate, source purged). Either way the
     /// operation is irreversible — requires `--confirm`.
     MoveProject(MoveProjectArgs),
+    /// Losslessly merge one project into another inside the same workspace.
+    /// Without `--confirm`, prints an exact server-side dry run.
+    MergeProject(MergeProjectArgs),
     /// Move one session (or every session of a project) to another project,
     /// re-stamping its observations, handoffs, consolidation jobs and its
     /// `sessions/<id>.md` page in one transaction. Without `--confirm` it
@@ -1714,6 +1717,30 @@ pub struct MoveProjectArgs {
     pub allow_lossy_merge: bool,
 }
 
+/// Arguments for `merge-project`.
+#[derive(Debug, Args)]
+pub struct MergeProjectArgs {
+    /// Workspace containing both projects. Defaults to the nearest marker's
+    /// workspace, then `default`.
+    #[arg(long)]
+    pub workspace: Option<String>,
+    /// Source project name. Mutually exclusive with `--from-project-id`.
+    #[arg(long, conflicts_with = "from_project_id")]
+    pub from: Option<String>,
+    /// Source project UUID, for an ambiguous legacy name.
+    #[arg(long)]
+    pub from_project_id: Option<String>,
+    /// Target project name. Mutually exclusive with `--into-project-id`.
+    #[arg(long, conflicts_with = "into_project_id")]
+    pub into: Option<String>,
+    /// Target project UUID, for an ambiguous legacy name.
+    #[arg(long)]
+    pub into_project_id: Option<String>,
+    /// Apply the merge. Omit for an exact dry-run preview.
+    #[arg(long)]
+    pub confirm: bool,
+}
+
 /// Arguments for `move-session`.
 ///
 /// Exactly one of `<SESSION_ID>` and `--from-project` names what moves; the
@@ -2407,8 +2434,12 @@ pub struct RestorePageArgs {
     #[arg(long)]
     pub path: String,
     /// Git checkpoint/revision to restore from.
-    #[arg(long)]
-    pub from: String,
+    #[arg(long, conflicts_with = "page_id", required_unless_present = "page_id")]
+    pub from: Option<String>,
+    /// Retained page-version UUID to restore, including a version preserved by
+    /// `merge-project`. Mutually exclusive with `--from`.
+    #[arg(long, conflicts_with = "from", required_unless_present = "from")]
+    pub page_id: Option<String>,
     /// Workspace name. Defaults to the nearest `.ai-memory.toml` marker's
     /// `workspace`, else `default`.
     #[arg(long)]
@@ -5773,6 +5804,66 @@ mod tests {
             ])
             .is_err(),
             "--project and --project-id must not both be accepted"
+        );
+
+        let cli = Cli::try_parse_from([
+            "ai-memory",
+            "merge-project",
+            "--workspace",
+            "default",
+            "--from-project-id",
+            id,
+            "--into",
+            "canonical",
+        ])
+        .unwrap();
+        let Command::MergeProject(args) = cli.command else {
+            panic!("expected merge-project");
+        };
+        assert_eq!(args.from_project_id.as_deref(), Some(id));
+        assert_eq!(args.into.as_deref(), Some("canonical"));
+        assert!(
+            Cli::try_parse_from([
+                "ai-memory",
+                "merge-project",
+                "--from",
+                "old",
+                "--from-project-id",
+                id,
+                "--into",
+                "new",
+            ])
+            .is_err(),
+            "--from and --from-project-id must not both be accepted"
+        );
+
+        let cli = Cli::try_parse_from([
+            "ai-memory",
+            "restore-page",
+            "--path",
+            "notes/example.md",
+            "--page-id",
+            id,
+        ])
+        .unwrap();
+        let Command::RestorePage(args) = cli.command else {
+            panic!("expected restore-page");
+        };
+        assert_eq!(args.page_id.as_deref(), Some(id));
+        assert!(args.from.is_none());
+        assert!(
+            Cli::try_parse_from([
+                "ai-memory",
+                "restore-page",
+                "--path",
+                "notes/example.md",
+                "--from",
+                "HEAD",
+                "--page-id",
+                id,
+            ])
+            .is_err(),
+            "--from and --page-id must not both be accepted"
         );
     }
 }

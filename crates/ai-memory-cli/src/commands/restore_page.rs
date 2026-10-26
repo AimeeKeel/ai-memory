@@ -1,4 +1,4 @@
-//! `ai-memory restore-page` — restore one wiki page from a git checkpoint.
+//! `ai-memory restore-page` — restore one wiki page from retained history.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,10 @@ struct RestorePageRequest {
     workspace: String,
     project: String,
     path: String,
-    rev: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rev: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_id: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -30,8 +33,8 @@ struct RestorePageResponse {
 ///
 /// # Errors
 /// Returns an error if an explicit scope flag is empty, the server is
-/// unreachable, the checkpoint/path cannot be restored, or the restored page
-/// cannot be reindexed.
+/// unreachable, the requested checkpoint or page version cannot be restored,
+/// or the restored page cannot be reindexed.
 pub async fn run(config: &Config, args: RestorePageArgs) -> Result<()> {
     super::refuse_empty_explicit(args.workspace.as_deref(), "--workspace")?;
     super::refuse_empty_explicit(args.project.as_deref(), "--project")?;
@@ -46,6 +49,7 @@ pub async fn run(config: &Config, args: RestorePageArgs) -> Result<()> {
             project: project.clone(),
             path: args.path.clone(),
             rev: args.from.clone(),
+            page_id: args.page_id.clone(),
         },
     )
     .await

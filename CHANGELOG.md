@@ -13,6 +13,22 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- `ai-memory merge-project --workspace <w> --from <source> --into <target>`
+  losslessly joins two project identities inside one workspace. Its default is
+  an exact dry run; `--confirm` re-stamps page history, sessions, observations,
+  handoffs, embeddings and managed workstreams in one writer transaction, then
+  removes the source project. Same-path pages get a new target version that
+  appends the source body behind an `ai-memory:merged-from` marker while both
+  prior histories remain restorable. The target frontmatter wins, a one-sided
+  expiry is removed, and the combined page is flagged stale for consolidation.
+  `restore-page --page-id <uuid>` restores either retained history even after
+  the source identity is removed. Open sessions and live managed runs refuse
+  the merge (#1645).
+- `audit-contamination` now reports projects in one workspace whose names
+  collide after Unicode compatibility decomposition, case folding, and
+  removal of non-spacing marks. Findings distinguish case from accent
+  differences and include page/session counts plus last activity (#1645).
+
 - Added `[briefing] inject_on_subagent_start` to `.ai-memory.toml`. A project
   that sets it hands each `claude-code` subagent the project brief when the
   subagent starts: the same pinned, `_rules/` and `_slots/` brief that

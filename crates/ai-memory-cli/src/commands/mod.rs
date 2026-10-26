@@ -69,6 +69,7 @@ pub mod lint;
 pub mod list_projects;
 pub mod llm_test;
 pub mod mcp_bridge;
+pub mod merge_project;
 pub mod message;
 pub mod move_project;
 pub mod move_session;

@@ -3458,3 +3458,318 @@ async fn move_project_still_accepts_a_bare_project_name() {
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn merge_project_dry_run_then_preserves_history_and_sessions() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_state(&tmp).await;
+    seed_page(
+        &store,
+        &state.wiki,
+        "default",
+        "source",
+        "notes/shared.md",
+        "source body",
+    )
+    .await;
+    seed_page(
+        &store,
+        &state.wiki,
+        "default",
+        "source",
+        "notes/source-only.md",
+        "source only",
+    )
+    .await;
+    seed_page(
+        &store,
+        &state.wiki,
+        "default",
+        "target",
+        "notes/shared.md",
+        "target body",
+    )
+    .await;
+    let ws = store
+        .reader
+        .find_workspace("default".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let source = store
+        .reader
+        .find_project(ws, "source".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let target = store
+        .reader
+        .find_project(ws, "target".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let source_shared_id = store
+        .reader
+        .latest_page_id_by_ids(ws, source, "notes/shared.md".into())
+        .await
+        .unwrap()
+        .expect("source page exists");
+    let session = SessionId::new();
+    store
+        .writer
+        .begin_session(NewSession {
+            occurred_at: None,
+            id: session,
+            workspace_id: ws,
+            project_id: source,
+            agent_kind: AgentKind::Codex,
+            cwd: None,
+            actor_user: None,
+        })
+        .await
+        .unwrap();
+    store.writer.end_session(session, None).await.unwrap();
+
+    let preview = post(
+        state.clone(),
+        "/admin/merge-project",
+        json!({"workspace": "default", "from": "source", "into": "target"}),
+    )
+    .await;
+    assert_eq!(preview.status(), StatusCode::OK);
+    let preview = body_json(preview).await;
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["page_versions"], 2);
+    assert_eq!(preview["sessions"], 1);
+    assert!(
+        store
+            .reader
+            .find_project(ws, "source".into())
+            .await
+            .unwrap()
+            .is_some(),
+        "dry run must preserve the source"
+    );
+
+    let merged = post(
+        state.clone(),
+        "/admin/merge-project",
+        json!({
+            "workspace": "default",
+            "from": "source",
+            "into": "target",
+            "confirm": true
+        }),
+    )
+    .await;
+    assert_eq!(
+        merged.status(),
+        StatusCode::OK,
+        "{}",
+        body_json(merged).await
+    );
+    assert!(
+        store
+            .reader
+            .find_project(ws, "source".into())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store.reader.session_project_ids(session).await.unwrap(),
+        Some((ws, target))
+    );
+    let shared = state
+        .wiki
+        .read_page(ws, target, &PagePath::new("notes/shared.md").unwrap())
+        .unwrap();
+    assert!(shared.body.contains("target body"));
+    assert!(shared.body.contains("source body"));
+    assert!(shared.body.contains("ai-memory:merged-from default/source"));
+    let source_only = state
+        .wiki
+        .read_page(ws, target, &PagePath::new("notes/source-only.md").unwrap())
+        .unwrap();
+    assert_eq!(source_only.body, "source only");
+    assert_eq!(
+        store
+            .reader
+            .page_versions(ws, target, "notes/shared.md".into(), 10, 0)
+            .await
+            .unwrap()
+            .total,
+        3,
+        "both old heads and the merged head remain reachable"
+    );
+
+    let restored = post(
+        state.clone(),
+        "/admin/restore-page",
+        json!({
+            "workspace": "default",
+            "project": "target",
+            "path": "notes/shared.md",
+            "page_id": source_shared_id.to_string()
+        }),
+    )
+    .await;
+    assert_eq!(
+        restored.status(),
+        StatusCode::OK,
+        "{}",
+        body_json(restored).await
+    );
+    let shared = state
+        .wiki
+        .read_page(ws, target, &PagePath::new("notes/shared.md").unwrap())
+        .unwrap();
+    assert_eq!(shared.body, "source body");
+    assert_eq!(
+        store
+            .reader
+            .page_versions(ws, target, "notes/shared.md".into(), 10, 0)
+            .await
+            .unwrap()
+            .total,
+        4,
+        "restoring a retained source version creates a new latest version"
+    );
+}
+
+#[tokio::test]
+async fn merge_project_refuses_open_sessions_and_foreign_ids() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_state(&tmp).await;
+    let ws = store
+        .writer
+        .get_or_create_workspace("default")
+        .await
+        .unwrap();
+    let source = store
+        .writer
+        .get_or_create_project(ws, "source", None)
+        .await
+        .unwrap();
+    store
+        .writer
+        .get_or_create_project(ws, "target", None)
+        .await
+        .unwrap();
+    let session = SessionId::new();
+    store
+        .writer
+        .begin_session(NewSession {
+            occurred_at: None,
+            id: session,
+            workspace_id: ws,
+            project_id: source,
+            agent_kind: AgentKind::Codex,
+            cwd: None,
+            actor_user: None,
+        })
+        .await
+        .unwrap();
+    let open = post(
+        state.clone(),
+        "/admin/merge-project",
+        json!({
+            "workspace": "default",
+            "from": "source",
+            "into": "target",
+            "confirm": true
+        }),
+    )
+    .await;
+    assert_eq!(open.status(), StatusCode::CONFLICT);
+
+    let foreign_ws = store
+        .writer
+        .get_or_create_workspace("foreign")
+        .await
+        .unwrap();
+    let foreign = store
+        .writer
+        .get_or_create_project(foreign_ws, "other", None)
+        .await
+        .unwrap();
+    let foreign_response = post(
+        state,
+        "/admin/merge-project",
+        json!({
+            "workspace": "default",
+            "from_project_id": source.to_string(),
+            "into_project_id": foreign.to_string(),
+            "confirm": true
+        }),
+    )
+    .await;
+    assert_eq!(foreign_response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn concurrent_project_merges_have_one_winner_without_losing_the_page() {
+    let tmp = TempDir::new().unwrap();
+    let (state, store) = make_state(&tmp).await;
+    seed_page(
+        &store,
+        &state.wiki,
+        "default",
+        "source",
+        "notes/only.md",
+        "keep me",
+    )
+    .await;
+    let ws = store
+        .reader
+        .find_workspace("default".into())
+        .await
+        .unwrap()
+        .unwrap();
+    let target = store
+        .writer
+        .get_or_create_project(ws, "target", None)
+        .await
+        .unwrap();
+    let request = json!({
+        "workspace": "default",
+        "from": "source",
+        "into": "target",
+        "confirm": true
+    });
+    let (first, second) = tokio::join!(
+        post(state.clone(), "/admin/merge-project", request.clone()),
+        post(state.clone(), "/admin/merge-project", request),
+    );
+    let statuses = [first.status(), second.status()];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::OK)
+            .count(),
+        1,
+        "exactly one concurrent merge may commit: {statuses:?}"
+    );
+    assert!(
+        statuses
+            .iter()
+            .any(|status| matches!(*status, StatusCode::NOT_FOUND | StatusCode::CONFLICT))
+    );
+    assert_eq!(
+        state
+            .wiki
+            .read_page(ws, target, &PagePath::new("notes/only.md").unwrap())
+            .unwrap()
+            .body,
+        "keep me"
+    );
+    assert_eq!(
+        store
+            .reader
+            .page_versions(ws, target, "notes/only.md".into(), 10, 0)
+            .await
+            .unwrap()
+            .total,
+        1
+    );
+}

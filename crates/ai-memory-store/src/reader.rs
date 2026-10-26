@@ -1644,6 +1644,12 @@ pub struct PageVersionBody {
     pub title: String,
     /// Body stored on this version (markdown without frontmatter).
     pub body: String,
+    /// Full frontmatter stored on this version.
+    pub frontmatter: serde_json::Value,
+    /// Memory tier stored on this version.
+    pub tier: String,
+    /// Whether this version was pinned.
+    pub pinned: bool,
     /// ISO-8601 instant this version was written.
     pub created_at: String,
 }
@@ -1788,19 +1794,26 @@ pub struct StatusCounts {
 /// The key two project names share when only their spelling differs
 /// (#1645).
 ///
-/// Case folds and decomposes first, so `Renato` and `Renato` written with a
-/// combining accent are one key; then it keeps letters, digits, whitespace and
-/// the separators a project name can legitimately use, which drops the
-/// combining marks themselves and stray punctuation. It is a *finding*
-/// heuristic, deliberately a little broad: a false positive costs a line in a
-/// read-only report, while a split project costs a quarter of someone's memory.
+/// Compatibility-decomposes and lowercases first, then drops only non-spacing
+/// marks. Punctuation remains significant: `api` and `api!` are different
+/// project names, while `Renato`, `RENATO`, and `Rénato` share a key.
 #[must_use]
 pub fn project_name_fold_key(name: &str) -> String {
-    let decomposed = icu_normalizer::DecomposingNormalizer::new_nfd().normalize(name);
+    use unicode_categories::UnicodeCategories as _;
+
+    let decomposed = icu_normalizer::DecomposingNormalizer::new_nfkd().normalize(name);
     decomposed
         .chars()
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || matches!(c, '-' | '_' | '.'))
+        .filter(|c| !c.is_mark_nonspacing())
         .collect::<String>()
+        .to_lowercase()
+        .trim()
+        .to_string()
+}
+
+fn project_name_case_key(name: &str) -> String {
+    icu_normalizer::DecomposingNormalizer::new_nfd()
+        .normalize(name)
         .to_lowercase()
         .trim()
         .to_string()
@@ -1843,6 +1856,13 @@ pub struct ContaminationFinding {
     /// Session count of this project (CHECK B).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<u64>,
+    /// Whether the peer names differ by case, accent, or both (CHECK B).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collision_kind: Option<&'static str>,
+    /// Latest page/session/observation activity timestamp in microseconds
+    /// since the Unix epoch (CHECK B).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_us: Option<i64>,
 }
 
 /// Per-check counts for an [`ReaderPool::audit_contamination`] run.
@@ -11430,7 +11450,7 @@ impl ReaderPool {
             let row = conn
                 .query_row(
                     &format!(
-                        "SELECT pg.title, pg.body, pg.created_at, \
+                        "SELECT pg.title, pg.body, pg.frontmatter_json, pg.tier, pg.pinned, pg.created_at, \
                                 (SELECT sp.id FROM pages sp \
                                  WHERE sp.id = pg.supersedes{prev_visible}) \
                          FROM pages pg \
@@ -11450,13 +11470,16 @@ impl ReaderPool {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
-                            row.get::<_, i64>(2)?,
-                            row.get::<_, Option<Vec<u8>>>(3)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, i64>(5)?,
+                            row.get::<_, Option<Vec<u8>>>(6)?,
                         ))
                     },
                 )
                 .optional()?;
-            let Some((title, body, created_us, supersedes)) = row else {
+            let Some((title, body, frontmatter, tier, pinned, created_us, supersedes)) = row else {
                 return Ok(None);
             };
             Ok(Some(PageVersionBody {
@@ -11464,6 +11487,9 @@ impl ReaderPool {
                 supersedes: supersedes.as_deref().map(PageId::from_slice).transpose()?,
                 title,
                 body,
+                frontmatter: serde_json::from_str(&frontmatter).unwrap_or_default(),
+                tier,
+                pinned: pinned != 0,
                 created_at: jiff::Timestamp::from_microsecond(created_us)
                     .map(|ts| ts.to_string())
                     .unwrap_or_default(),
@@ -12499,7 +12525,7 @@ impl ReaderPool {
         // CHECK B's input: every project in scope's workspace with its counts.
         // A project-scoped audit still needs its peers to detect a collision;
         // only the emitted findings are restricted to the requested project.
-        type ProjectRow = (String, String, Vec<u8>, String, u64, u64);
+        type ProjectRow = (String, String, Vec<u8>, String, u64, u64, i64);
         let (mut findings, candidates, prefixes, projects): (
             Vec<ContaminationFinding>,
             Vec<Candidate>,
@@ -12629,7 +12655,11 @@ impl ReaderPool {
                     "SELECT lower(hex(p.id)), wl.name, p.id, p.name, \
                             (SELECT COUNT(*) FROM pages pg WHERE pg.project_id = p.id \
                               AND pg.is_latest = 1), \
-                            (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) \
+                            (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id), \
+                            max(p.created_at, \
+                              COALESCE((SELECT MAX(pg.updated_at) FROM pages pg WHERE pg.project_id = p.id), 0), \
+                              COALESCE((SELECT MAX(COALESCE(s.ended_at, s.started_at)) FROM sessions s WHERE s.project_id = p.id), 0), \
+                              COALESCE((SELECT MAX(o.created_at) FROM observations o WHERE o.project_id = p.id), 0)) \
                      FROM projects p JOIN workspaces wl ON wl.id = p.workspace_id",
                 );
                 if scoped {
@@ -12651,6 +12681,7 @@ impl ReaderPool {
                             row.get::<_, String>(3)?,
                             u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
                             u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                            row.get::<_, i64>(6)?,
                         ))
                     })?;
                     for r in rows {
@@ -12687,6 +12718,8 @@ impl ReaderPool {
                     peer_projects: None,
                     pages: None,
                     sessions: None,
+                    collision_kind: None,
+                    last_activity_us: None,
                 });
             }
         }
@@ -12714,6 +12747,19 @@ impl ReaderPool {
                     .filter(|peer| peer.0 != project.0)
                     .map(|peer| peer.3.as_str())
                     .collect();
+                let case_key = project_name_case_key(&project.3);
+                let case_differs = peers
+                    .iter()
+                    .any(|peer| peer.0 != project.0 && project_name_case_key(&peer.3) == case_key);
+                let accent_differs = peers
+                    .iter()
+                    .any(|peer| peer.0 != project.0 && project_name_case_key(&peer.3) != case_key);
+                let collision_kind = match (case_differs, accent_differs) {
+                    (true, true) => "case_and_accent",
+                    (true, false) => "case",
+                    (false, true) => "accent",
+                    (false, false) => "spelling",
+                };
                 findings.push(ContaminationFinding {
                     check: "project_name_collision",
                     confidence: "medium",
@@ -12726,6 +12772,8 @@ impl ReaderPool {
                     peer_projects: Some(others.join(", ")),
                     pages: Some(project.4),
                     sessions: Some(project.5),
+                    collision_kind: Some(collision_kind),
+                    last_activity_us: Some(project.6),
                 });
             }
         }

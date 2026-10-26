@@ -46,6 +46,10 @@ struct Finding {
     pages: Option<u64>,
     #[serde(default)]
     sessions: Option<u64>,
+    #[serde(default)]
+    collision_kind: Option<String>,
+    #[serde(default)]
+    last_activity_us: Option<i64>,
 }
 
 /// Run the `audit-contamination` subcommand.
@@ -87,15 +91,17 @@ pub async fn run(config: &Config, args: AuditContaminationArgs) -> Result<()> {
                 expected,
             ),
             "project_name_collision" => println!(
-                "  [{}] project {} ({}/{}): {} page(s), {} session(s); collides with {}. \
-                 Add a `.ai-memory.toml` marker, or merge the two once `merge-project` exists \
-                 (#1645).",
+                "  [{}] project {} ({}/{}): {} page(s), {} session(s), last activity {}; \
+                 collides by {} with {}. Add a `.ai-memory.toml` marker or run `merge-project`.",
                 f.confidence,
                 f.entity_id,
                 f.landed_workspace,
                 f.landed_project,
                 f.pages.unwrap_or(0),
                 f.sessions.unwrap_or(0),
+                f.last_activity_us
+                    .map_or_else(|| "unknown".into(), |value| value.to_string()),
+                f.collision_kind.as_deref().unwrap_or("spelling"),
                 f.peer_projects.as_deref().unwrap_or("?"),
             ),
             other => println!(

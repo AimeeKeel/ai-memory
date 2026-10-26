@@ -7692,6 +7692,39 @@ pub struct MoveSummary {
     pub workstreams_moved: u64,
 }
 
+/// One latest source page captured by the wiki layer for a same-workspace
+/// project merge.
+#[derive(Debug, Clone)]
+pub struct MergeProjectPage {
+    /// Source page path.
+    pub path: PagePath,
+    /// Latest source version observed while preparing the filesystem change.
+    pub source_page_id: PageId,
+    /// Latest target version at the same path, when the paths collide.
+    pub target_page_id: Option<PageId>,
+    /// New combined target version for a collision. `None` means the source's
+    /// existing latest row becomes the target latest row unchanged.
+    pub merged_page: Option<NewPage>,
+}
+
+/// Result of atomically merging one project id into another in the same
+/// workspace.
+#[derive(Debug, Default, Clone)]
+pub struct MergeProjectSummary {
+    /// All source page versions re-stamped to the target project.
+    pub page_versions: u64,
+    /// Source sessions re-stamped to the target project.
+    pub sessions: u64,
+    /// Source observations re-stamped to the target project.
+    pub observations: u64,
+    /// Source handoffs re-stamped to the target project.
+    pub handoffs: u64,
+    /// Source managed workstreams re-stamped to the target project.
+    pub workstreams: u64,
+    /// New combined page versions created for same-path collisions.
+    pub page_conflicts: u64,
+}
+
 /// Re-stamp a project's `workspace_id` across every domain table in ONE
 /// transaction, keeping the same `project_id`. This is a lossless "true move":
 /// pages, sessions, observations, handoffs and supersession history all stay
@@ -7834,6 +7867,435 @@ pub fn move_project_workspace(
         auto_improve_scheduler_claims_moved,
         session_consolidation_jobs_moved,
         workstreams_moved,
+    })
+}
+
+/// Merge `source_project` into `target_project` inside one workspace.
+///
+/// Every persisted row is either re-stamped, coalesced under its natural
+/// unique key, or retained behind its page/workstream id. Page ids never
+/// change, so embeddings, evidence, access rows and graph edges follow their
+/// versions automatically. Same-path page collisions are represented by a
+/// new target version supplied by the wiki layer; both prior histories remain
+/// superseded and queryable.
+pub fn merge_project(
+    conn: &mut Connection,
+    workspace_id: WorkspaceId,
+    source_project: ProjectId,
+    target_project: ProjectId,
+    pages: &[MergeProjectPage],
+    commit: bool,
+) -> StoreResult<MergeProjectSummary> {
+    if source_project == target_project {
+        return Err(StoreError::Duplicate(
+            "source and target project must be different".into(),
+        ));
+    }
+    let tx = conn.transaction()?;
+    let ws = workspace_id.as_bytes();
+    let src = source_project.as_bytes();
+    let dst = target_project.as_bytes();
+    for (id, label) in [(src, "source"), (dst, "target")] {
+        let present: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1 AND workspace_id = ?2)",
+            params![id, ws],
+            |row| row.get(0),
+        )?;
+        if !present {
+            return Err(StoreError::NotFound(format!(
+                "{label} project does not exist in workspace {workspace_id}"
+            )));
+        }
+    }
+
+    let open_sessions: u64 = tx.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE project_id = ?1 AND ended_at IS NULL",
+        params![src],
+        |row| row.get(0),
+    )?;
+    if open_sessions > 0 {
+        return Err(StoreError::ProjectSessionsOpen {
+            count: open_sessions,
+        });
+    }
+    let now = Timestamp::now().as_microsecond();
+    let (active_runs, active_names): (u64, String) = tx.query_row(
+        "SELECT COUNT(*), COALESCE(group_concat(w.name, ', '), '') \
+         FROM managed_runs r JOIN workstreams w ON w.id = r.workstream_id \
+         WHERE w.project_id = ?1 AND r.state = 'active' AND r.lease_expires_at > ?2",
+        params![src, now],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if active_runs > 0 {
+        return Err(StoreError::ManagedRunActive {
+            count: active_runs,
+            workstreams: active_names,
+        });
+    }
+
+    let expected: std::collections::HashSet<PageId> =
+        pages.iter().map(|page| page.source_page_id).collect();
+    if expected.len() != pages.len() {
+        return Err(StoreError::Duplicate(
+            "project merge page plan contains duplicate source versions".into(),
+        ));
+    }
+    let actual: Vec<Vec<u8>> = tx
+        .prepare("SELECT id FROM pages WHERE project_id = ?1 AND is_latest = 1")?
+        .query_map(params![src], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    let actual: std::collections::HashSet<PageId> = actual
+        .iter()
+        .map(|id| PageId::from_slice(id).map_err(StoreError::from))
+        .collect::<StoreResult<_>>()?;
+    if actual != expected {
+        return Err(StoreError::Duplicate(
+            "source pages changed while the project merge was being prepared".into(),
+        ));
+    }
+    let target_paths: Vec<String> = tx
+        .prepare("SELECT path FROM pages WHERE project_id = ?1 AND is_latest = 1")?
+        .query_map(params![dst], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for page in pages {
+        let requested_key = ai_memory_core::portable_page_key(page.path.as_str());
+        if let Some(existing) = target_paths.iter().find(|existing| {
+            existing.as_str() != page.path.as_str()
+                && ai_memory_core::portable_page_key(existing) == requested_key
+        }) {
+            return Err(StoreError::PagePathCollides {
+                requested: page.path.as_str().to_owned(),
+                existing: existing.clone(),
+            });
+        }
+    }
+    for page in pages {
+        let source_path: Option<String> = tx
+            .query_row(
+                "SELECT path FROM pages WHERE id = ?1 AND project_id = ?2 AND is_latest = 1",
+                params![page.source_page_id.as_bytes(), src],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if source_path.as_deref() != Some(page.path.as_str()) {
+            return Err(StoreError::Duplicate(format!(
+                "source page plan does not match '{}'",
+                page.path.as_str()
+            )));
+        }
+        let target: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT id FROM pages WHERE project_id = ?1 AND path = ?2 AND is_latest = 1",
+                params![dst, page.path.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let target = target
+            .as_deref()
+            .map(PageId::from_slice)
+            .transpose()
+            .map_err(StoreError::from)?;
+        if target != page.target_page_id {
+            return Err(StoreError::Duplicate(format!(
+                "target page '{}' changed while the project merge was being prepared",
+                page.path.as_str()
+            )));
+        }
+        if page.target_page_id.is_some() != page.merged_page.is_some() {
+            return Err(StoreError::Duplicate(format!(
+                "invalid collision plan for '{}'",
+                page.path.as_str()
+            )));
+        }
+        if page
+            .merged_page
+            .as_ref()
+            .is_some_and(|merged| merged.path != page.path)
+        {
+            return Err(StoreError::Duplicate(format!(
+                "merged page path does not match '{}'",
+                page.path.as_str()
+            )));
+        }
+    }
+
+    // Merging must never relax either project's access or profile privacy.
+    // The target identity remains canonical, but the stricter policy wins.
+    tx.execute(
+        "UPDATE projects SET \
+           access_mode = CASE WHEN access_mode = 'restricted' OR \
+             (SELECT access_mode FROM projects WHERE id = ?2) = 'restricted' \
+             THEN 'restricted' ELSE 'open' END, \
+           profile_contribute = min(profile_contribute, \
+             (SELECT profile_contribute FROM projects WHERE id = ?2)), \
+           profile_consume = min(profile_consume, \
+             (SELECT profile_consume FROM projects WHERE id = ?2)) \
+         WHERE id = ?1",
+        params![dst, src],
+    )?;
+
+    // Retire colliding source heads first so moving the full history cannot
+    // violate the target's one-latest-version-per-path index.
+    for page in pages.iter().filter(|page| page.target_page_id.is_some()) {
+        tx.execute(
+            "UPDATE pages SET is_latest = 0, valid_to = ?2 WHERE id = ?1 AND is_latest = 1",
+            params![page.source_page_id.as_bytes(), now],
+        )?;
+        tx.execute(
+            "UPDATE entity_page_links SET superseded_at = ?2 \
+             WHERE page_id = ?1 AND superseded_at IS NULL",
+            params![page.source_page_id.as_bytes(), now],
+        )?;
+    }
+
+    let page_versions = tx.execute(
+        "UPDATE pages SET project_id = ?1 WHERE project_id = ?2",
+        params![dst, src],
+    )? as u64;
+    let sessions = tx.execute(
+        "UPDATE sessions SET project_id = ?1 WHERE project_id = ?2",
+        params![dst, src],
+    )? as u64;
+    let observations = tx.execute(
+        "UPDATE observations SET project_id = ?1 WHERE project_id = ?2",
+        params![dst, src],
+    )? as u64;
+    let handoffs = tx.execute(
+        "UPDATE handoffs SET project_id = ?1 WHERE project_id = ?2",
+        params![dst, src],
+    )? as u64;
+
+    // A pending proposal's target key is unique per project. Preserve both
+    // proposals by making the source one an explicit conflict before moving.
+    tx.execute(
+        "UPDATE auto_improve_proposals SET status = 'conflict', decided_at = ?3, \
+             decision_reason = 'source project merged into another project' \
+         WHERE project_id = ?1 AND status = 'pending' AND EXISTS ( \
+             SELECT 1 FROM auto_improve_proposals d \
+             WHERE d.project_id = ?2 AND d.status = 'pending' \
+               AND d.target_path = auto_improve_proposals.target_path)",
+        params![src, dst, now],
+    )?;
+    for table in [
+        "audit_log",
+        "auto_improve_runs",
+        "auto_improve_proposals",
+        "auto_improve_rejections",
+        "auto_improve_scheduler_claims",
+        "session_consolidation_jobs",
+        "page_feedback",
+        "purged_sessions",
+    ] {
+        tx.execute(
+            &format!("UPDATE {table} SET project_id = ?1 WHERE project_id = ?2"),
+            params![dst, src],
+        )?;
+    }
+
+    // Coalesce singleton/project-keyed state instead of discarding either
+    // side. A later watermark wins; the earliest initialization remains the
+    // provenance boundary.
+    tx.execute(
+        "INSERT INTO auto_improve_scheduler_state \
+             (workspace_id, project_id, watermark_ended_at, initialized_at, updated_at) \
+         SELECT workspace_id, ?1, watermark_ended_at, initialized_at, updated_at \
+         FROM auto_improve_scheduler_state WHERE project_id = ?2 \
+         ON CONFLICT(workspace_id, project_id) DO UPDATE SET \
+             watermark_ended_at = max(watermark_ended_at, excluded.watermark_ended_at), \
+             initialized_at = min(initialized_at, excluded.initialized_at), \
+             updated_at = max(updated_at, excluded.updated_at)",
+        params![dst, src],
+    )?;
+    tx.execute(
+        "DELETE FROM auto_improve_scheduler_state WHERE project_id = ?1",
+        params![src],
+    )?;
+
+    tx.execute(
+        "INSERT INTO project_grants (workspace_id, project_id, user_id, level, granted_by, granted_at) \
+         SELECT workspace_id, ?1, user_id, level, granted_by, granted_at \
+         FROM project_grants WHERE project_id = ?2 \
+         ON CONFLICT(workspace_id, project_id, user_id) DO UPDATE SET \
+           level = CASE WHEN level = 'write' OR excluded.level = 'write' THEN 'write' ELSE 'read' END, \
+           granted_at = min(granted_at, excluded.granted_at)",
+        params![dst, src],
+    )?;
+    tx.execute(
+        "DELETE FROM project_grants WHERE project_id = ?1",
+        params![src],
+    )?;
+
+    // Same-name entities become one noun while every page edge survives.
+    let duplicate_entities: Vec<(Vec<u8>, Vec<u8>)> = tx
+        .prepare(
+            "SELECT s.id, d.id FROM entities s JOIN entities d \
+             ON d.workspace_id = s.workspace_id AND d.project_id = ?2 AND d.name = s.name \
+             WHERE s.project_id = ?1",
+        )?
+        .query_map(params![src, dst], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (source_entity, target_entity) in duplicate_entities {
+        tx.execute(
+            "INSERT OR IGNORE INTO entity_page_links (entity_id, page_id, valid_from, superseded_at) \
+             SELECT ?1, page_id, valid_from, superseded_at FROM entity_page_links WHERE entity_id = ?2",
+            params![target_entity, source_entity],
+        )?;
+        tx.execute("DELETE FROM entities WHERE id = ?1", params![source_entity])?;
+    }
+    tx.execute(
+        "UPDATE entities SET project_id = ?1 WHERE project_id = ?2",
+        params![dst, src],
+    )?;
+
+    // Keep every colliding workstream by giving only the source stream a
+    // deterministic disambiguator before the coordinate update.
+    tx.execute(
+        "UPDATE workstreams SET name = name || '-from-' || lower(hex(?1)) \
+             || '-' || lower(hex(id)) \
+         WHERE project_id = ?1 AND EXISTS (SELECT 1 FROM workstreams d \
+           WHERE d.project_id = ?2 \
+             AND d.repo_fingerprint = workstreams.repo_fingerprint \
+             AND d.worktree_fingerprint = workstreams.worktree_fingerprint \
+             AND d.name = workstreams.name)",
+        params![src, dst],
+    )?;
+    let workstreams = tx.execute(
+        "UPDATE workstreams SET project_id = ?1 WHERE project_id = ?2",
+        params![dst, src],
+    )? as u64;
+
+    // Candidate identity is evidence identity. Preserve a collision by
+    // qualifying the source reference before moving it.
+    tx.execute(
+        "UPDATE profile_candidates SET source_ref = source_ref || '#merged-' || lower(substr(hex(id), 1, 8)) \
+         WHERE project_id = ?1 AND EXISTS (SELECT 1 FROM profile_candidates d \
+           WHERE d.project_id = ?2 \
+             AND d.source_kind = profile_candidates.source_kind \
+             AND d.source_ref = profile_candidates.source_ref \
+             AND d.topic_key = profile_candidates.topic_key)",
+        params![src, dst],
+    )?;
+    tx.execute(
+        "UPDATE profile_candidates SET project_id = ?1 WHERE project_id = ?2",
+        params![dst, src],
+    )?;
+    tx.execute(
+        "INSERT INTO profile_entry_ledger (workspace_id, project_id, path, topic_key, written_at) \
+         SELECT workspace_id, ?1, path, topic_key, written_at FROM profile_entry_ledger WHERE project_id = ?2 \
+         ON CONFLICT(workspace_id, project_id, path) DO UPDATE SET \
+           topic_key = CASE WHEN excluded.written_at > written_at THEN excluded.topic_key ELSE topic_key END, \
+           written_at = max(written_at, excluded.written_at)",
+        params![dst, src],
+    )?;
+    tx.execute(
+        "DELETE FROM profile_entry_ledger WHERE project_id = ?1",
+        params![src],
+    )?;
+    tx.execute(
+        "INSERT INTO profile_harvest_marks (workspace_id, project_id, observations_until, pages_until) \
+         SELECT workspace_id, ?1, observations_until, pages_until FROM profile_harvest_marks WHERE project_id = ?2 \
+         ON CONFLICT(workspace_id, project_id) DO UPDATE SET \
+           observations_until = max(observations_until, excluded.observations_until), \
+           pages_until = max(pages_until, excluded.pages_until)",
+        params![dst, src],
+    )?;
+    tx.execute(
+        "DELETE FROM profile_harvest_marks WHERE project_id = ?1",
+        params![src],
+    )?;
+    tx.execute(
+        "INSERT INTO ingest_keys (project_id, key, seen_at, completed_at) \
+         SELECT ?1, key, seen_at, completed_at FROM ingest_keys WHERE project_id = ?2 \
+         ON CONFLICT(project_id, key) DO UPDATE SET \
+           seen_at = max(seen_at, excluded.seen_at), \
+           completed_at = CASE \
+             WHEN completed_at IS NULL THEN excluded.completed_at \
+             WHEN excluded.completed_at IS NULL THEN completed_at \
+             ELSE max(completed_at, excluded.completed_at) END",
+        params![dst, src],
+    )?;
+    tx.execute(
+        "DELETE FROM ingest_keys WHERE project_id = ?1",
+        params![src],
+    )?;
+
+    tx.execute(
+        "UPDATE agent_messages SET from_project_id = ?1 WHERE from_project_id = ?2",
+        params![dst, src],
+    )?;
+    tx.execute(
+        "UPDATE agent_messages SET to_project_id = ?1 WHERE to_project_id = ?2",
+        params![dst, src],
+    )?;
+
+    let mut page_conflicts = 0u64;
+    for page in pages {
+        if let Some(merged) = &page.merged_page {
+            if merged.workspace_id != workspace_id || merged.project_id != target_project {
+                return Err(StoreError::Duplicate(format!(
+                    "merged page '{}' targets the wrong scope",
+                    page.path.as_str()
+                )));
+            }
+            let created_at: i64 = tx.query_row(
+                "SELECT min(created_at) FROM pages WHERE project_id = ?1 AND path = ?2",
+                params![dst, page.path.as_str()],
+                |row| row.get(0),
+            )?;
+            let merged_id = upsert_page_in_tx(&tx, merged, now)?;
+            tx.execute(
+                "UPDATE pages SET created_at = ?2 WHERE id = ?1",
+                params![merged_id.as_bytes(), created_at],
+            )?;
+            tx.execute(
+                "INSERT INTO page_feedback \
+                 (id, page_id, workspace_id, project_id, kind, reason, salience_after, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, 'stale', ?5, 1.0, ?6)",
+                params![
+                    uuid::Uuid::now_v7().as_bytes(),
+                    merged_id.as_bytes(),
+                    ws,
+                    dst,
+                    format!("merged from source project {source_project}"),
+                    now,
+                ],
+            )?;
+            page_conflicts += 1;
+        }
+    }
+
+    audit_with_detail(
+        &tx,
+        "merge_project",
+        Some(ws),
+        Some(dst),
+        None,
+        None,
+        now,
+        &serde_json::json!({"source_project_id": source_project.to_string()}).to_string(),
+    )?;
+
+    let deleted = tx.execute(
+        "DELETE FROM projects WHERE id = ?1 AND workspace_id = ?2",
+        params![src, ws],
+    )?;
+    if deleted != 1 {
+        return Err(StoreError::NotFound(
+            "source project disappeared during merge".into(),
+        ));
+    }
+    if commit {
+        tx.commit()?;
+    } else {
+        tx.rollback()?;
+    }
+    Ok(MergeProjectSummary {
+        page_versions,
+        sessions,
+        observations,
+        handoffs,
+        workstreams,
+        page_conflicts,
     })
 }
 
@@ -14910,6 +15372,241 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(src_pages, 1, "rollback must preserve source pages");
+    }
+
+    #[test]
+    fn merge_project_preserves_both_page_histories_and_dependent_rows() {
+        let (_tmp, mut conn, ws, source) = fresh_db();
+        let target = get_or_create_project(&mut conn, &ws, "target", None).unwrap();
+        conn.execute(
+            "UPDATE projects SET access_mode = 'restricted', profile_contribute = 0, \
+             profile_consume = 0 WHERE id = ?1",
+            params![source.as_bytes()],
+        )
+        .unwrap();
+        let source_old = upsert_page(
+            &mut conn,
+            &page(ws, source, "notes/shared.md", "source old"),
+        )
+        .unwrap();
+        let source_latest = upsert_page(
+            &mut conn,
+            &page(ws, source, "notes/shared.md", "source latest"),
+        )
+        .unwrap();
+        let unique = upsert_page(
+            &mut conn,
+            &page(ws, source, "notes/source-only.md", "unique"),
+        )
+        .unwrap();
+        let target_latest = upsert_page(
+            &mut conn,
+            &page(ws, target, "notes/shared.md", "target body"),
+        )
+        .unwrap();
+        let earliest_created: i64 = conn
+            .query_row(
+                "SELECT min(created_at) FROM pages WHERE id IN (?1, ?2, ?3)",
+                params![
+                    source_old.as_bytes(),
+                    source_latest.as_bytes(),
+                    target_latest.as_bytes()
+                ],
+                |row| row.get(0),
+            )
+            .unwrap();
+        store_embedding(&mut conn, &source_latest, &[1, 2, 3, 4], "test", "m", 1).unwrap();
+
+        let sid = SessionId::new();
+        begin_session(&mut conn, &hook_session(sid, ws, source, None)).unwrap();
+        insert_observation(
+            &mut conn,
+            &hook_observation(&hook_session(sid, ws, source, None)),
+        )
+        .unwrap();
+        end_session(&mut conn, &sid, None).unwrap();
+
+        let merged = page(
+            ws,
+            target,
+            "notes/shared.md",
+            "target body\n\n<!-- ai-memory:merged-from default/scratch -->\n\nsource latest",
+        );
+        let plan = vec![
+            MergeProjectPage {
+                path: PagePath::new("notes/shared.md").unwrap(),
+                source_page_id: source_latest,
+                target_page_id: Some(target_latest),
+                merged_page: Some(merged),
+            },
+            MergeProjectPage {
+                path: PagePath::new("notes/source-only.md").unwrap(),
+                source_page_id: unique,
+                target_page_id: None,
+                merged_page: None,
+            },
+        ];
+
+        let preview = merge_project(&mut conn, ws, source, target, &plan, false).unwrap();
+        assert_eq!(preview.page_versions, 3);
+        assert_eq!(preview.sessions, 1);
+        assert_eq!(preview.observations, 1);
+        assert_eq!(preview.page_conflicts, 1);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = ?1",
+                params![source.as_bytes()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "preview must roll back"
+        );
+
+        let summary = merge_project(&mut conn, ws, source, target, &plan, true).unwrap();
+        assert_eq!(summary.page_versions, 3);
+        assert_eq!(summary.page_conflicts, 1);
+        assert_eq!(summary.sessions, 1);
+        assert_eq!(summary.observations, 1);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = ?1",
+                params![source.as_bytes()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0
+        );
+        let policy: (String, i64, i64) = conn
+            .query_row(
+                "SELECT access_mode, profile_contribute, profile_consume FROM projects WHERE id = ?1",
+                params![target.as_bytes()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(policy, ("restricted".into(), 0, 0));
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM pages WHERE project_id = ?1 AND path = 'notes/shared.md'",
+                params![target.as_bytes()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            4,
+            "target history, source history and combined head must survive"
+        );
+        let (body, latest, merged_created): (String, i64, i64) = conn
+            .query_row(
+                "SELECT body, is_latest, created_at FROM pages WHERE project_id = ?1 \
+                 AND path = 'notes/shared.md' ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+                params![target.as_bytes()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert!(body.contains("target body"));
+        assert!(body.contains("source latest"));
+        assert_eq!(latest, 1);
+        assert_eq!(merged_created, earliest_created);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM page_embeddings WHERE page_id = ?1",
+                params![source_latest.as_bytes()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "embedding follows the unchanged source page id"
+        );
+        for id in [source_old, source_latest, target_latest] {
+            let latest: i64 = conn
+                .query_row(
+                    "SELECT is_latest FROM pages WHERE id = ?1",
+                    params![id.as_bytes()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(latest, 0, "prior versions remain reachable but superseded");
+        }
+    }
+
+    #[test]
+    fn merge_project_refuses_open_sessions_and_foreign_project_ids() {
+        let (_tmp, mut conn, ws, source) = fresh_db();
+        let target = get_or_create_project(&mut conn, &ws, "target", None).unwrap();
+        let sid = SessionId::new();
+        begin_session(&mut conn, &hook_session(sid, ws, source, None)).unwrap();
+        assert!(matches!(
+            merge_project(&mut conn, ws, source, target, &[], true),
+            Err(StoreError::ProjectSessionsOpen { count: 1 })
+        ));
+        end_session(&mut conn, &sid, None).unwrap();
+
+        let source_page =
+            upsert_page(&mut conn, &page(ws, source, "notes/Case.md", "source")).unwrap();
+        upsert_page(&mut conn, &page(ws, target, "notes/case.md", "target")).unwrap();
+        let collision_plan = [MergeProjectPage {
+            path: PagePath::new("notes/Case.md").unwrap(),
+            source_page_id: source_page,
+            target_page_id: None,
+            merged_page: None,
+        }];
+        assert!(matches!(
+            merge_project(&mut conn, ws, source, target, &collision_plan, true),
+            Err(StoreError::PagePathCollides { .. })
+        ));
+
+        let foreign_ws = get_or_create_workspace(&mut conn, "foreign").unwrap();
+        let foreign = get_or_create_project(&mut conn, &foreign_ws, "target", None).unwrap();
+        assert!(matches!(
+            merge_project(&mut conn, ws, source, foreign, &[], true),
+            Err(StoreError::NotFound(_))
+        ));
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = ?1",
+                params![source.as_bytes()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "a foreign target must move nothing"
+        );
+    }
+
+    #[test]
+    fn merge_project_preserves_colliding_workstreams() {
+        let (_tmp, mut conn, ws, source) = fresh_db();
+        let target = get_or_create_project(&mut conn, &ws, "target", None).unwrap();
+        let now = Timestamp::now().as_microsecond();
+        for (id, project) in [
+            (uuid::Uuid::now_v7(), source),
+            (uuid::Uuid::now_v7(), target),
+        ] {
+            conn.execute(
+                "INSERT INTO workstreams (
+                    id, workspace_id, project_id, repo_fingerprint,
+                    worktree_fingerprint, name, cwd, created_at, selected_at, updated_at
+                 ) VALUES (?1, ?2, ?3, 'repo', 'tree', 'default', '/repo', ?4, ?4, ?4)",
+                params![id.as_bytes(), ws.as_bytes(), project.as_bytes(), now],
+            )
+            .unwrap();
+        }
+
+        let summary = merge_project(&mut conn, ws, source, target, &[], true).unwrap();
+        assert_eq!(summary.workstreams, 1);
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM workstreams WHERE project_id = ?1 ORDER BY name")
+            .unwrap()
+            .query_map(params![target.as_bytes()], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0], "default");
+        assert!(
+            names[1].starts_with("default-from-"),
+            "source collision must receive a deterministic disambiguator: {names:?}"
+        );
     }
 
     /// Seed one session in `(ws, proj)` with everything `move_session`
