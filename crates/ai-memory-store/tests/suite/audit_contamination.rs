@@ -369,8 +369,8 @@ fn project_name_fold_key_matches_spelling_not_meaning() {
     assert_eq!(key("  api  "), "api");
 }
 
-/// A scoped audit still reports collisions inside the requested project, and
-/// nothing outside it.
+/// A scoped audit compares the requested project with its workspace peers,
+/// then reports only the requested side of a collision.
 #[tokio::test]
 async fn scoped_audit_limits_collisions_to_the_requested_project() {
     let tmp = tempfile::tempdir().unwrap();
@@ -407,7 +407,10 @@ async fn scoped_audit_limits_collisions_to_the_requested_project() {
         .await
         .unwrap();
     assert_eq!(
-        scoped.summary.project_name_collisions, 0,
-        "a single scoped project cannot collide with itself in the same workspace filter"
+        scoped.summary.project_name_collisions, 1,
+        "the selected project must still be compared with its workspace peers"
     );
+    assert_eq!(scoped.findings.len(), 1);
+    assert_eq!(scoped.findings[0].landed_project, "api");
+    assert_eq!(scoped.findings[0].peer_projects.as_deref(), Some("API"));
 }
