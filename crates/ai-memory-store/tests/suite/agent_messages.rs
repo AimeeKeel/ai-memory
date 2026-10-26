@@ -9,7 +9,7 @@
 //! recipient inbox is bounded so a flood cannot exhaust its context/storage.
 
 use ai_memory_core::{
-    AgentKind, MessageBox, MessageClaim, NewAgentMessage, ProjectId, WorkspaceId,
+    AgentKind, MessageBox, MessageClaim, MessageNature, NewAgentMessage, ProjectId, WorkspaceId,
 };
 use ai_memory_store::{MAX_PENDING_INBOX_MESSAGES, Store};
 
@@ -27,6 +27,90 @@ async fn project(store: &Store, workspace: &str, project: &str) -> (WorkspaceId,
     (ws, proj)
 }
 
+#[tokio::test]
+async fn measured_messages_require_evidence_at_the_store_boundary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path()).unwrap();
+    let a = project(&store, "default", "project-a").await;
+    let b = project(&store, "default", "project-b").await;
+
+    let mut measured = message(a, b, "the benchmark improved");
+    measured.nature = MessageNature::Measured;
+    measured.evidence = Some("   ".into());
+    let error = store
+        .writer
+        .insert_message(measured)
+        .await
+        .expect_err("blank evidence must not support a measured claim");
+    assert!(error.to_string().contains("evidence_required"), "{error}");
+
+    let mut inferred = message(a, b, "the lock probably expired");
+    inferred.nature = MessageNature::Inferred;
+    let id = store.writer.insert_message(inferred).await.unwrap();
+    let listed = store
+        .reader
+        .list_messages(b.0, b.1, MessageBox::Inbox, 50)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, id);
+    assert_eq!(listed[0].nature, MessageNature::Inferred);
+    assert_eq!(listed[0].evidence, None);
+}
+
+#[tokio::test]
+async fn message_evidence_is_bounded_at_the_store_boundary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path()).unwrap();
+    let a = project(&store, "default", "project-a").await;
+    let b = project(&store, "default", "project-b").await;
+    let mut measured = message(a, b, "the benchmark improved");
+    measured.nature = MessageNature::Measured;
+    measured.evidence = Some("x".repeat(2_000));
+    store.writer.insert_message(measured).await.unwrap();
+
+    let listed = store
+        .reader
+        .list_messages(b.0, b.1, MessageBox::Inbox, 50)
+        .await
+        .unwrap();
+    assert_eq!(listed[0].evidence.as_deref().unwrap().len(), 1_000);
+}
+
+#[tokio::test]
+async fn pre_tag_rows_read_as_unknown_without_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path()).unwrap();
+    let a = project(&store, "default", "project-a").await;
+    let b = project(&store, "default", "project-b").await;
+    let id = ai_memory_core::MessageId::new();
+    rusqlite::Connection::open(store.db_path())
+        .unwrap()
+        .execute(
+            "INSERT INTO agent_messages (id, from_workspace_id, from_project_id, from_agent, \
+             to_workspace_id, to_project_id, body, state, created_at) \
+             VALUES (?1, ?2, ?3, 'other', ?4, ?5, 'legacy', 'pending', ?6)",
+            rusqlite::params![
+                id.as_bytes(),
+                a.0.as_bytes(),
+                a.1.as_bytes(),
+                b.0.as_bytes(),
+                b.1.as_bytes(),
+                jiff::Timestamp::now().as_microsecond(),
+            ],
+        )
+        .unwrap();
+
+    let listed = store
+        .reader
+        .list_messages(b.0, b.1, MessageBox::Inbox, 50)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].nature, MessageNature::Unknown);
+    assert_eq!(listed[0].evidence, None);
+}
+
 fn message(
     from: (WorkspaceId, ProjectId),
     to: (WorkspaceId, ProjectId),
@@ -42,6 +126,8 @@ fn message(
         to_project_id: to.1,
         subject: Some("need a thing".into()),
         body: body.into(),
+        nature: ai_memory_core::MessageNature::Unknown,
+        evidence: None,
     }
 }
 

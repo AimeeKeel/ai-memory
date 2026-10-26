@@ -79,8 +79,8 @@ pub use ids::{
     portable_page_key,
 };
 pub use message::{
-    AgentMessage, MessageBox, MessageClaim, MessageOrigin, MessageState, NewAgentMessage,
-    UNTRUSTED_MESSAGE_NOTICE,
+    AgentMessage, MessageBox, MessageClaim, MessageNature, MessageOrigin, MessageState,
+    NewAgentMessage, UNTRUSTED_MESSAGE_NOTICE,
 };
 pub use observation::{NewObservation, NewSession, Observation, ObservationKind};
 pub use page::{

@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Cross-project messages can carry an optional epistemic `nature` (`unknown`,
+  `measured`, `reported`, or `inferred`) and bounded supporting `evidence`.
+  The server refuses a `measured` send without non-empty evidence; existing
+  messages and callers remain `unknown` by default (#1428).
+
 - Added `memory_patch_page` for atomic, heading-anchored edits to an existing
   Markdown page without re-emitting its body or metadata. It requires the
   page's current `page_id`; section replacement additionally requires the

@@ -468,6 +468,8 @@ const MESSAGE_BODY_MAX_CHARS: usize = 8000;
 
 /// Subject cap for `POST /admin/messages/send` (V64).
 const MESSAGE_SUBJECT_MAX_CHARS: usize = 200;
+/// Supporting evidence cap for cross-project messages (#1428).
+const MESSAGE_EVIDENCE_MAX_CHARS: usize = 1_000;
 
 #[derive(Debug, Deserialize)]
 struct PendingWritesQuery {
@@ -3479,6 +3481,10 @@ struct SendMessageRequest {
     to_project: String,
     #[serde(default)]
     subject: Option<String>,
+    #[serde(default)]
+    nature: ai_memory_core::MessageNature,
+    #[serde(default)]
+    evidence: Option<String>,
     body: String,
 }
 
@@ -3531,6 +3537,21 @@ async fn handle_send_message(
             ai_memory_core::truncate_utf8_bytes(&sanitizer.scrub(s), MESSAGE_SUBJECT_MAX_CHARS)
         })
         .filter(|s| !s.is_empty());
+    let evidence = req
+        .evidence
+        .as_deref()
+        .map(|value| {
+            ai_memory_core::truncate_utf8_bytes(&sanitizer.scrub(value), MESSAGE_EVIDENCE_MAX_CHARS)
+        })
+        .filter(|value| !value.trim().is_empty());
+    if req.nature == ai_memory_core::MessageNature::Measured && evidence.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "evidence_required: measured messages require non-empty evidence"
+            })),
+        );
+    }
 
     let distinguishes = match state
         .reader
@@ -3561,6 +3582,8 @@ async fn handle_send_message(
         to_project_id: to_proj,
         subject,
         body,
+        nature: req.nature,
+        evidence,
     };
 
     // Match MCP's crossing-point admission and post-commit observer ordering.
@@ -9746,6 +9769,8 @@ mod tests {
                     to_project_id: recipient,
                     subject: None,
                     body: "fixture".into(),
+                    nature: ai_memory_core::MessageNature::Unknown,
+                    evidence: None,
                 })
                 .await
                 .unwrap();

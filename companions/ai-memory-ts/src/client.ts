@@ -583,6 +583,8 @@ export class MessagesNamespace {
         from_project: from.project,
         body: a.body,
         subject: a.subject,
+        nature: a.nature,
+        evidence: a.evidence,
       }),
       true,
       options,

@@ -5734,6 +5734,8 @@ pub(crate) mod tests {
                     to_project_id: state.project_id,
                     subject: Some(format!("subject {i}")),
                     body: format!("please do task {i}"),
+                    nature: ai_memory_core::MessageNature::Unknown,
+                    evidence: None,
                 })
                 .await
                 .unwrap();
