@@ -31,8 +31,8 @@
 //! - `--date-prefix turn|session-start|none` moves the per-turn date.
 
 pub(crate) mod dataset;
-mod grep;
-mod ingest;
+pub(crate) mod grep;
+pub(crate) mod ingest;
 pub(crate) mod qa;
 pub(crate) mod query;
 mod reachability;

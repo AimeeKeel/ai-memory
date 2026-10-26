@@ -8,12 +8,16 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::retrieval::dataset::{self, DatasetVariant};
+use crate::retrieval::grep;
+use crate::retrieval::ingest::stored_session_uuid;
 use crate::retrieval::qa::{Answerability, QaArgs, QaEngine};
 use crate::retrieval::query::HitContext;
 use crate::retrieval::report::QaReportMeta;
 
 const FIXTURE_VERSION: u32 = 1;
 const DEFAULT_THRESHOLDS: [f64; 11] = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+const LONGMEMEVAL_CONTEXTS: usize = 10;
+const LONGMEMEVAL_SNIPPET_CHARS: usize = 4_000;
 
 #[derive(clap::Args, Debug)]
 pub struct AbstentionArgs {
@@ -396,19 +400,42 @@ fn load_longmemeval_abstentions() -> Result<Vec<Case>> {
         .into_iter()
         .filter(|question| question.is_abstention())
         .map(|question| {
-            let evidence = question
-                .haystack_sessions
+            let mut seen = HashSet::new();
+            let sessions = question
+                .haystack_session_ids
+                .iter()
+                .zip(&question.haystack_dates)
+                .zip(&question.haystack_sessions)
+                .filter(|((session_id, _), _)| seen.insert(session_id.as_str()))
+                .map(|((session_id, date), turns)| {
+                    (
+                        stored_session_uuid(&question, session_id),
+                        format!("sessions/{session_id}.md"),
+                        grep::session_text(date, turns),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let normalized = sessions
+                .iter()
+                .map(|(id, _, text)| (*id, text.to_lowercase()))
+                .collect::<Vec<_>>();
+            let scores = grep::rank_with_scores(
+                &question.question,
+                normalized.iter().map(|(id, text)| (*id, text.as_str())),
+            );
+            let top_score = scores.first().map(|(_, score)| *score).unwrap_or(1) as f64;
+            let evidence = scores
                 .into_iter()
-                .zip(question.haystack_session_ids)
-                .map(|(turns, session_id)| Evidence {
-                    path: format!("sessions/{session_id}.md"),
-                    snippet: turns
-                        .into_iter()
-                        .map(|turn| turn.content)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    score: 0.0,
-                    belief_strength: None,
+                .take(LONGMEMEVAL_CONTEXTS)
+                .filter_map(|(id, score)| {
+                    let (_, path, text) =
+                        sessions.iter().find(|(candidate, _, _)| *candidate == id)?;
+                    Some(Evidence {
+                        path: path.clone(),
+                        snippet: text.chars().take(LONGMEMEVAL_SNIPPET_CHARS).collect(),
+                        score: score as f64 / top_score,
+                        belief_strength: None,
+                    })
                 })
                 .collect();
             Case {

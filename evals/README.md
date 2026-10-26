@@ -55,6 +55,12 @@ cargo run -p ai-memory-eval -- retrieval --fetch --sample 1
 cargo run -p ai-memory-eval -- abstention --longmemeval-abs
 ```
 
+Those cases use the evaluator's existing whole-session grep baseline, not the
+production server: each question receives at most the top 10 term-overlap
+sessions, with normalized overlap scores and each rendered session clipped to
+4,000 characters. This keeps optional QA inputs bounded and makes the signal's
+provenance explicit; it does not claim to measure production retrieval.
+
 Optional `--qa` uses the exact `--qa-*` provider/auth construction shared with
 the retrieval evaluator. Synthesis returns a structured `answerability` enum
 (`answerable`, `insufficient`, `conflicting`, or `partial`); the evaluator never
