@@ -1147,7 +1147,14 @@ fn stage_paths(
             warn!(path = %rel.display(), "skipping invalid git path with git-reserved component");
             continue;
         }
-        let abs = root.join(rel);
+        let abs =
+            match crate::confinement::tree_path(root, rel, crate::confinement::Prepare::Inspect) {
+                Ok(path) => path,
+                Err(error) => {
+                    warn!(path = %rel.display(), %error, "skipping invalid reported git path");
+                    continue;
+                }
+            };
         if abs.is_dir() {
             let spec = slash_path(rel);
             index.add_all(
@@ -2207,6 +2214,19 @@ mod tests {
             head_blob(&adapter, "ws/proj/sessions/b.md").as_deref(),
             Some("b")
         );
+    }
+
+    #[test]
+    fn path_scoped_staging_refuses_traversal_reports() {
+        let (tmp, _root, adapter) = committed(&[("page.md", "page")]);
+        std::fs::write(tmp.path().join("outside.md"), "outside").unwrap();
+        std::fs::write(tmp.path().join("log-2026-09.md"), LEDGER_BODY).unwrap();
+
+        adapter.mark_written(Path::new("../outside.md"));
+        adapter.mark_written(Path::new("../log-2026-09.md"));
+
+        assert!(adapter.commit_all("invalid reports").unwrap().is_none());
+        assert_eq!(head_blob(&adapter, "page.md").as_deref(), Some("page"));
     }
 
     #[test]
