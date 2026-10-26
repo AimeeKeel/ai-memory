@@ -44,6 +44,8 @@ const OPEN_HANDOFFS_MAX_LIMIT: u32 = 200;
 
 // Cross-project agent messages (V64). See docs/agent-messaging.md.
 const MESSAGE_BODY_MAX_CHARS: usize = 8_000;
+/// Supporting evidence remains compact enough to inspect in inbox listings.
+const MESSAGE_EVIDENCE_MAX_CHARS: usize = 1_000;
 const MESSAGE_SUBJECT_MAX_CHARS: usize = 200;
 const MESSAGES_DEFAULT_LIMIT: u32 = 50;
 const MESSAGES_MAX_LIMIT: u32 = 200;
@@ -1549,6 +1551,14 @@ struct MessageSendArgs {
     /// Optional one-line subject shown in the recipient's inbox listing.
     #[serde(default)]
     subject: Option<String>,
+    /// How the sender knows the claim: `unknown` (default), `measured`,
+    /// `reported`, or `inferred`. A measured claim requires `evidence`.
+    #[serde(default)]
+    nature: ai_memory_core::MessageNature,
+    /// Supporting evidence such as a query, `file:line`, or source message id.
+    /// Required and non-empty when `nature` is `measured`.
+    #[serde(default)]
+    evidence: Option<String>,
     /// Sender project override. Session-aware clients may omit it to send from
     /// the current project. Static MCP clients pass it with `from_workspace` to
     /// name the sending project explicitly.
@@ -6244,7 +6254,9 @@ impl AiMemoryServer {
         project must already exist — an unknown target is rejected, not created. \
         The message waits in the recipient's inbox until a session there pops it \
         exactly once (memory_message_pop) or you retract it (memory_message_cancel). \
-        Sender is the current project only for session-aware clients; static \
+        Set optional `nature` to `measured`, `reported`, `inferred`, or \
+        `unknown` (the default); `measured` requires non-empty bounded \
+        `evidence`. Sender is the current project only for session-aware clients; static \
         MCP clients MUST set `from_workspace`+`from_project` (a guessed sender \
         is refused). Body is secret-scrubbed and size-capped. \
         Returns `{ \"message_id\": ... }`."
@@ -6297,6 +6309,23 @@ impl AiMemoryServer {
         let subject = args.subject.as_deref().map(|raw| {
             cap_text_with_marker(&s.scrub(raw), MESSAGE_SUBJECT_MAX_CHARS, "message subject")
         });
+        let evidence = args
+            .evidence
+            .as_deref()
+            .map(|raw| {
+                cap_text_with_marker(
+                    &s.scrub(raw),
+                    MESSAGE_EVIDENCE_MAX_CHARS,
+                    "message evidence",
+                )
+            })
+            .filter(|value| !value.trim().is_empty());
+        if args.nature == ai_memory_core::MessageNature::Measured && evidence.is_none() {
+            return Err(McpError::invalid_params(
+                "evidence_required: measured messages require non-empty evidence",
+                None,
+            ));
+        }
         let sender = crate::actor::actor_from_parts(&parts);
         let from_owner_user = sender.identity_key().map(|key| key.storage_key());
         let message = ai_memory_core::NewAgentMessage {
@@ -6309,6 +6338,8 @@ impl AiMemoryServer {
             to_project_id: to_proj,
             subject,
             body,
+            nature: args.nature,
+            evidence,
         };
         // Admission is asked at the crossing point (the recipient scope): a
         // per-operator webhook can refuse prompt-derived text entering another
@@ -10260,6 +10291,8 @@ mod tests {
                         to_project: "project-b".into(),
                         body: "please add the /v1/export endpoint".into(),
                         subject: Some("export".into()),
+                        nature: ai_memory_core::MessageNature::Unknown,
+                        evidence: None,
                         from_project: Some("scratch".into()),
                         from_workspace: Some("default".into()),
                     }),
@@ -10347,6 +10380,8 @@ mod tests {
                     to_project: "does-not-exist".into(),
                     body: "hello?".into(),
                     subject: None,
+                    nature: ai_memory_core::MessageNature::Unknown,
+                    evidence: None,
                     from_project: Some("scratch".into()),
                     from_workspace: Some("default".into()),
                 }),
@@ -10417,6 +10452,8 @@ mod tests {
                             to_project: to.into(),
                             body: "please look at this".into(),
                             subject: None,
+                            nature: ai_memory_core::MessageNature::Unknown,
+                            evidence: None,
                             from_project: Some(from.into()),
                             from_workspace: Some("default".into()),
                         }),

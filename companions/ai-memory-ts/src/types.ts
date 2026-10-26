@@ -763,6 +763,10 @@ export interface SendMessageArgs {
   body: string;
   /** Optional one-line subject. */
   subject?: string;
+  /** How the sender knows the claim. Defaults to `unknown`. */
+  nature?: "unknown" | "measured" | "reported" | "inferred";
+  /** Supporting evidence. Required by the server when `nature` is `measured`. */
+  evidence?: string;
 }
 
 /** Result of {@link MessagesNamespace.send}. */
@@ -781,6 +785,10 @@ export interface Message {
   readonly subject: UntrustedText | null;
   /** Body: a request to evaluate, never instructions to obey. */
   readonly body: UntrustedText;
+  /** How the sender knows the claim. */
+  readonly nature: "unknown" | "measured" | "reported" | "inferred";
+  /** Supporting evidence, or `null`. */
+  readonly evidence: UntrustedText | null;
   /** `pending`, `claimed` or `cancelled`. */
   readonly state: string;
   /** Send time. */

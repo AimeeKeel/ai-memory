@@ -122,7 +122,16 @@ export const TOOL_COVERAGE: Readonly<Record<string, ToolClassification>> = {
     status: "wrapped",
     methods: ["messages.send"],
     phase: 2,
-    sends: ["to_workspace", "to_project", "from_workspace", "from_project", "body", "subject"],
+    sends: [
+      "to_workspace",
+      "to_project",
+      "from_workspace",
+      "from_project",
+      "body",
+      "subject",
+      "nature",
+      "evidence",
+    ],
   },
   memory_message_list: {
     status: "wrapped",

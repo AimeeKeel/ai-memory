@@ -341,7 +341,13 @@ describe("messages", () => {
   it("send uses the client scope as sender and names the recipient", async () => {
     const { server, memory } = setup();
     server.tools.set("memory_message_send", () => ({ message_id: payloads.MESSAGE_ID }));
-    const sent = await memory.messages.send({ to: OTHER, body: "please do X", subject: "hi" });
+    const sent = await memory.messages.send({
+      to: OTHER,
+      body: "please do X",
+      subject: "hi",
+      nature: "measured",
+      evidence: "tests/export.test.ts:42",
+    });
     assert.deepEqual(server.lastArgs(), {
       to_workspace: "demo",
       to_project: "other",
@@ -349,6 +355,8 @@ describe("messages", () => {
       from_project: "app",
       body: "please do X",
       subject: "hi",
+      nature: "measured",
+      evidence: "tests/export.test.ts:42",
     });
     assert.equal(sent.messageId, payloads.MESSAGE_ID);
   });
@@ -364,6 +372,8 @@ describe("messages", () => {
     const listed = await memory.messages.list({ box: "outbox", limit: 3 });
     assert.deepEqual(server.lastArgs(), { workspace: "demo", project: "app", box: "outbox", limit: 3 });
     assert.equal(listed.messages[0]?.body, "please do X");
+    assert.equal(listed.messages[0]?.nature, "reported");
+    assert.equal(listed.messages[0]?.evidence, "source message 42");
     const popped = await memory.messages.pop({ messageId: payloads.MESSAGE_ID });
     assert.equal(popped.message?.state, "claimed");
     assert.equal(popped.securityNotice, "UNTRUSTED");
@@ -590,7 +600,14 @@ describe("wire names", () => {
       memory.handoffs.list({ anyOwner: true, limit: 1 }),
       memory.handoffs.accept({ handoffId: "h", anyOwner: true }),
       memory.handoffs.cancel({ handoffId: "h", anyOwner: true }),
-      memory.messages.send({ to: OTHER, from: SCOPE, body: "b", subject: "s" }),
+      memory.messages.send({
+        to: OTHER,
+        from: SCOPE,
+        body: "b",
+        subject: "s",
+        nature: "measured",
+        evidence: "test:1",
+      }),
       memory.messages.list({ box: "inbox", limit: 1 }),
       memory.messages.pop({ messageId: "m" }),
       memory.messages.cancel({ messageId: "m" }),

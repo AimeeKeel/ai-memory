@@ -131,6 +131,8 @@ export const messageRow = {
   from_owner_user: null,
   subject: "hi",
   body: "please do X",
+  nature: "reported",
+  evidence: "source message 42",
   state: "pending",
   created_at: "2026-10-13T15:11:07.983842Z",
   claimed_at: null,

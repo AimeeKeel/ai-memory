@@ -5546,6 +5546,7 @@ pub fn cancel_handoff(
 /// Store-boundary bound for a message field (16 KiB — the last gate; MCP
 /// callers scrub and cap tighter). Reuses the handoff field budget.
 const MESSAGE_FIELD_MAX_BYTES: usize = HANDOFF_FIELD_MAX_BYTES;
+const MESSAGE_EVIDENCE_MAX_BYTES: usize = 1_000;
 
 /// Maximum pending messages one recipient project may hold. A full inbox
 /// rejects new sends, so a hostile or buggy sender cannot flood a recipient's
@@ -5556,12 +5557,16 @@ fn bound_message_field(value: &str) -> String {
     ai_memory_core::truncate_utf8_bytes(value, MESSAGE_FIELD_MAX_BYTES)
 }
 
+fn bound_message_evidence(value: &str) -> String {
+    ai_memory_core::truncate_utf8_bytes(value, MESSAGE_EVIDENCE_MAX_BYTES)
+}
+
 /// Read one message row into the materialized view. Column order must match the
 /// SELECTs in this module and in [`crate::reader`].
 pub(crate) fn row_to_agent_message(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<StoreResult<ai_memory_core::AgentMessage>> {
-    use ai_memory_core::{AgentMessage, MessageOrigin, MessageState};
+    use ai_memory_core::{AgentMessage, MessageNature, MessageOrigin, MessageState};
     let id_bytes: Vec<u8> = row.get(0)?;
     let from_ws: Vec<u8> = row.get(1)?;
     let from_pj: Vec<u8> = row.get(2)?;
@@ -5574,6 +5579,8 @@ pub(crate) fn row_to_agent_message(
     let state: String = row.get(9)?;
     let created_us: i64 = row.get(10)?;
     let claimed_at_us: Option<i64> = row.get(11)?;
+    let nature: Option<String> = row.get(12)?;
+    let evidence: Option<String> = row.get(13)?;
     Ok((|| {
         Ok(AgentMessage {
             id: MessageId::from_slice(&id_bytes)?,
@@ -5587,6 +5594,12 @@ pub(crate) fn row_to_agent_message(
             },
             subject,
             body,
+            nature: nature
+                .as_deref()
+                .unwrap_or("unknown")
+                .parse::<MessageNature>()
+                .map_err(StoreError::from)?,
+            evidence,
             state: state.parse::<MessageState>().map_err(StoreError::from)?,
             created_at: jiff::Timestamp::from_microsecond(created_us).map_err(|e| {
                 StoreError::Memory(ai_memory_core::MemoryError::MalformedRecord(format!(
@@ -5607,7 +5620,8 @@ pub(crate) fn row_to_agent_message(
 
 /// The stable column list backing [`row_to_agent_message`].
 pub(crate) const MESSAGE_COLUMNS: &str = "id, from_workspace_id, from_project_id, from_agent, \
-     from_owner_user, to_workspace_id, to_project_id, subject, body, state, created_at, claimed_at";
+     from_owner_user, to_workspace_id, to_project_id, subject, body, state, created_at, claimed_at, \
+     nature, evidence";
 
 /// Send a message into a recipient project's inbox.
 ///
@@ -5616,6 +5630,15 @@ pub(crate) const MESSAGE_COLUMNS: &str = "id, from_workspace_id, from_project_id
 /// as a full-inbox rejection rather than flooding the recipient.
 pub fn insert_message(conn: &mut Connection, m: &NewAgentMessage) -> StoreResult<MessageId> {
     validate_identity_storage_key(m.from_owner_user.as_deref(), "message sender")?;
+    if m.nature == ai_memory_core::MessageNature::Measured
+        && m.evidence
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(StoreError::InvalidState(
+            "evidence_required: measured messages require non-empty evidence".into(),
+        ));
+    }
     let tx = conn.transaction()?;
     // Backpressure: bound the recipient's pending depth. Counting inside the
     // transaction (single-writer actor) makes the check-then-insert atomic.
@@ -5637,12 +5660,14 @@ pub fn insert_message(conn: &mut Connection, m: &NewAgentMessage) -> StoreResult
     // but the store is the last gate before durable persistence.
     let subject = m.subject.as_deref().map(bound_message_field);
     let body = bound_message_field(&m.body);
+    let evidence = m.evidence.as_deref().map(bound_message_evidence);
     let from_session: Option<&[u8]> = m.from_session_id.as_ref().map(|s| &s.as_bytes()[..]);
     tx.execute(
         "INSERT INTO agent_messages ( \
              id, from_workspace_id, from_project_id, from_agent, from_session_id, \
-             from_owner_user, to_workspace_id, to_project_id, subject, body, state, created_at \
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11)",
+             from_owner_user, to_workspace_id, to_project_id, subject, body, state, created_at, \
+             nature, evidence \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?12, ?13)",
         params![
             id.as_bytes(),
             m.from_workspace_id.as_bytes(),
@@ -5655,6 +5680,8 @@ pub fn insert_message(conn: &mut Connection, m: &NewAgentMessage) -> StoreResult
             subject,
             body,
             now,
+            m.nature.as_str(),
+            evidence,
         ],
     )?;
     // Audit records the lifecycle event under the recipient scope (the crossing

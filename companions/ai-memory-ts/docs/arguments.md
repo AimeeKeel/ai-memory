@@ -154,6 +154,8 @@ Methods: `messages.send`
 | `from_project` | `fromProject` |
 | `body` | `body` |
 | `subject` | `subject` |
+| `nature` | `nature` |
+| `evidence` | `evidence` |
 
 ## `memory_message_list`
 

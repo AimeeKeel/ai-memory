@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Cross-project messages can carry an optional epistemic `nature` (`unknown`,
+  `measured`, `reported`, or `inferred`) and bounded supporting `evidence`.
+  The server refuses a `measured` send without non-empty evidence; existing
+  messages and callers remain `unknown` by default (#1428).
+
 - Added `[briefing] inject_on_subagent_start` to `.ai-memory.toml`. A project
   that sets it hands each `claude-code` subagent the project brief when the
   subagent starts: the same pinned, `_rules/` and `_slots/` brief that
