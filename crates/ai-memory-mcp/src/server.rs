@@ -1728,11 +1728,15 @@ struct PatchPageArgs {
     expected_page_id: String,
     /// Anchored edits, all resolved against the same captured base body.
     edits: Vec<crate::page_patch::PagePatchEdit>,
-    /// Project containing the existing page. Static clients pass this with
-    /// `workspace`; partial explicit scope fails closed.
+    /// Project containing the existing page. Session-aware clients may omit it
+    /// for the current project. Static MCP clients must pass it together with
+    /// `workspace` for every project-scoped call; partial explicit scope fails
+    /// closed.
     #[serde(default)]
     project: Option<String>,
     /// Workspace containing the existing page, together with `project`.
+    /// Session-aware clients may omit both for the current project; static MCP
+    /// clients must pass both.
     #[serde(default)]
     workspace: Option<String>,
 }
