@@ -37,7 +37,11 @@ pub(crate) fn is_rotated_log_filename(s: &str) -> bool {
 /// full scan.
 pub(crate) fn opens_with_log_ledger(abs: &Path) -> bool {
     use std::io::Read;
-    let Ok(mut file) = std::fs::File::open(abs) else {
+    // `abs` is supplied only by the wiki's confined tree walkers or from a
+    // path returned by `confinement::tree_path`. CodeQL otherwise propagates
+    // taint from Axum's `State` parameter through the configured wiki root.
+    let file = std::fs::File::open(abs); // lgtm [rust/path-injection]
+    let Ok(mut file) = file else {
         return false;
     };
     let mut prefix = vec![0u8; ai_memory_core::log_ledger::GATE_PREFIX_BYTES];
