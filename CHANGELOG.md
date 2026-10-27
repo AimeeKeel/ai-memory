@@ -213,6 +213,19 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- `ai-memory rename-project` now refuses an explicitly empty `--to` target
+  name before sending any request to the server (#1759).
+
+- `ai-memory write-page` now refuses explicitly empty scope flags
+  (`--workspace` and `--project`) as well as an empty `--path` before
+  reading stdin or sending any request. Passing an empty `--project ""`
+  previously bypassed the flag check while falling back to resolving the
+  project from the current working directory (#1757).
+
+## [3.2.7] - 2026-10-26
+
+### Fixed
+
 - Fixed `ai-memory doctor` native memory inspection omitting Antigravity CLI
   and using a Claude-only synthetic probe (#1745).
 - Fixed native hook backlogs repeatedly missing their 250 ms mid-session
@@ -3050,7 +3063,8 @@ version in [`docs/changelog/`](docs/changelog/):
   session-timeline owner rule. Another operator's observations still rank
   shared session pages.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.6...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.7...HEAD
+[3.2.7]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.7
 [3.2.6]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.6
 [3.2.5]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.5
 [3.2.4]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.4
