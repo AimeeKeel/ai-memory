@@ -662,6 +662,7 @@ impl GitAdapter {
         message: &str,
         staging: &Staging,
     ) -> Result<Option<git2::Oid>, CommitGit2Error> {
+        let root = repository_root(&self.root).map_err(CommitGit2Error::Wiki)?;
         let repo = &open.repo;
         let mut index = repo.index().map_err(CommitGit2Error::Other)?;
         // Stage through libgit2's stat cache: an entry whose size and mtime
@@ -675,16 +676,16 @@ impl GitAdapter {
         let touched = match staging {
             Staging::Everything => {
                 let walked =
-                    stage_working_tree(&self.root, &mut index).map_err(CommitGit2Error::Other)?;
+                    stage_working_tree(&root, &mut index).map_err(CommitGit2Error::Other)?;
                 // The walk only skips ledgers it would add or update; one a
                 // past version already tracks, and that has not changed, is
                 // not offered to it at all.
-                untrack_ledgers(&self.root, &mut index, None).map_err(CommitGit2Error::Other)?;
+                untrack_ledgers(&root, &mut index, None).map_err(CommitGit2Error::Other)?;
                 self.record_walk(&walked);
                 walked.len()
             }
             Staging::Paths(paths) => {
-                stage_paths(&self.root, &mut index, paths).map_err(CommitGit2Error::Other)?
+                stage_paths(&root, &mut index, paths).map_err(CommitGit2Error::Other)?
             }
         };
         debug!(
@@ -700,7 +701,7 @@ impl GitAdapter {
                     "index could not be written as a tree; re-hashing the working tree (#594)"
                 );
                 index.clear().map_err(CommitGit2Error::Other)?;
-                stage_working_tree(&self.root, &mut index).map_err(CommitGit2Error::Other)?;
+                stage_working_tree(&root, &mut index).map_err(CommitGit2Error::Other)?;
                 index.write().map_err(CommitGit2Error::Other)?;
                 index.write_tree().map_err(CommitGit2Error::Other)?
             }
