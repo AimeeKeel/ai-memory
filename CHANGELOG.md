@@ -13,6 +13,22 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- `ai-memory merge-project --workspace <w> --from <source> --into <target>`
+  losslessly joins two project identities inside one workspace. Its default is
+  an exact dry run; `--confirm` re-stamps page history, sessions, observations,
+  handoffs, embeddings and managed workstreams in one writer transaction, then
+  removes the source project. Same-path pages get a new target version that
+  appends the source body behind an `ai-memory:merged-from` marker while both
+  prior histories remain restorable. The target frontmatter wins, a one-sided
+  expiry is removed, and the combined page is flagged stale for consolidation.
+  `restore-page --page-id <uuid>` restores either retained history even after
+  the source identity is removed. Open sessions and live managed runs refuse
+  the merge (#1645).
+- `audit-contamination` now reports projects in one workspace whose names
+  collide after Unicode compatibility decomposition, case folding, and
+  removal of non-spacing marks. Findings distinguish case from accent
+  differences and include page/session counts plus last activity (#1645).
+
 - Cross-project messages can carry an optional epistemic `nature` (`unknown`,
   `measured`, `reported`, or `inferred`) and bounded supporting `evidence`.
   The server refuses a `measured` send without non-empty evidence; existing
@@ -48,14 +64,6 @@ version in [`docs/changelog/`](docs/changelog/):
   404 and the subagent starts as before. The native hook and the
   `hooks/claude-code` shell and PowerShell scripts deliver it, and every marker
   parser treats the key as a settings boundary. It is off by default (#1715).
-
-- `ai-memory audit-contamination` reports projects whose names differ only by
-  spelling: two rows whose names are equal after case folding, Unicode
-  composition and separators (`renato` / `Renato` / `Rénato`). That is the
-  signature of one working copy reaching the server twice, which no
-  cwd-anchored check can see; each finding names the peer projects and their
-  page and session counts, and suggests a marker or a merge. Read-only, and it
-  never fires for a project that merely shares a prefix (#1645).
 
 - Added an optional `[query_answer] max_context_tokens` admission budget for
   answer synthesis. It preserves retrieval hits, reports omitted or clipped
@@ -157,14 +165,6 @@ version in [`docs/changelog/`](docs/changelog/):
   the text report adds a warning to upgrade the older side (#1644).
 
 ### Changed
-
-- Jailed OpenCode managed runs now add the native `--standalone` flag unless
-  the caller explicitly supplies `--standalone` or `--server`. The private
-  server keeps tool processes inside ai-jail's Linux PID namespace, so a
-  detached job cannot survive the jail. Current documentation presents
-  `opencode` as the single auto-detected integration; `opencode2`,
-  `opencode-v2`, and `open-code2` remain supported legacy force-V2 aliases for
-  existing scripts rather than a separately advertised beta harness.
 
 - `memory_lint` now reports embedding-band pairs as
   `similarity_candidate` instead of `contradiction`, and no longer infers that

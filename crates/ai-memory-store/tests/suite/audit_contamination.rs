@@ -306,6 +306,7 @@ async fn audit_flags_projects_split_by_case_or_accents() {
         (4, "R\u{e9}nato"), // Rénato, composed
         (5, "renato-2"),
         (6, "widget"),
+        (7, "renato!"),
     ] {
         conn.execute(
             "INSERT INTO projects (id, workspace_id, name, created_at) \
@@ -333,7 +334,9 @@ async fn audit_flags_projects_split_by_case_or_accents() {
         "accent-only split is reported: {collisions:?}"
     );
     assert!(
-        !collisions.contains(&"renato-2") && !collisions.contains(&"widget"),
+        !collisions.contains(&"renato-2")
+            && !collisions.contains(&"widget")
+            && !collisions.contains(&"renato!"),
         "a different name is not a collision: {collisions:?}"
     );
     assert_eq!(
@@ -355,6 +358,14 @@ async fn audit_flags_projects_split_by_case_or_accents() {
     );
     assert_eq!(one.pages, Some(0));
     assert_eq!(one.sessions, Some(0));
+    assert_eq!(one.collision_kind, Some("case_and_accent"));
+    assert_eq!(one.last_activity_us, Some(now));
+    let accented = report
+        .findings
+        .iter()
+        .find(|f| f.landed_project == "R\u{e9}nato")
+        .unwrap();
+    assert_eq!(accented.collision_kind, Some("accent"));
 }
 
 /// The fold itself: what counts as the same name, and what does not.
@@ -365,6 +376,7 @@ fn project_name_fold_key_matches_spelling_not_meaning() {
     assert_eq!(key("R\u{e9}nato"), key("Renato"));
     assert_eq!(key("felipe-nr-judoka"), key("Felipe-NR-Judoka"));
     assert_ne!(key("renato"), key("renato2"));
+    assert_ne!(key("renato"), key("renato!"));
     assert_ne!(key("widget"), key("gadget"));
     assert_eq!(key("  api  "), "api");
 }
