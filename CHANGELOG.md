@@ -211,6 +211,8 @@ version in [`docs/changelog/`](docs/changelog/):
   could blame the primary for a timeout another candidate caused. Response
   bodies are never logged (#1628).
 
+## [3.2.8] - 2026-10-27
+
 ### Fixed
 
 - `ai-memory message` subcommands (`send`, `pop`, and `cancel`) now refuse
@@ -3065,7 +3067,8 @@ version in [`docs/changelog/`](docs/changelog/):
   session-timeline owner rule. Another operator's observations still rank
   shared session pages.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.7...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.8...HEAD
+[3.2.8]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.8
 [3.2.7]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.7
 [3.2.6]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.6
 [3.2.5]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.5
