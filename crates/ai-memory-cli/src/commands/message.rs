@@ -560,6 +560,8 @@ mod tests {
             to_workspace: "team".into(),
             to_project: "api".into(),
             subject: None,
+            nature: "unknown".into(),
+            evidence: None,
             body: None,
             json: false,
         };
@@ -581,6 +583,8 @@ mod tests {
             to_workspace: "team".into(),
             to_project: "  ".into(),
             subject: None,
+            nature: "unknown".into(),
+            evidence: None,
             body: None,
             json: false,
         };
@@ -600,6 +604,8 @@ mod tests {
             to_workspace: "team".into(),
             to_project: "api".into(),
             subject: None,
+            nature: "unknown".into(),
+            evidence: None,
             body: None,
             json: false,
         };
@@ -617,6 +623,8 @@ mod tests {
             to_workspace: String::new(),
             to_project: "api".into(),
             subject: None,
+            nature: "unknown".into(),
+            evidence: None,
             body: None,
             json: false,
         };
