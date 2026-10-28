@@ -1117,26 +1117,32 @@ fn collect_git_commits_fallback(
 
 /// Parse a `git log --since=<x>` value into a unix epoch. Supports
 /// the simplest formats we expect operators to type:
-/// "30 days ago", "180 days ago", "1 year ago", or an absolute YYYY-MM-DD.
+/// "30 days ago", "1 day ago", "2 weeks ago", "1 month ago", "1 year ago",
+/// or an absolute YYYY-MM-DD.
 fn parse_since_to_epoch(since: &str) -> Option<i64> {
-    let lower = since.to_lowercase();
+    let lower = since.trim().to_lowercase();
     let now = Timestamp::now().as_second();
-    if let Some(rest) = lower.strip_suffix(" days ago") {
-        let n: i64 = rest.trim().parse().ok()?;
-        return Some(now - n * 86_400);
+
+    const UNITS: &[(&[&str], i64)] = &[
+        (&[" days ago", " day ago"], 86_400),
+        (&[" weeks ago", " week ago"], 7 * 86_400),
+        (&[" months ago", " month ago"], 30 * 86_400),
+        (&[" years ago", " year ago"], 365 * 86_400),
+    ];
+
+    for (suffixes, unit_seconds) in UNITS {
+        for suffix in *suffixes {
+            if let Some(rest) = lower.strip_suffix(suffix) {
+                let n: i64 = rest.trim().parse().ok()?;
+                if n < 0 {
+                    return None;
+                }
+                let seconds = n.checked_mul(*unit_seconds)?;
+                return now.checked_sub(seconds);
+            }
+        }
     }
-    if let Some(rest) = lower.strip_suffix(" months ago") {
-        let n: i64 = rest.trim().parse().ok()?;
-        return Some(now - n * 30 * 86_400);
-    }
-    if let Some(rest) = lower.strip_suffix(" year ago") {
-        let n: i64 = rest.trim().parse().ok()?;
-        return Some(now - n * 365 * 86_400);
-    }
-    if let Some(rest) = lower.strip_suffix(" years ago") {
-        let n: i64 = rest.trim().parse().ok()?;
-        return Some(now - n * 365 * 86_400);
-    }
+
     // YYYY-MM-DD fallback.
     if let Ok(date) = jiff::civil::Date::strptime("%Y-%m-%d", &lower)
         && let Ok(zoned) = date.to_zoned(jiff::tz::TimeZone::UTC)
