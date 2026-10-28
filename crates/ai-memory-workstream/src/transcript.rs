@@ -5580,35 +5580,28 @@ fn parse_opencode2(
                             .get("status")
                             .and_then(Value::as_str)
                             .unwrap_or("completed");
-                        if status == "completed" {
-                            let output = state
-                                .get("content")
-                                .and_then(Value::as_array)
-                                .map(|contents| {
-                                    contents
-                                        .iter()
-                                        .filter_map(|item| item.get("text").and_then(Value::as_str))
-                                        .collect::<Vec<_>>()
-                                        .join("\n")
-                                })
-                                .unwrap_or_default();
-                            if !output.trim().is_empty() {
-                                push_event(
-                                    events,
-                                    AgentKind::OpenCode,
-                                    session,
-                                    id,
-                                    block + 1,
-                                    WorkstreamEventKind::ToolResult,
-                                    Some("tool"),
-                                    &output,
-                                    None,
-                                    json!({"status": status}),
-                                );
-                            }
-                        } else {
-                            losses
-                                .push(format!("OpenCode 2 tool {name} ended with status {status}"));
+                        if let Some(output) = opencode2_tool_result_text(state, status) {
+                            let metadata = if status == "error" {
+                                json!({"status": status, "is_error": true})
+                            } else {
+                                json!({"status": status})
+                            };
+                            push_event(
+                                events,
+                                AgentKind::OpenCode,
+                                session,
+                                id,
+                                block + 1,
+                                WorkstreamEventKind::ToolResult,
+                                Some("tool"),
+                                &output,
+                                None,
+                                metadata,
+                            );
+                        } else if status != "completed" {
+                            losses.push(format!(
+                                "OpenCode 2 tool {name} ended with status {status}"
+                            ));
                         }
                     }
                     "reasoning" => {
@@ -5622,6 +5615,53 @@ fn parse_opencode2(
         }
         // System catalog notices and similar non-conversation records.
         _ => {}
+    }
+}
+
+/// Visible text of an OpenCode 2 tool part's `state.content` array.
+fn opencode2_tool_content_text(state: &Value) -> String {
+    state
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|contents| {
+            contents
+                .iter()
+                .filter_map(|item| item.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// Terminal result text for an OpenCode 2 tool part.
+///
+/// Completed tools store output in `state.content[].text` (current
+/// `ToolStateCompleted` in OpenCode `packages/schema/src/session-message.ts`).
+/// Failed tools store it in `state.error` as a string (older `message-v2.ts`)
+/// or `{ message }` (`Session.StructuredError`), with optional `content`.
+/// In-progress statuses return `None` so the caller can record a loss.
+fn opencode2_tool_result_text(state: &Value, status: &str) -> Option<String> {
+    match status {
+        "completed" => {
+            let output = opencode2_tool_content_text(state);
+            (!output.trim().is_empty()).then_some(output)
+        }
+        "error" => {
+            let content = opencode2_tool_content_text(state);
+            if !content.trim().is_empty() {
+                return Some(content);
+            }
+            match state.get("error") {
+                Some(Value::String(text)) => (!text.trim().is_empty()).then(|| text.clone()),
+                Some(obj) => obj
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .filter(|text| !text.trim().is_empty()),
+                None => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -8751,6 +8791,196 @@ mod tests {
             export_opencode2(home.path(), None, "s2", first.source_cursor.as_deref()).unwrap();
         assert!(second.events.is_empty());
         assert!(second.losses.is_empty());
+    }
+
+    #[test]
+    fn opencode2_failed_tool_results_keep_the_visible_error() {
+        let home = tempfile::tempdir().unwrap();
+        let db = opencode_db(home.path(), None);
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session_v2(id TEXT PRIMARY KEY, directory TEXT NOT NULL, \
+                                   time_updated INTEGER NOT NULL);\
+                 CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT, \
+                                   time_updated INTEGER, data TEXT);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session_v2 VALUES ('s2', ?1, 10)",
+                [home.join("repo").to_string_lossy().to_string()],
+            )
+            .unwrap();
+        // Completed tools use `content`; terminal failures use `error` as a
+        // string (older OpenCode) or `{message}` (current schema). Optional
+        // error `content` is the visible result when present.
+        let rows = [
+            (
+                "completed",
+                1,
+                json!({
+                    "status": "completed",
+                    "input": {"cmd": "ok"},
+                    "content": [{"type": "text", "text": "success"}],
+                    "error": {"type": "ignored", "message": "not a completed result"}
+                }),
+            ),
+            (
+                "failed-object",
+                2,
+                json!({
+                    "status": "error",
+                    "input": {"cmd": "fail"},
+                    "error": {"type": "Tool.Error", "message": "Permission denied"}
+                }),
+            ),
+            (
+                "failed-string",
+                3,
+                json!({
+                    "status": "error",
+                    "input": {"cmd": "fail"},
+                    "error": "disk full"
+                }),
+            ),
+            (
+                "failed-content",
+                4,
+                json!({
+                    "status": "error",
+                    "input": {"cmd": "fail"},
+                    "error": {"type": "Tool.Error", "message": "hidden"},
+                    "content": [{"type": "text", "text": "visible content error"}]
+                }),
+            ),
+            (
+                "pending",
+                5,
+                json!({
+                    "status": "pending",
+                    "input": {"cmd": "wait"},
+                    "error": {"type": "Tool.Error", "message": "not a terminal result"}
+                }),
+            ),
+            (
+                "running",
+                6,
+                json!({
+                    "status": "running",
+                    "input": {"cmd": "wait"},
+                    "error": {"type": "Tool.Error", "message": "not a terminal result"}
+                }),
+            ),
+            (
+                "streaming",
+                7,
+                json!({
+                    "status": "streaming",
+                    "input": {"cmd": "wait"},
+                    "error": "not a terminal result"
+                }),
+            ),
+            (
+                "malformed",
+                8,
+                json!({
+                    "status": "error",
+                    "input": {"cmd": "fail"},
+                    "error": {"type": "Tool.Error"}
+                }),
+            ),
+        ];
+        for (id, updated, state) in rows {
+            connection
+                .execute(
+                    "INSERT INTO session_message VALUES (?1, 's2', 'assistant', ?2, ?3)",
+                    params![
+                        id,
+                        updated,
+                        json!({"content":[{"type":"tool","name":"bash","state":state}]})
+                            .to_string()
+                    ],
+                )
+                .unwrap();
+        }
+        let before = fs::read(&db).unwrap();
+        let transcript = export_opencode2(home.path(), None, "s2", None).unwrap();
+        let results: Vec<_> = transcript
+            .events
+            .iter()
+            .filter(|event| event.kind == WorkstreamEventKind::ToolResult)
+            .collect();
+        assert_eq!(
+            results
+                .iter()
+                .map(|event| event.content.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "success",
+                "Permission denied",
+                "disk full",
+                "visible content error"
+            ]
+        );
+        assert_eq!(results[0].metadata, json!({"status": "completed"}));
+        assert_eq!(
+            results[1].metadata,
+            json!({"status": "error", "is_error": true})
+        );
+        assert_eq!(
+            results[1].source_record_id.as_deref(),
+            Some("failed-object")
+        );
+        assert_eq!(
+            results[2].metadata,
+            json!({"status": "error", "is_error": true})
+        );
+        assert_eq!(
+            results[3].metadata,
+            json!({"status": "error", "is_error": true})
+        );
+        for status in ["pending", "running", "streaming"] {
+            assert!(
+                transcript
+                    .losses
+                    .iter()
+                    .any(|loss| loss.contains(&format!("ended with status {status}"))),
+                "missing loss for {status}: {:?}",
+                transcript.losses
+            );
+        }
+        assert_eq!(
+            transcript
+                .losses
+                .iter()
+                .filter(|loss| loss.contains("ended with status error"))
+                .count(),
+            1,
+            "malformed error should stay a loss: {:?}",
+            transcript.losses
+        );
+        let replay = export_opencode2(home.path(), None, "s2", None).unwrap();
+        assert_eq!(
+            transcript
+                .events
+                .iter()
+                .map(|event| &event.event_id)
+                .collect::<Vec<_>>(),
+            replay
+                .events
+                .iter()
+                .map(|event| &event.event_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            export_opencode2(home.path(), None, "s2", transcript.source_cursor.as_deref())
+                .unwrap()
+                .events
+                .is_empty()
+        );
+        assert_eq!(fs::read(&db).unwrap(), before);
     }
 
     #[test]
