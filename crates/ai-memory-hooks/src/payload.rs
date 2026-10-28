@@ -875,6 +875,7 @@ const fn closed_tool_agent(agent: AgentKind) -> bool {
             | AgentKind::Dsh
             | AgentKind::Cline
             | AgentKind::QwenCode
+            | AgentKind::Qoder
     )
 }
 
@@ -2285,6 +2286,7 @@ mod tests {
         assert_eq!(parse_agent("qwen-code"), AgentKind::QwenCode);
         assert_eq!(parse_agent("qwen"), AgentKind::QwenCode);
         assert_eq!(parse_agent("qwencode"), AgentKind::QwenCode);
+        assert_eq!(parse_agent("qoder"), AgentKind::Qoder);
         // Anything else is `Other`. Critical for the hook router:
         // a typo in the query string must not crash, it just gets
         // attributed to the catch-all bucket.

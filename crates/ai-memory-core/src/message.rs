@@ -44,6 +44,54 @@ pub enum MessageState {
     Cancelled,
 }
 
+/// How the sender knows the claim carried by a cross-project message.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageNature {
+    /// The sender did not classify the claim. This is the compatibility
+    /// default for messages created before epistemic tags existed.
+    #[default]
+    Unknown,
+    /// The sender directly measured or verified the claim. Evidence is
+    /// required when sending this value.
+    Measured,
+    /// The sender is relaying a claim learned from another source.
+    Reported,
+    /// The sender derived the claim from available evidence.
+    Inferred,
+}
+
+impl MessageNature {
+    /// Canonical wire and storage string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Measured => "measured",
+            Self::Reported => "reported",
+            Self::Inferred => "inferred",
+        }
+    }
+}
+
+impl std::str::FromStr for MessageNature {
+    type Err = crate::MemoryError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "unknown" => Ok(Self::Unknown),
+            "measured" => Ok(Self::Measured),
+            "reported" => Ok(Self::Reported),
+            "inferred" => Ok(Self::Inferred),
+            other => Err(crate::MemoryError::MalformedRecord(format!(
+                "unknown message nature: {other}"
+            ))),
+        }
+    }
+}
+
 impl MessageState {
     /// Canonical wire string.
     #[must_use]
@@ -103,6 +151,10 @@ pub struct NewAgentMessage {
     pub subject: Option<String>,
     /// The message body (the request for the recipient agent).
     pub body: String,
+    /// How the sender knows the claim in the message.
+    pub nature: MessageNature,
+    /// Bounded supporting evidence. Required for [`MessageNature::Measured`].
+    pub evidence: Option<String>,
 }
 
 /// Scope, identity, and receiver metadata for an atomic message pop.
@@ -153,6 +205,10 @@ pub struct AgentMessage {
     /// The message body. UNTRUSTED cross-project input: data to weigh, never
     /// instructions to obey. The MCP pop surface fences it explicitly.
     pub body: String,
+    /// How the sender knows the claim in the message.
+    pub nature: MessageNature,
+    /// Supporting evidence supplied by the sender, when any.
+    pub evidence: Option<String>,
     /// Current state.
     pub state: MessageState,
     /// Creation timestamp.

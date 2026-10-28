@@ -34,8 +34,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::hook_capture::{
     HookScope, build_client, canonical_context, capture_policy, extract_cwd, get_handoff,
-    hook_scope, marker_capture_policy, marker_query_suffix, marker_query_suffix_without_briefing,
-    marker_requests_briefing, resolve_cwd_with_fallbacks, url_encode,
+    hook_scope, marker_capture_policy, marker_query_suffix, marker_query_suffix_for_subagent_brief,
+    marker_query_suffix_without_briefing, marker_requests_briefing,
+    marker_requests_subagent_briefing, resolve_cwd_with_fallbacks, url_encode,
 };
 use super::hook_drain_process;
 use super::hook_spool;
@@ -367,6 +368,11 @@ fn resolve_hook_cwd_with(
         extract_cwd(raw)
             .or_else(|| env_lookup(QWEN_PROJECT_DIR_ENV))
             .filter(|s| !s.trim().is_empty())
+    } else if agent_kind == AgentKind::Qoder {
+        let mut env_lookup = env_lookup;
+        extract_cwd(raw)
+            .or_else(|| env_lookup(QODER_PROJECT_DIR_ENV))
+            .filter(|s| !s.trim().is_empty())
     } else {
         extract_cwd(raw).filter(|s| !s.trim().is_empty())
     }
@@ -377,6 +383,9 @@ const CODEBUDDY_PROJECT_DIR_ENV: &str = "CODEBUDDY_PROJECT_DIR";
 
 /// The project directory Qwen Code exports to every command hook process.
 const QWEN_PROJECT_DIR_ENV: &str = "QWEN_PROJECT_DIR";
+
+/// The project directory Qoder exports to hook subprocesses.
+const QODER_PROJECT_DIR_ENV: &str = "QODER_PROJECT_DIR";
 
 fn cwd_query_suffix(
     agent: &str,
@@ -825,7 +834,11 @@ fn write_success_response<W: std::io::Write>(
         Ok(())
     } else if matches!(
         agent,
-        AgentKind::Muse | AgentKind::CodeBuddy | AgentKind::IbmBob | AgentKind::QwenCode
+        AgentKind::Muse
+            | AgentKind::CodeBuddy
+            | AgentKind::IbmBob
+            | AgentKind::QwenCode
+            | AgentKind::Qoder
     ) && matches!(event, HookEvent::SessionStart | HookEvent::UserPrompt)
     {
         // Muse and IBM Bob add SessionStart and UserPromptSubmit stdout to the
@@ -1001,6 +1014,17 @@ fn session_start_handoff_envelope(agent: AgentKind, handoff: String) -> serde_js
     }
 }
 
+/// The `claude-code` agent adds a `SubagentStart` hook's `additionalContext`
+/// to the subagent's context before its first prompt.
+fn subagent_start_brief_envelope(brief: &str) -> serde_json::Value {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SubagentStart",
+            "additionalContext": brief,
+        }
+    })
+}
+
 /// Hermes adds a hook's stdout to the turn only as a JSON object whose
 /// `context` is a non-blank string (`_parse_context` in
 /// `agent/shell_hooks.py`); plain text and every other key are dropped.
@@ -1030,10 +1054,7 @@ const HERMES_GATEWAY_HOST_PROFILE: &str = "default";
 /// fired. A standalone gateway of another profile loses it too: nothing in
 /// the hook's environment tells it apart from a multiplexed one.
 fn hermes_terminal_cwd(runtime_env: &RuntimeEnv, profile: Option<&str>) -> Option<String> {
-    let in_gateway = runtime_env
-        .var_os(HERMES_GATEWAY_ENV)
-        .is_some_and(|value| value == "1");
-    if in_gateway && profile != Some(HERMES_GATEWAY_HOST_PROFILE) {
+    if hermes_in_gateway(runtime_env) && profile != Some(HERMES_GATEWAY_HOST_PROFILE) {
         return None;
     }
     let path = PathBuf::from(runtime_env.var_os(HERMES_TERMINAL_CWD_ENV)?);
@@ -1041,6 +1062,58 @@ fn hermes_terminal_cwd(runtime_env: &RuntimeEnv, profile: Option<&str>) -> Optio
         return None;
     }
     path.to_str().map(str::to_owned)
+}
+
+fn hermes_in_gateway(runtime_env: &RuntimeEnv) -> bool {
+    runtime_env
+        .var_os(HERMES_GATEWAY_ENV)
+        .is_some_and(|value| value == "1")
+}
+
+/// A gateway event of a profile other than the host's, routed by an
+/// `.ai-memory.toml` the operator placed in that profile's own Hermes home.
+/// Its `terminal.cwd` never reaches the hook (see `hermes_terminal_cwd`), so
+/// without this every bot profile of a gateway lands in the gateway's own
+/// cwd. The profile directory is used only when it holds its own marker: an
+/// unmarked profile keeps the process cwd it always had, rather than turning
+/// into a project named after the profile.
+///
+/// The name comes from the payload, so it must be a Hermes profile id
+/// (`PROFILE_ID_RE` in `hermes_constants.py`) before it becomes a path
+/// component. Profiles live in `<root>/profiles/<name>` (`get_profile_dir` in
+/// `hermes_cli/profiles.py`), where the root is the gateway's `HERMES_HOME`,
+/// else `~/.hermes`; a standalone gateway of a named profile runs with that
+/// profile's directory as its `HERMES_HOME`.
+fn hermes_profile_marker_cwd(runtime_env: &RuntimeEnv, profile: Option<&str>) -> Option<String> {
+    if !hermes_in_gateway(runtime_env) || runtime_env.ignore_marker() {
+        return None;
+    }
+    let profile = profile.filter(|name| {
+        *name != HERMES_GATEWAY_HOST_PROFILE
+            && crate::commands::path_util::is_hermes_profile_id(name)
+    })?;
+    let hermes_home = crate::commands::path_util::agent_config_home(
+        runtime_env.var_os("HERMES_HOME"),
+    )
+    .or_else(|| {
+        runtime_env
+            .home_dir()
+            .map(|home| Path::new(home).join(".hermes"))
+    })?;
+    let standalone = hermes_home.file_name() == Some(std::ffi::OsStr::new(profile))
+        && hermes_home
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|parent| parent == "profiles");
+    let dir = if standalone {
+        hermes_home
+    } else {
+        hermes_home.join("profiles").join(profile)
+    };
+    if !dir.is_absolute() || !dir.join(".ai-memory.toml").is_file() {
+        return None;
+    }
+    dir.to_str().map(str::to_owned)
 }
 
 /// Run a single hook end-to-end. Always returns Ok and always writes a JSON
@@ -1141,6 +1214,9 @@ where
         // UserPromptSubmit stdout is discarded); that path is context delivery
         // too, so external capture must not suppress it.
         || (hook_event == HookEvent::PostToolUse && agent_kind.post_tool_injects_handoff())
+        // A subagent start delivers the `[briefing] inject_on_subagent_start`
+        // brief.
+        || (hook_event == HookEvent::SubagentStart && agent_kind.subagent_start_injects_context())
         // On an Antigravity build without SessionStart, the first turn's
         // PreInvocation delivers the handoff in its place.
         || (agent_kind == AgentKind::AntigravityCli
@@ -1277,10 +1353,14 @@ where
     // Hermes reports its own process cwd on every event, which for a gateway
     // is wherever the gateway started. The session's working directory is
     // `terminal.cwd`, which Hermes exports to hooks as `TERMINAL_CWD`, so that
-    // replaces the reported cwd. A tool event can still move to another
-    // checkout its own absolute locations prove (below).
+    // replaces the reported cwd; a gateway's other profiles route by a marker
+    // in their own Hermes home instead. A tool event can still move to
+    // another checkout its own absolute locations prove (below).
     let payload_cwd = match (agent_kind == AgentKind::Hermes)
-        .then(|| hermes_terminal_cwd(&runtime_env, hermes_profile.as_deref()))
+        .then(|| {
+            hermes_terminal_cwd(&runtime_env, hermes_profile.as_deref())
+                .or_else(|| hermes_profile_marker_cwd(&runtime_env, hermes_profile.as_deref()))
+        })
         .flatten()
     {
         Some(cwd) => {
@@ -1669,6 +1749,39 @@ where
                 }
                 return Ok(());
             }
+        }
+    }
+
+    // subagent-start: a repository that opted into `[briefing]
+    // inject_on_subagent_start` gives each subagent its project brief, for
+    // agents whose `SubagentStart` hook injects context. A subagent runs
+    // inside its parent's session, so the brief comes from the read-only
+    // `/brief`, never from `/handoff`, whose fetch would claim the parent's
+    // baton; a server that predates `/brief` answers 404 and the subagent
+    // gets the `{}` it always got. Cursor also runs these hook settings, and
+    // its handling of this envelope is unverified, so a Cursor payload gets
+    // nothing.
+    if hook_event == HookEvent::SubagentStart
+        && agent_kind.subagent_start_injects_context()
+        && ai_memory_hooks::agent_from_payload(&json) != Some(AgentKind::Cursor)
+        && let Some(cwd) = policy_cwd.as_deref()
+        && marker_requests_subagent_briefing(cwd)
+    {
+        let client = build_client();
+        let bearer = hook_spool::resolve_bearer(&client, &dd, effective_token).await;
+        let brief_url = format!(
+            "{base}/brief?agent={}{}",
+            args.agent,
+            marker_query_suffix_for_subagent_brief(
+                cwd,
+                args.project_strategy.and_then(|s| s.baked())
+            )
+        );
+        if let Some(brief) =
+            get_handoff(&client, &brief_url, bearer.as_deref(), handoff_timeout()).await
+        {
+            writeln!(stdout, "{}", subagent_start_brief_envelope(&brief))?;
+            return Ok(());
         }
     }
 
@@ -2916,6 +3029,9 @@ mod tests {
                 HookEvent::PostToolUse,
                 b"{}\n".as_slice(),
             ),
+            (AgentKind::Qoder, HookEvent::SessionStart, b"".as_slice()),
+            (AgentKind::Qoder, HookEvent::UserPrompt, b"".as_slice()),
+            (AgentKind::Qoder, HookEvent::PostToolUse, b"{}\n".as_slice()),
         ] {
             let mut output = Vec::new();
             write_success_response(&mut output, agent, event).unwrap();
@@ -3615,6 +3731,29 @@ mod tests {
         assert_eq!(
             resolve_hook_cwd_with("claude-code", &bare, project_dir, process),
             None
+        );
+    }
+
+    #[test]
+    fn qoder_missing_cwd_uses_qoder_project_dir_only() {
+        let bare = serde_json::json!({"hook_event_name": "SessionStart", "source": "startup"});
+        let project_dir =
+            |name: &str| (name == "QODER_PROJECT_DIR").then(|| "env-project".to_owned());
+        let process = || Some(PathBuf::from("process-project"));
+
+        assert_eq!(
+            resolve_hook_cwd_with("qoder", &bare, project_dir, process).as_deref(),
+            Some("env-project")
+        );
+        assert_eq!(
+            resolve_hook_cwd_with("qoder", &bare, |_| None, process),
+            None
+        );
+        let with_cwd =
+            serde_json::json!({"hook_event_name": "SessionStart", "cwd": "payload-project"});
+        assert_eq!(
+            resolve_hook_cwd_with("qoder", &with_cwd, project_dir, process).as_deref(),
+            Some("payload-project")
         );
     }
 
@@ -7474,6 +7613,221 @@ mod tests {
         assert_eq!(run("droid", "user-prompt-submit").await.trim(), "{}");
     }
 
+    // ── `[briefing] inject_on_subagent_start` ─────────────────────────────
+
+    fn subagent_start_payload(cwd: &Path) -> serde_json::Value {
+        serde_json::json!({
+            "session_id": "parent-session",
+            "transcript_path": cwd.join("parent.jsonl"),
+            "cwd": cwd,
+            "hook_event_name": "SubagentStart",
+            "agent_id": "agent-abc123",
+            "agent_type": "Explore"
+        })
+    }
+
+    async fn run_subagent_start(
+        data_dir: &Path,
+        args: HookArgs,
+        payload: serde_json::Value,
+    ) -> String {
+        let mut stdout = Vec::new();
+        run_with_payload(
+            Some(data_dir.to_path_buf()),
+            args,
+            payload.to_string(),
+            &mut stdout,
+            |_, _| Ok(()),
+        )
+        .await
+        .unwrap();
+        String::from_utf8(stdout).unwrap()
+    }
+
+    async fn recorded_requests(
+        requests: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> Vec<String> {
+        let mut recorded = Vec::new();
+        while let Some(request) = first_request(requests).await {
+            recorded.push(request);
+        }
+        recorded
+    }
+
+    /// A repository that opted into `[briefing] inject_on_subagent_start`
+    /// hands its subagents the project brief: the hook reads it from the
+    /// read-only `/brief` route and prints the `SubagentStart` envelope the
+    /// agent adds to the subagent's context. It never asks `/handoff`, whose
+    /// fetch would claim the parent session's baton, and the event itself is
+    /// still captured.
+    #[tokio::test]
+    async fn subagent_start_delivers_the_opted_in_brief() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let repo = repo_with_marker(
+            tmp.path(),
+            "repo",
+            "[briefing]\ninject_on_subagent_start = true\nmax_chars = 6000\n",
+        );
+        let (base, mut requests) = serve_requests("200 OK", "SUBAGENT-BRIEF").await;
+
+        let stdout = run_subagent_start(
+            &data_dir,
+            claude_args("subagent-start", &base),
+            subagent_start_payload(&repo),
+        )
+        .await;
+
+        let envelope: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(
+            envelope,
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SubagentStart",
+                    "additionalContext": "SUBAGENT-BRIEF",
+                }
+            })
+        );
+        let recorded = recorded_requests(&mut requests).await;
+        let brief = recorded
+            .iter()
+            .find(|request| request.starts_with("GET /brief?"))
+            .unwrap_or_else(|| panic!("no brief fetch: {recorded:?}"));
+        assert!(brief.contains("agent=claude-code"), "{brief}");
+        assert!(brief.contains("&cwd="), "{brief}");
+        assert!(brief.contains("&briefing=true"), "{brief}");
+        assert!(brief.contains("&briefing_budget=6000"), "{brief}");
+        assert!(
+            !recorded
+                .iter()
+                .any(|request| request.starts_with("GET /handoff")),
+            "a subagent start must never fetch the handoff: {recorded:?}"
+        );
+        let spooled = spooled_entries(&data_dir);
+        assert_eq!(spooled.len(), 1, "the event is still captured");
+        assert_eq!(
+            query_param(&spooled[0].url, "event"),
+            Some("subagent-start")
+        );
+    }
+
+    /// Without the subagent opt-in nothing changes: no request, and the `{}`
+    /// a subagent start always printed — also when the repository opted into
+    /// the session-start brief only.
+    #[tokio::test]
+    async fn subagent_start_without_the_opt_in_prints_what_it_always_did() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (base, mut requests) = serve_requests("200 OK", "SUBAGENT-BRIEF").await;
+        for (name, marker) in [
+            ("unmarked", None),
+            (
+                "session-brief-only",
+                Some("[briefing]\ninject_on_session_start = true\n"),
+            ),
+            (
+                "opted-out",
+                Some("[briefing]\ninject_on_subagent_start = false\n"),
+            ),
+        ] {
+            let repo = match marker {
+                Some(marker) => repo_with_marker(tmp.path(), name, marker),
+                None => {
+                    let repo = tmp.path().join(name);
+                    std::fs::create_dir_all(&repo).unwrap();
+                    repo
+                }
+            };
+            let stdout = run_subagent_start(
+                &tmp.path().join(format!("data-{name}")),
+                claude_args("subagent-start", &base),
+                subagent_start_payload(&repo),
+            )
+            .await;
+            assert_eq!(stdout, "{}\n", "{name}");
+        }
+        let recorded = recorded_requests(&mut requests).await;
+        assert!(recorded.is_empty(), "{recorded:?}");
+    }
+
+    /// An empty `/brief` body (nothing to brief) and a 404 (a server that
+    /// predates the route) both leave the subagent with the `{}` it got
+    /// before, and neither falls back to `/handoff`.
+    #[tokio::test]
+    async fn subagent_start_with_no_brief_prints_an_empty_reply() {
+        for status in ["200 OK", "404 Not Found"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let repo = repo_with_marker(
+                tmp.path(),
+                "repo",
+                "[briefing]\ninject_on_subagent_start = true\n",
+            );
+            let (base, mut requests) = serve_requests(status, "").await;
+
+            let stdout = run_subagent_start(
+                &tmp.path().join("data"),
+                claude_args("subagent-start", &base),
+                subagent_start_payload(&repo),
+            )
+            .await;
+
+            assert_eq!(stdout, "{}\n", "{status}");
+            let recorded = recorded_requests(&mut requests).await;
+            assert!(
+                recorded
+                    .iter()
+                    .any(|request| request.starts_with("GET /brief?")),
+                "{status}: {recorded:?}"
+            );
+            assert!(
+                !recorded
+                    .iter()
+                    .any(|request| request.starts_with("GET /handoff")),
+                "{status}: {recorded:?}"
+            );
+        }
+    }
+
+    /// Only the `claude-code` agent documents `SubagentStart` context. Another
+    /// agent with the same marker asks for nothing and replies as before, and
+    /// so does a Cursor payload arriving through the same hook settings, whose
+    /// handling of the envelope is unverified.
+    #[tokio::test]
+    async fn subagent_brief_skips_agents_without_subagent_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = repo_with_marker(
+            tmp.path(),
+            "repo",
+            "[briefing]\ninject_on_subagent_start = true\n",
+        );
+        let (base, mut requests) = serve_requests("200 OK", "SUBAGENT-BRIEF").await;
+
+        let stdout = run_subagent_start(
+            &tmp.path().join("data-codex"),
+            codex_args("subagent-start", &base),
+            subagent_start_payload(&repo),
+        )
+        .await;
+        assert_eq!(stdout.trim(), "{}");
+
+        let mut cursor = subagent_start_payload(&repo);
+        cursor["cursor_version"] = "2.0.0".into();
+        let stdout = run_subagent_start(
+            &tmp.path().join("data-cursor"),
+            claude_args("subagent-start", &base),
+            cursor,
+        )
+        .await;
+        assert_eq!(stdout.trim(), "{}");
+
+        let recorded = recorded_requests(&mut requests).await;
+        assert!(
+            !recorded
+                .iter()
+                .any(|request| request.starts_with("GET /brief")),
+            "{recorded:?}"
+        );
+    }
+
     // ── #992: per-repository server profiles ─────────────────────────────
 
     /// Register `name` in `data_dir` with a token and the given roots.
@@ -8748,6 +9102,184 @@ mod tests {
             if let Some(entry) = entries.first() {
                 assert_eq!(query_param(&entry.url, "project"), Some("default-repo"));
             }
+        }
+    }
+
+    /// A Hermes home with one named profile carrying its own marker.
+    fn hermes_root_with_profile_marker(parent: &Path, profile: &str, marker: &str) -> PathBuf {
+        let root = parent.join("hermes-root");
+        repo_with_marker(&root.join("profiles"), profile, marker);
+        root
+    }
+
+    #[test]
+    fn hermes_profile_marker_cwd_takes_only_a_marked_named_profile_in_a_gateway() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = hermes_root_with_profile_marker(tmp.path(), "sc-seo", "project = \"p\"\n");
+        std::fs::create_dir_all(root.join("profiles").join("unmarked")).unwrap();
+        let profile_dir = root.join("profiles").join("sc-seo");
+        let root_str = root.to_str().unwrap();
+        let gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", root_str),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        assert_eq!(
+            hermes_profile_marker_cwd(&gateway, Some("sc-seo")).as_deref(),
+            profile_dir.to_str()
+        );
+        assert_eq!(hermes_profile_marker_cwd(&gateway, Some("unmarked")), None);
+        assert_eq!(hermes_profile_marker_cwd(&gateway, Some("missing")), None);
+        assert_eq!(hermes_profile_marker_cwd(&gateway, None), None);
+        // The default profile's directory is the root; its route is `TERMINAL_CWD`.
+        std::fs::write(root.join(".ai-memory.toml"), "project = \"root\"\n").unwrap();
+        assert_eq!(hermes_profile_marker_cwd(&gateway, Some("default")), None);
+        // Outside a gateway the process cwd and `TERMINAL_CWD` are the session's own.
+        let standalone_cli = RuntimeEnv::with_process_env_for_tests(&[("HERMES_HOME", root_str)]);
+        assert_eq!(
+            hermes_profile_marker_cwd(&standalone_cli, Some("sc-seo")),
+            None
+        );
+        // A standalone gateway of the profile runs with its directory as HERMES_HOME.
+        let own_gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", profile_dir.to_str().unwrap()),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        assert_eq!(
+            hermes_profile_marker_cwd(&own_gateway, Some("sc-seo")).as_deref(),
+            profile_dir.to_str()
+        );
+    }
+
+    /// Adversarial: the profile name arrives in the payload, so a name that is
+    /// not a Hermes profile id never becomes a path, even when a marker waits
+    /// where it would lead.
+    #[test]
+    fn hermes_profile_marker_cwd_refuses_a_name_that_is_not_a_profile_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = hermes_root_with_profile_marker(tmp.path(), "sc-seo", "project = \"p\"\n");
+        repo_with_marker(&root, "escape", "project = \"escape\"\n");
+        repo_with_marker(&root.join("profiles"), "Upper", "project = \"upper\"\n");
+        let gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", root.to_str().unwrap()),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        for name in ["../escape", "sc-seo/..", "Upper", "", "-lead", "a/b"] {
+            assert_eq!(
+                hermes_profile_marker_cwd(&gateway, Some(name)),
+                None,
+                "{name}"
+            );
+        }
+        assert!(crate::commands::path_util::is_hermes_profile_id(
+            &"a".repeat(64)
+        ));
+        assert!(!crate::commands::path_util::is_hermes_profile_id(
+            &"a".repeat(65)
+        ));
+        // Control: the valid id still routes.
+        assert!(hermes_profile_marker_cwd(&gateway, Some("sc-seo")).is_some());
+    }
+
+    /// A multiplexing gateway reports its own cwd (here an unmarked home) for
+    /// every profile. A named profile whose Hermes home carries a marker is
+    /// routed there under allowlist mode; an unmarked profile keeps the
+    /// gateway cwd, which allowlist mode drops.
+    #[tokio::test]
+    async fn hermes_gateway_profile_routes_by_its_own_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let root = hermes_root_with_profile_marker(
+            tmp.path(),
+            "sc-seo",
+            "workspace = \"w\"\nproject = \"smart-compost\"\n",
+        );
+        std::fs::create_dir_all(root.join("profiles").join("sc-unmarked")).unwrap();
+        let gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", root.to_str().unwrap()),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        let payload = |profile: &str| {
+            let mut payload: serde_json::Value = serde_json::from_str(&hermes_payload(
+                "pre_llm_call",
+                &home,
+                pre_llm_call_extra(false),
+            ))
+            .unwrap();
+            payload["profile"] = profile.into();
+            payload.to_string()
+        };
+        let args = || {
+            let mut args = hermes_args("user-prompt-submit", &dead_server_url());
+            args.capture_mode = Some(crate::cli::CaptureModeArg::Allowlist);
+            args
+        };
+        for (profile, spooled) in [("sc-seo", 1), ("sc-unmarked", 0)] {
+            let data_dir = tmp.path().join(format!("data-{profile}"));
+            run_hermes(&data_dir, args(), payload(profile), gateway.clone()).await;
+            let entries = spooled_entries(&data_dir);
+            assert_eq!(entries.len(), spooled, "{profile}");
+            if let Some(entry) = entries.first() {
+                assert_eq!(query_param(&entry.url, "project"), Some("smart-compost"));
+                let body: serde_json::Value = serde_json::from_str(&entry.body).unwrap();
+                assert_eq!(
+                    body["cwd"],
+                    root.join("profiles").join(profile).to_str().unwrap()
+                );
+            }
+        }
+    }
+
+    /// Adversarial: a profile marker selects where the event lands, so its
+    /// exclusions and server profile govern it, as a checkout's do. An
+    /// excluded relative read is never spooled and an unregistered server
+    /// profile drops the event; a public read is the control.
+    #[tokio::test]
+    async fn hermes_gateway_profile_marker_applies_its_capture_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let root = hermes_root_with_profile_marker(
+            tmp.path(),
+            "guarded",
+            "project = \"guarded\"\n[capture]\nignore_paths = [\"secret/**\"]\n",
+        );
+        repo_with_marker(&root.join("profiles"), "routed", "server = \"nobody\"\n");
+        let gateway = RuntimeEnv::with_process_env_for_tests(&[
+            ("HERMES_HOME", root.to_str().unwrap()),
+            ("_HERMES_GATEWAY", "1"),
+        ]);
+        let read = |profile: &str, path: &str| {
+            serde_json::json!({
+                "hook_event_name": "post_tool_call",
+                "tool_name": "read_file",
+                "tool_input": {"path": path},
+                "session_id": "hermes-session",
+                "cwd": home,
+                "profile": profile,
+                "extra": {"tool_call_id": "call-1", "status": "ok", "result": "SENTINEL_CONTENT"}
+            })
+            .to_string()
+        };
+        for (name, profile, path, spooled) in [
+            ("excluded read", "guarded", "secret/token.txt", 0),
+            ("public read", "guarded", "README.md", 1),
+            ("refused profile", "routed", "README.md", 0),
+        ] {
+            let data_dir = tmp.path().join(format!("data-{}", name.replace(' ', "-")));
+            run_hermes(
+                &data_dir,
+                hermes_args("post-tool-use", &dead_server_url()),
+                read(profile, path),
+                gateway.clone(),
+            )
+            .await;
+            let entries = spooled_entries(&data_dir);
+            assert_eq!(entries.len(), spooled, "{name}");
+            assert!(
+                entries.iter().all(|e| !e.body.contains("secret/token")),
+                "{name}"
+            );
         }
     }
 

@@ -30,8 +30,8 @@ use crate::error::{StoreError, StoreResult};
 use crate::ops::{
     self, AdmittedSession, DeleteWorkspaceSummary, EmbeddingWrite, HookSessionAdmission,
     IdleEndCandidate, IdleEndResult, IngestObservationOutcome, LifecycleOnlyEndOutcome,
-    MoveSessionSummary, MoveSummary, ObservationPruneOutcome, PagesMode, PurgeSummary,
-    ReorgSummary,
+    MergeProjectPage, MergeProjectSummary, MoveSessionSummary, MoveSummary,
+    ObservationPruneOutcome, PagesMode, PurgeSummary, ReorgSummary,
 };
 use crate::session_consolidation::SessionConsolidationJob;
 use crate::users::{self, TOKEN_HASH_LEN};
@@ -571,6 +571,16 @@ pub(crate) enum WriteCmd {
         from_workspace: WorkspaceId,
         to_workspace: WorkspaceId,
         reply: oneshot::Sender<StoreResult<MoveSummary>>,
+    },
+    /// Merge one project id into another in the same workspace. The wiki
+    /// layer supplies a compare-and-write plan for every latest source page.
+    MergeProject {
+        workspace_id: WorkspaceId,
+        source_project: ProjectId,
+        target_project: ProjectId,
+        pages: Vec<MergeProjectPage>,
+        commit: bool,
+        reply: oneshot::Sender<StoreResult<MergeProjectSummary>>,
     },
     /// Re-stamp one session and its dependent rows (observations, handoffs,
     /// consolidation jobs, auto-improve runs and claim, session page) into
@@ -2613,6 +2623,28 @@ impl WriterHandle {
         rx.await.map_err(|_| StoreError::WriterClosed)?
     }
 
+    /// Atomically merge one project id into another in the same workspace.
+    pub async fn merge_project(
+        &self,
+        workspace_id: WorkspaceId,
+        source_project: ProjectId,
+        target_project: ProjectId,
+        pages: Vec<MergeProjectPage>,
+        commit: bool,
+    ) -> StoreResult<MergeProjectSummary> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::MergeProject {
+            workspace_id,
+            source_project,
+            target_project,
+            pages,
+            commit,
+            reply: tx,
+        })
+        .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
     /// Re-stamp one session, its observations, the handoffs it produced, its
     /// consolidation jobs, auto-improve runs and scheduler claim, and its
     /// `sessions/<id>.md` page (per `pages`) into
@@ -4578,6 +4610,24 @@ fn worker_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriteCmd>) {
                     &to_workspace,
                 );
                 send_or_warn(reply, result, "move_project_workspace");
+            }
+            WriteCmd::MergeProject {
+                workspace_id,
+                source_project,
+                target_project,
+                pages,
+                commit,
+                reply,
+            } => {
+                let result = ops::merge_project(
+                    &mut conn,
+                    workspace_id,
+                    source_project,
+                    target_project,
+                    &pages,
+                    commit,
+                );
+                send_or_warn(reply, result, "merge_project");
             }
             WriteCmd::MoveSession {
                 session_id,

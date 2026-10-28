@@ -1462,6 +1462,7 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
         .with_trusted_proxy_identity(trusted_proxy_identity_enabled(&config.auth))
         .with_per_user_slots(config.slots.per_user)
         .with_profile(config.profile.clone())
+        .with_answer_context_budget(config.query_answer.max_context_tokens)
         .with_strip_root_combinators(config.strip_root_combinators)
         .with_gemini_safe_schemas(config.gemini_safe_schemas);
     if let Some(e) = embedder.clone() {
@@ -2957,6 +2958,7 @@ fn auto_improve_review_config_from_settings(
         eval: ai_memory_consolidate::AutoImproveEvalConfig {
             enabled: settings.eval.enabled,
             command: settings.eval.command.clone(),
+            builtin: settings.eval.builtin.trim().to_owned(),
             timeout_secs: settings.eval.timeout_secs,
             targets: settings.eval.targets.clone(),
             min_delta: settings.eval.min_delta,
@@ -3152,7 +3154,7 @@ fn configure_consolidator(
     };
     let provider_name = cfg.provider.name().to_string();
     let model = cfg.model.clone();
-    let retry_hint = llm_retry_hint(&provider_name, &model, cfg.base_url.as_deref());
+    let retry_hint = llm_retry_hint(&provider_name, &model);
     // Routes through the same construction `llm_provider_config` just
     // confirmed is `Some`: wraps `[primary, fallbacks...]` in a
     // `FallbackLlmProvider` when `llm_fallbacks` is non-empty, else returns
@@ -3196,9 +3198,13 @@ fn configure_consolidator(
         info!(
             provider = llm.name(),
             model = llm.model(),
+            timeout_secs = config.rerank_timeout_secs,
             "project/scopes memory_query reranking enabled (adds LLM latency)",
         );
-        server = server.with_reranker(Arc::new(ai_memory_llm::LlmReranker::new(llm.clone())));
+        let stage =
+            ai_memory_llm::RerankStage::new(Arc::new(ai_memory_llm::LlmReranker::new(llm.clone())))
+                .with_timeout(std::time::Duration::from_secs(config.rerank_timeout_secs));
+        server = server.with_rerank_stage(stage);
     }
     Ok(ConsolidatorSetup {
         server,
@@ -3300,13 +3306,16 @@ fn validate_web_ui_args(enable_web: bool, web_ui_dir: Option<&Path>) -> Result<(
     Ok(())
 }
 
-fn llm_retry_hint(provider: &str, model: &str, base_url: Option<&str>) -> String {
-    let mut command = format!("ai-memory llm-test --provider {provider} --model {model}");
-    if let Some(base_url) = base_url {
-        command.push_str(&format!(" --base-url {base_url}"));
-    }
-    command.push_str(" --prompt ping");
-    command
+/// What to run when the server's provider call failed.
+///
+/// The probe runs *on the server* (`--server`): a client-side `llm-test`
+/// builds its provider from the caller's environment, and when the server runs
+/// in a container or on another host the keys exist only there, so the hint
+/// answered "no API key" or a provider 400 while the server was healthy
+/// (#1639). `provider`/`model` are still named, so the report is readable
+/// without opening the config.
+fn llm_retry_hint(provider: &str, model: &str) -> String {
+    format!("ai-memory llm-test --server   # server provider: {provider} / {model}")
 }
 
 /// Liveness probe for process supervisors.
@@ -3623,6 +3632,26 @@ fn host_without_port(host: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    /// The retry hint must name the probe that runs where the keys are (#1639):
+    /// a client-side `llm-test` builds its provider from the caller's
+    /// environment, which is the wrong one for a container or a remote server.
+    #[test]
+    fn the_retry_hint_probes_the_server_not_the_clients_environment() {
+        let hint = super::llm_retry_hint("anthropic", "claude-haiku-4-5");
+        assert!(
+            hint.starts_with("ai-memory llm-test --server"),
+            "the hint must run the probe on the server: {hint}"
+        );
+        assert!(
+            !hint.contains("--provider") && !hint.contains("--api-key"),
+            "the server-side probe takes no client-side provider flags: {hint}"
+        );
+        assert!(
+            hint.contains("anthropic") && hint.contains("claude-haiku-4-5"),
+            "the hint must still name what failed: {hint}"
+        );
+    }
+
     #[cfg(feature = "management-ui")]
     #[tokio::test]
     async fn management_ui_rejects_invalid_mounts_before_opening_the_store() {

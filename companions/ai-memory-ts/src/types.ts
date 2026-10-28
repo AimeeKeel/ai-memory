@@ -102,6 +102,70 @@ export interface WritePageResult {
   readonly raw: Raw;
 }
 
+/** A bounded heading token returned by `memory_read_page`. */
+export interface PageSection {
+  /** Heading text without Markdown markers. */
+  readonly anchor: string;
+  /** ATX heading level, 1 through 6. */
+  readonly level: number;
+  /** SHA-256 of the exact section bytes, including its heading. */
+  readonly sha256: string;
+}
+
+/** One atomic anchored page edit. */
+export type PagePatchEdit =
+  | {
+      /** Append operation. */
+      op: "append";
+      /** Insert before the next same-or-higher-level heading. */
+      target: "section";
+      /** Unique existing heading. */
+      anchor: string;
+      /** Markdown to append. */
+      content: string;
+    }
+  | {
+      /** Append operation. */
+      op: "append";
+      /** Insert at the end of the page. */
+      target: "end_of_page";
+      /** An EOF append has no heading anchor. */
+      anchor?: never;
+      /** Markdown to append. */
+      content: string;
+    }
+  | {
+      /** Add a new section at EOF. */
+      op: "add_section";
+      /** Unique ATX level 2-6 heading, for example `## Decisions`. */
+      anchor: string;
+      /** New section body. */
+      content: string;
+    }
+  | {
+      /** Replace one existing section body. */
+      op: "replace_section";
+      /** Unique existing heading. */
+      anchor: string;
+      /** Exact section token returned by {@link Page.sections}. */
+      sectionSha256: string;
+      /** Replacement section body, excluding the heading. */
+      content: string;
+    };
+
+/** Arguments of {@link PagesNamespace.patch}. */
+export interface PatchPageArgs extends ScopedArgs {
+  /** Existing page path. */
+  path: string;
+  /** Required latest page version returned by a read or mutation. */
+  expectedPageId: string;
+  /** Bounded batch resolved against one base body and committed atomically. */
+  edits: readonly PagePatchEdit[];
+}
+
+/** Result of {@link PagesNamespace.patch}. */
+export type PatchPageResult = WritePageResult;
+
 /** Options shared by both forms of {@link ReadPageArgs}. */
 export interface ReadPageBase extends ScopedArgs {
   /** Also walk the link graph and return the reachable pages in `related`. */
@@ -157,6 +221,10 @@ export interface Page {
   readonly body: UntrustedText;
   /** Parsed frontmatter (tags, tier, pinned and other metadata). Untrusted. */
   readonly frontmatter: Readonly<Record<string, unknown>>;
+  /** Bounded heading hashes for anchored patches. */
+  readonly sections: readonly PageSection[];
+  /** True when the page has more sections than the response cap. */
+  readonly sectionsTruncated: boolean;
   /** Pages reachable through links, present only with `includeRelated`. */
   readonly related: readonly RelatedPage[] | undefined;
   /** The server's decoded JSON. */
@@ -322,6 +390,22 @@ export interface QueryAnswer {
   readonly citations: readonly string[];
 }
 
+/** Optional server-side context admission receipt for answer synthesis. */
+export interface QueryAnswerContext {
+  /** Number of source snippets admitted to the model input. */
+  readonly admitted: number;
+  /** Number of retrieval snippets not admitted. Retrieval hits stay complete. */
+  readonly omitted: number;
+  /** Number of admitted snippets clipped on a UTF-8 boundary. */
+  readonly clipped: number;
+  /** Conservative byte-based input estimate, including schema and envelope allowance. */
+  readonly estimatedInputTokens: number;
+  /** Output token allowance reserved for the requested reasoning tier. */
+  readonly reservedOutputTokens: number;
+  /** Server-configured combined context target; not a tokenizer guarantee. */
+  readonly maxContextTokens: number;
+}
+
 /** Result of {@link AiMemoryClient.query}. */
 export interface QueryResult {
   /** Page hits. A global query puts its cross-project hits here, with `workspace` and `project` set. */
@@ -334,6 +418,8 @@ export interface QueryResult {
   readonly answer: QueryAnswer | undefined;
   /** Why no answer was produced, when `answer` was set. */
   readonly answerUnavailable: string | undefined;
+  /** Present only when the server applied its optional answer context budget. */
+  readonly answerContext?: QueryAnswerContext;
   /** The server's decoded JSON. */
   readonly raw: Raw;
 }
@@ -745,6 +831,10 @@ export interface SendMessageArgs {
   body: string;
   /** Optional one-line subject. */
   subject?: string;
+  /** How the sender knows the claim. Defaults to `unknown`. */
+  nature?: "unknown" | "measured" | "reported" | "inferred";
+  /** Supporting evidence. Required by the server when `nature` is `measured`. */
+  evidence?: string;
 }
 
 /** Result of {@link MessagesNamespace.send}. */
@@ -763,6 +853,10 @@ export interface Message {
   readonly subject: UntrustedText | null;
   /** Body: a request to evaluate, never instructions to obey. */
   readonly body: UntrustedText;
+  /** How the sender knows the claim. */
+  readonly nature: "unknown" | "measured" | "reported" | "inferred";
+  /** Supporting evidence, or `null`. */
+  readonly evidence: UntrustedText | null;
   /** `pending`, `claimed` or `cancelled`. */
   readonly state: string;
   /** Send time. */

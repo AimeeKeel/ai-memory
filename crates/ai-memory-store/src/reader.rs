@@ -6,6 +6,7 @@
 //! soft cap: a connection that comes back when the pool is already full
 //! is simply dropped.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1424,6 +1425,26 @@ pub struct SessionConsolidationQueue {
     pub oldest_pending_requested_at_us: Option<i64>,
 }
 
+/// One consolidation job that gave up after its attempts, for the operator's
+/// `status` (#1692).
+///
+/// Deliberately **not** part of [`SessionConsolidationQueue`]: that struct
+/// feeds the web health panel, which is documented to carry counts only. This
+/// one carries the session id (so it can be re-consolidated once the cause is
+/// fixed) and the bounded error the worker recorded, and is served only on
+/// `/admin/status`, which is root-only on a multi-user server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FailedConsolidationJob {
+    /// Session whose consolidation gave up.
+    pub session_id: String,
+    /// Provider attempts spent on it.
+    pub attempts: u32,
+    /// Unix microseconds of the final failure.
+    pub failed_at_us: i64,
+    /// The worker's bounded error text, scrubbed by the caller before display.
+    pub last_error: String,
+}
+
 /// One open session selected by [`ReaderPool::idle_open_sessions`] for the
 /// server-side idle auto-end tick: its last activity
 /// (`MAX(observations.created_at)`, falling back to `started_at`) is older
@@ -1623,6 +1644,12 @@ pub struct PageVersionBody {
     pub title: String,
     /// Body stored on this version (markdown without frontmatter).
     pub body: String,
+    /// Full frontmatter stored on this version.
+    pub frontmatter: serde_json::Value,
+    /// Memory tier stored on this version.
+    pub tier: String,
+    /// Whether this version was pinned.
+    pub pinned: bool,
     /// ISO-8601 instant this version was written.
     pub created_at: String,
 }
@@ -1764,6 +1791,34 @@ pub struct StatusCounts {
     pub evidence_rows: u64,
 }
 
+/// The key two project names share when only their spelling differs
+/// (#1645).
+///
+/// Compatibility-decomposes and lowercases first, then drops only non-spacing
+/// marks. Punctuation remains significant: `api` and `api!` are different
+/// project names, while `Renato`, `RENATO`, and `Rénato` share a key.
+#[must_use]
+pub fn project_name_fold_key(name: &str) -> String {
+    use unicode_categories::UnicodeCategories as _;
+
+    let decomposed = icu_normalizer::DecomposingNormalizer::new_nfkd().normalize(name);
+    decomposed
+        .chars()
+        .filter(|c| !c.is_mark_nonspacing())
+        .collect::<String>()
+        .to_lowercase()
+        .trim()
+        .to_string()
+}
+
+fn project_name_case_key(name: &str) -> String {
+    icu_normalizer::DecomposingNormalizer::new_nfd()
+        .normalize(name)
+        .to_lowercase()
+        .trim()
+        .to_string()
+}
+
 /// One likely cross-project contamination finding from
 /// [`ReaderPool::audit_contamination`]. Advisory only — it flags STRUCTURAL
 /// mislandings (an entity whose identity disagrees with the bucket it landed
@@ -1790,6 +1845,24 @@ pub struct ContaminationFinding {
     /// Originating session cwd — the prefix-resolution evidence (CHECK A).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// The other project(s) this name collides with, comma-separated
+    /// (CHECK B). Names only: the fix is a marker or `merge-project`, and the
+    /// reader needs both spellings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_projects: Option<String>,
+    /// Page count of this project (CHECK B).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pages: Option<u64>,
+    /// Session count of this project (CHECK B).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<u64>,
+    /// Whether the peer names differ by case, accent, or both (CHECK B).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collision_kind: Option<&'static str>,
+    /// Latest page/session/observation activity timestamp in microseconds
+    /// since the Unix epoch (CHECK B).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_us: Option<i64>,
 }
 
 /// Per-check counts for an [`ReaderPool::audit_contamination`] run.
@@ -1797,6 +1870,9 @@ pub struct ContaminationFinding {
 pub struct ContaminationSummary {
     /// Sessions whose cwd prefix-resolves to a different project (CHECK A).
     pub sessions_misbucketed: usize,
+    /// Projects whose names collide with another project's in one workspace
+    /// (CHECK B).
+    pub project_name_collisions: usize,
 }
 
 /// Result of [`ReaderPool::audit_contamination`] — advisory, never mutates.
@@ -2176,6 +2252,24 @@ pub struct ProjectSummary {
     /// ISO-8601 timestamp of the newest `updated_at`, or `None` when
     /// the project has no pages yet.
     pub last_updated: Option<String>,
+}
+
+/// Counts of the records a destructive project operation would discard
+/// (#1713).
+///
+/// Used as the preflight a `move-project` refusal shows: the copy+purge merge
+/// keeps the source's latest pages only, so the rest of this is what the
+/// operator is about to delete.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ProjectRecordCounts {
+    /// Unexpired latest pages.
+    pub pages: u64,
+    /// Sessions recorded in the project.
+    pub sessions: u64,
+    /// Observations captured for those sessions.
+    pub observations: u64,
+    /// Handoffs created or accepted in the project.
+    pub handoffs: u64,
 }
 
 /// Pending inbox depth for one recipient project. Returned by
@@ -2655,7 +2749,93 @@ struct Pool {
     closed: bool,
 }
 
+/// Metadata for ordering answer evidence that retrieval has already authorized.
+/// Contains no page body and does not authorize access to the identified page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnswerEvidenceMeta {
+    /// Workspace owning the retrieved page.
+    pub workspace_id: WorkspaceId,
+    /// Project owning the retrieved page.
+    pub project_id: ProjectId,
+    /// Stored page title.
+    pub title: String,
+    /// Evidence time in microseconds since the Unix epoch: the same-scope
+    /// session start for canonical session pages, otherwise page modification.
+    pub updated_at: i64,
+    /// Previous version identifier, without fetching that version's metadata.
+    pub supersedes: Option<PageId>,
+}
+
 impl ReaderPool {
+    /// Fetch metadata only for page IDs already admitted by authorized retrieval.
+    ///
+    /// This internal data helper is not an authorization boundary: callers must
+    /// pass only their admitted hits. One batched query returns at most the
+    /// requested IDs, without reading bodies or following supersession links.
+    /// Empty input does not open a connection. At most 300 IDs are accepted.
+    ///
+    /// # Errors
+    /// Rejects oversized input and propagates SQL, ID decoding and pool errors.
+    pub async fn answer_evidence_metadata(
+        &self,
+        ids: Vec<PageId>,
+    ) -> StoreResult<std::collections::HashMap<PageId, AnswerEvidenceMeta>> {
+        if ids.len() > 300 {
+            return Err(StoreError::InvalidState(
+                "answer evidence metadata accepts at most 300 page IDs".into(),
+            ));
+        }
+        if ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        self.with_conn(move |conn| {
+            let placeholders = vec!["?"; ids.len()].join(",");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT p.id, p.workspace_id, p.project_id, p.title, \
+                        COALESCE(s.started_at, p.updated_at), p.supersedes \
+                 FROM pages p LEFT JOIN sessions s \
+                   ON s.id = unhex(replace(substr(p.path, 10, 36), '-', '')) \
+                  AND s.workspace_id = p.workspace_id AND s.project_id = p.project_id \
+                  AND p.path = 'sessions/' || substr(lower(hex(s.id)), 1, 8) || '-' || \
+                      substr(lower(hex(s.id)), 9, 4) || '-' || \
+                      substr(lower(hex(s.id)), 13, 4) || '-' || \
+                      substr(lower(hex(s.id)), 17, 4) || '-' || \
+                      substr(lower(hex(s.id)), 21, 12) || '.md' \
+                 WHERE p.id IN ({placeholders})"
+            ))?;
+            let bound: Vec<Value> = ids
+                .iter()
+                .map(|id| Value::Blob(id.as_bytes().to_vec()))
+                .collect();
+            let rows = stmt.query_map(params_from_iter(bound.iter()), |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                ))
+            })?;
+            let mut metadata = std::collections::HashMap::new();
+            for row in rows {
+                let (id, workspace, project, title, updated_at, supersedes) = row?;
+                metadata.insert(
+                    PageId::from_slice(&id)?,
+                    AnswerEvidenceMeta {
+                        workspace_id: WorkspaceId::from_slice(&workspace)?,
+                        project_id: ProjectId::from_slice(&project)?,
+                        title,
+                        updated_at,
+                        supersedes: supersedes.as_deref().map(PageId::from_slice).transpose()?,
+                    },
+                );
+            }
+            Ok(metadata)
+        })
+        .await
+    }
+
     /// Initialise the pool. Connections are opened lazily on first use.
     ///
     /// # Errors
@@ -11270,7 +11450,7 @@ impl ReaderPool {
             let row = conn
                 .query_row(
                     &format!(
-                        "SELECT pg.title, pg.body, pg.created_at, \
+                        "SELECT pg.title, pg.body, pg.frontmatter_json, pg.tier, pg.pinned, pg.created_at, \
                                 (SELECT sp.id FROM pages sp \
                                  WHERE sp.id = pg.supersedes{prev_visible}) \
                          FROM pages pg \
@@ -11290,13 +11470,16 @@ impl ReaderPool {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
-                            row.get::<_, i64>(2)?,
-                            row.get::<_, Option<Vec<u8>>>(3)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, i64>(5)?,
+                            row.get::<_, Option<Vec<u8>>>(6)?,
                         ))
                     },
                 )
                 .optional()?;
-            let Some((title, body, created_us, supersedes)) = row else {
+            let Some((title, body, frontmatter, tier, pinned, created_us, supersedes)) = row else {
                 return Ok(None);
             };
             Ok(Some(PageVersionBody {
@@ -11304,6 +11487,9 @@ impl ReaderPool {
                 supersedes: supersedes.as_deref().map(PageId::from_slice).transpose()?,
                 title,
                 body,
+                frontmatter: serde_json::from_str(&frontmatter).unwrap_or_default(),
+                tier,
+                pinned: pinned != 0,
                 created_at: jiff::Timestamp::from_microsecond(created_us)
                     .map(|ts| ts.to_string())
                     .unwrap_or_default(),
@@ -12320,6 +12506,7 @@ impl ReaderPool {
         home: Option<&str>,
     ) -> StoreResult<ContaminationReport> {
         let scoped = scope.is_some();
+        let scoped_project = scope.as_ref().map(|(_, project)| *project);
         let home = home.map(|h| normalize_cwd(h).into_owned());
         let scope_params: Vec<Value> = match &scope {
             Some((ws, proj)) => vec![
@@ -12335,10 +12522,15 @@ impl ReaderPool {
         // boundary and safety rules as the runtime resolver.
         type Candidate = (String, WorkspaceId, ProjectId, String, String, String);
         type Prefix = (WorkspaceId, ProjectId, String, String);
-        let (mut findings, candidates, prefixes): (
+        // CHECK B's input: every project in scope's workspace with its counts.
+        // A project-scoped audit still needs its peers to detect a collision;
+        // only the emitted findings are restricted to the requested project.
+        type ProjectRow = (String, String, Vec<u8>, String, u64, u64, i64);
+        let (mut findings, candidates, prefixes, projects): (
             Vec<ContaminationFinding>,
             Vec<Candidate>,
             Vec<Prefix>,
+            Vec<ProjectRow>,
         ) = self
             .with_conn(move |conn| {
                 // CHECK A findings are built after this closure (they need the
@@ -12456,7 +12648,48 @@ impl ReaderPool {
                     }
                 }
 
-                Ok((findings, candidates, prefixes))
+                // CHECK B: project rows with their page and session counts.
+                // The fold happens outside the connection; the counts ride the
+                // same query so a large store costs two index scans, not 2N.
+                let mut p_sql = String::from(
+                    "SELECT lower(hex(p.id)), wl.name, p.id, p.name, \
+                            (SELECT COUNT(*) FROM pages pg WHERE pg.project_id = p.id \
+                              AND pg.is_latest = 1), \
+                            (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id), \
+                            max(p.created_at, \
+                              COALESCE((SELECT MAX(pg.updated_at) FROM pages pg WHERE pg.project_id = p.id), 0), \
+                              COALESCE((SELECT MAX(COALESCE(s.ended_at, s.started_at)) FROM sessions s WHERE s.project_id = p.id), 0), \
+                              COALESCE((SELECT MAX(o.created_at) FROM observations o WHERE o.project_id = p.id), 0)) \
+                     FROM projects p JOIN workspaces wl ON wl.id = p.workspace_id",
+                );
+                if scoped {
+                    p_sql.push_str(" WHERE p.workspace_id = ?");
+                }
+                let mut projects: Vec<ProjectRow> = Vec::new();
+                {
+                    let mut stmt = conn.prepare(&p_sql)?;
+                    let params = if scoped {
+                        &scope_params[..1]
+                    } else {
+                        &scope_params[..0]
+                    };
+                    let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Vec<u8>>(2)?,
+                            row.get::<_, String>(3)?,
+                            u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                            u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                            row.get::<_, i64>(6)?,
+                        ))
+                    })?;
+                    for r in rows {
+                        projects.push(r?);
+                    }
+                }
+
+                Ok((findings, candidates, prefixes, projects))
             })
             .await?;
 
@@ -12482,6 +12715,65 @@ impl ReaderPool {
                     landed_project: landed_proj_name,
                     expected_project: Some(resolved_name.clone()),
                     cwd: Some(cwd),
+                    peer_projects: None,
+                    pages: None,
+                    sessions: None,
+                    collision_kind: None,
+                    last_activity_us: None,
+                });
+            }
+        }
+
+        // CHECK B: projects whose names collide once spelling differences
+        // cannot be told apart (case, Unicode composition, separators). Two
+        // rows mean one working copy reached two projects, and no read can say
+        // which one a marker-less directory means (#1645).
+        let mut groups: BTreeMap<String, Vec<&ProjectRow>> = BTreeMap::new();
+        for project in &projects {
+            groups
+                .entry(project_name_fold_key(&project.3))
+                .or_default()
+                .push(project);
+        }
+        for (_, peers) in groups.iter().filter(|(_, peers)| peers.len() > 1) {
+            for project in peers {
+                if scoped_project
+                    .is_some_and(|selected| project.2.as_slice() != selected.as_bytes())
+                {
+                    continue;
+                }
+                let others: Vec<&str> = peers
+                    .iter()
+                    .filter(|peer| peer.0 != project.0)
+                    .map(|peer| peer.3.as_str())
+                    .collect();
+                let case_key = project_name_case_key(&project.3);
+                let case_differs = peers
+                    .iter()
+                    .any(|peer| peer.0 != project.0 && project_name_case_key(&peer.3) == case_key);
+                let accent_differs = peers
+                    .iter()
+                    .any(|peer| peer.0 != project.0 && project_name_case_key(&peer.3) != case_key);
+                let collision_kind = match (case_differs, accent_differs) {
+                    (true, true) => "case_and_accent",
+                    (true, false) => "case",
+                    (false, true) => "accent",
+                    (false, false) => "spelling",
+                };
+                findings.push(ContaminationFinding {
+                    check: "project_name_collision",
+                    confidence: "medium",
+                    entity_kind: "project",
+                    entity_id: project.0.clone(),
+                    landed_workspace: project.1.clone(),
+                    landed_project: project.3.clone(),
+                    expected_project: None,
+                    cwd: None,
+                    peer_projects: Some(others.join(", ")),
+                    pages: Some(project.4),
+                    sessions: Some(project.5),
+                    collision_kind: Some(collision_kind),
+                    last_activity_us: Some(project.6),
                 });
             }
         }
@@ -12490,6 +12782,10 @@ impl ReaderPool {
             sessions_misbucketed: findings
                 .iter()
                 .filter(|f| f.check == "session_wrong_bucket")
+                .count(),
+            project_name_collisions: findings
+                .iter()
+                .filter(|f| f.check == "project_name_collision")
                 .count(),
         };
         Ok(ContaminationReport { summary, findings })
@@ -12635,6 +12931,87 @@ impl ReaderPool {
                 |row| row.get(0),
             )?;
             Ok(queue)
+        })
+        .await
+    }
+
+    /// The most recent consolidation jobs that gave up, newest first,
+    /// bounded to `limit`.
+    ///
+    /// # Errors
+    /// Propagates any SQL or pool error.
+    pub async fn failed_consolidation_jobs(
+        &self,
+        limit: u32,
+    ) -> StoreResult<Vec<FailedConsolidationJob>> {
+        let limit = i64::from(limit.clamp(1, 100));
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT session_id, attempts, COALESCE(completed_at, 0), \
+                        COALESCE(last_error, '') \
+                 FROM session_consolidation_jobs WHERE state = 'failed' \
+                 ORDER BY COALESCE(completed_at, 0) DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map([limit], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (session, attempts, failed_at_us, last_error) = row?;
+                let Ok(session_id) = ai_memory_core::SessionId::from_slice(&session) else {
+                    continue;
+                };
+                out.push(FailedConsolidationJob {
+                    session_id: session_id.to_string(),
+                    attempts: u32::try_from(attempts).unwrap_or(0),
+                    failed_at_us,
+                    last_error,
+                });
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    /// Count the records of one project, for a destructive operation's
+    /// preflight (#1713).
+    ///
+    /// # Errors
+    /// Propagates any SQL or pool error.
+    pub async fn project_record_counts(
+        &self,
+        workspace_id: WorkspaceId,
+        project_id: ProjectId,
+    ) -> StoreResult<ProjectRecordCounts> {
+        self.with_conn(move |conn| {
+            let count = |sql: &str| -> StoreResult<u64> {
+                let n: i64 = conn.query_row(
+                    sql,
+                    params![workspace_id.as_bytes(), project_id.as_bytes()],
+                    |row| row.get(0),
+                )?;
+                Ok(u64::try_from(n).unwrap_or(0))
+            };
+            Ok(ProjectRecordCounts {
+                pages: count(
+                    "SELECT COUNT(*) FROM pages WHERE workspace_id = ?1 AND project_id = ?2 \
+                     AND is_latest = 1",
+                )?,
+                sessions: count(
+                    "SELECT COUNT(*) FROM sessions WHERE workspace_id = ?1 AND project_id = ?2",
+                )?,
+                observations: count(
+                    "SELECT COUNT(*) FROM observations WHERE workspace_id = ?1 AND project_id = ?2",
+                )?,
+                handoffs: count(
+                    "SELECT COUNT(*) FROM handoffs WHERE workspace_id = ?1 AND project_id = ?2",
+                )?,
+            })
         })
         .await
     }
@@ -15123,6 +15500,161 @@ fn open_read_only(path: &Path) -> StoreResult<Connection> {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn answer_evidence_metadata_uses_session_time_only_in_the_same_scope() {
+        use ai_memory_core::PageId;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ws = store.writer.get_or_create_workspace("local").await.unwrap();
+        let project = store
+            .writer
+            .get_or_create_project(ws, "app", None)
+            .await
+            .unwrap();
+        let other_project = store
+            .writer
+            .get_or_create_project(ws, "other", None)
+            .await
+            .unwrap();
+        let other_ws = store.writer.get_or_create_workspace("other").await.unwrap();
+        let other_ws_project = store
+            .writer
+            .get_or_create_project(other_ws, "app", None)
+            .await
+            .unwrap();
+        let early = SessionId::new();
+        let late = SessionId::new();
+        let conn = rusqlite::Connection::open(store.db_path()).unwrap();
+        for (id, started_at) in [(early, 100), (late, 200)] {
+            conn.execute(
+                "INSERT INTO sessions (id,workspace_id,project_id,agent_kind,started_at) VALUES (?1,?2,?3,'codex',?4)",
+                rusqlite::params![id.as_bytes(),ws.as_bytes(),project.as_bytes(),started_at],
+            ).unwrap();
+        }
+        let early_page = PageId::new();
+        let late_page = PageId::new();
+        let foreign_project_page = PageId::new();
+        let foreign_workspace_page = PageId::new();
+        for (id, workspace, project_id, session, updated_at) in [
+            (early_page, ws, project, early, 900),
+            (late_page, ws, project, late, 300),
+            (foreign_project_page, ws, other_project, late, 700),
+            (
+                foreign_workspace_page,
+                other_ws,
+                other_ws_project,
+                late,
+                800,
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO pages (id,workspace_id,project_id,path,title,tier,body,body_sha256,created_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,'same topic','episodic','body',zeroblob(32),1,?5)",
+                rusqlite::params![id.as_bytes(),workspace.as_bytes(),project_id.as_bytes(),format!("sessions/{session}.md"),updated_at],
+            ).unwrap();
+        }
+        let metadata = store
+            .reader
+            .answer_evidence_metadata(vec![
+                early_page,
+                late_page,
+                foreign_project_page,
+                foreign_workspace_page,
+            ])
+            .await
+            .unwrap();
+        assert_eq!(metadata[&early_page].updated_at, 100);
+        assert_eq!(metadata[&late_page].updated_at, 200);
+        assert!(
+            metadata[&late_page].updated_at > metadata[&early_page].updated_at,
+            "session chronology wins despite the older session page being ingested later"
+        );
+        assert_eq!(
+            metadata[&foreign_project_page].updated_at, 700,
+            "same session filename in another project must use its own page timestamp"
+        );
+        assert_eq!(
+            metadata[&foreign_workspace_page].updated_at, 800,
+            "same session filename in another workspace must use its own page timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn answer_evidence_metadata_returns_only_requested_ids_without_expanding_links() {
+        use ai_memory_core::PageId;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ws = store
+            .writer
+            .get_or_create_workspace("admitted")
+            .await
+            .unwrap();
+        let project = store
+            .writer
+            .get_or_create_project(ws, "app", None)
+            .await
+            .unwrap();
+        let foreign_ws = store
+            .writer
+            .get_or_create_workspace("foreign")
+            .await
+            .unwrap();
+        let foreign_project = store
+            .writer
+            .get_or_create_project(foreign_ws, "app", None)
+            .await
+            .unwrap();
+        let requested = PageId::new();
+        let unrelated = PageId::new();
+        let foreign = PageId::new();
+        let conn = rusqlite::Connection::open(store.db_path()).unwrap();
+        for (id, workspace, project_id, title) in [
+            (foreign, foreign_ws, foreign_project, "foreign title"),
+            (requested, ws, project, "requested title"),
+            (unrelated, ws, project, "unrequested title"),
+        ] {
+            conn.execute(
+                "INSERT INTO pages (id,workspace_id,project_id,path,title,tier,body,body_sha256,created_at,updated_at) \
+                 VALUES (?1,?2,?3,?4,?5,'semantic','body must not be loaded',zeroblob(32),1,123)",
+                rusqlite::params![id.as_bytes(),workspace.as_bytes(),project_id.as_bytes(),id.to_string(),title],
+            ).unwrap();
+        }
+        // Even malformed historical linkage must not expand the admitted set.
+        conn.execute(
+            "UPDATE pages SET supersedes=?1 WHERE id=?2",
+            rusqlite::params![foreign.as_bytes(), requested.as_bytes()],
+        )
+        .unwrap();
+        let metadata = store
+            .reader
+            .answer_evidence_metadata(vec![requested, requested, PageId::new()])
+            .await
+            .unwrap();
+        assert_eq!(metadata.len(), 1);
+        let row = &metadata[&requested];
+        assert_eq!((row.workspace_id, row.project_id), (ws, project));
+        assert_eq!(row.title, "requested title");
+        assert_eq!(row.updated_at, 123);
+        assert_eq!(row.supersedes, Some(foreign));
+        assert!(!metadata.contains_key(&foreign));
+        assert!(!metadata.contains_key(&unrelated));
+        assert!(
+            store
+                .reader
+                .answer_evidence_metadata(vec![])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            store
+                .reader
+                .answer_evidence_metadata(vec![requested; 301])
+                .await,
+            Err(crate::StoreError::InvalidState(_))
+        ));
+    }
 
     /// `close` is a state, not a one-off sweep: a connection checked out
     /// before it is dropped on return, and nothing opens after it. The control

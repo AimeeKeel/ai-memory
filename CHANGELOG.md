@@ -15,7 +15,205 @@ version in [`docs/changelog/`](docs/changelog/):
 
 - Added `ai-memory run --no-exit-prompt`, `[run] exit_prompt = false`, and
   `AI_MEMORY_RUN_EXIT_PROMPT=false` to skip the switch/rerun menu after a
-  successful interactive session. The menu remains enabled by default (#909).
+  successful interactive session. The menu remains enabled by default (#1776).
+
+- `ai-memory merge-project --workspace <w> --from <source> --into <target>`
+  losslessly joins two project identities inside one workspace. Its default is
+  an exact dry run; `--confirm` re-stamps page history, sessions, observations,
+  handoffs, embeddings and managed workstreams in one writer transaction, then
+  removes the source project. Same-path pages get a new target version that
+  appends the source body behind an `ai-memory:merged-from` marker while both
+  prior histories remain restorable. The target frontmatter wins, a one-sided
+  expiry is removed, and the combined page is flagged stale for consolidation.
+  `restore-page --page-id <uuid>` restores either retained history even after
+  the source identity is removed. Open sessions and live managed runs refuse
+  the merge (#1645).
+- `audit-contamination` now reports projects in one workspace whose names
+  collide after Unicode compatibility decomposition, case folding, and
+  removal of non-spacing marks. Findings distinguish case from accent
+  differences and include page/session counts plus last activity (#1645).
+
+- Cross-project messages can carry an optional epistemic `nature` (`unknown`,
+  `measured`, `reported`, or `inferred`) and bounded supporting `evidence`.
+  The server refuses a `measured` send without non-empty evidence; existing
+  messages and callers remain `unknown` by default (#1428).
+
+- Added `memory_patch_page` for atomic, heading-anchored edits to an existing
+  Markdown page without re-emitting its body or metadata. It requires the
+  page's current `page_id`; section replacement additionally requires the
+  bounded SHA-256 token returned by `memory_read_page`. Missing, duplicate or
+  fenced-code headings, stale tokens, conflicting edits, failed admission and
+  concurrent writes leave the page unchanged. The typed TypeScript client
+  exposes the same contract as `pages.patch` (#1697).
+
+- Added an offline `ai-memory-eval abstention` benchmark with versioned
+  clean-room answerable, hard-negative, conflicting, partial and
+  missing-channel fixtures; raw lexical/score/density/belief signals;
+  FSR/FAR/coverage threshold sweeps with undefined denominators preserved;
+  optional reuse of pinned LongMemEval `*_abs` cases; and optional structured
+  LLM answerability through the existing QA provider path. Conflicting and
+  partial cases remain separate from binary ground truth, no threshold is
+  presented as calibrated, and production runtime behavior is unchanged.
+  The retrieval evaluator now also parses production's structured
+  `{text,citations}` answer shape instead of a stale string (#1717).
+
+- Added `[briefing] inject_on_subagent_start` to `.ai-memory.toml`. A project
+  that sets it hands each `claude-code` subagent the project brief when the
+  subagent starts: the same pinned, `_rules/` and `_slots/` brief that
+  `inject_on_session_start` adds at session start, kept within `max_chars` and
+  within the 10,000-character limit of that agent's hook context. The hook
+  reads it from a new read-only `GET /brief`, which resolves and authorizes the
+  project as `/handoff` does but never reads or claims a handoff, so a subagent
+  cannot take its parent session's baton. A server without the route answers
+  404 and the subagent starts as before. The native hook and the
+  `hooks/claude-code` shell and PowerShell scripts deliver it, and every marker
+  parser treats the key as a settings boundary. It is off by default (#1715).
+
+- Added an optional `[query_answer] max_context_tokens` admission budget for
+  answer synthesis. It preserves retrieval hits, reports omitted or clipped
+  evidence, prioritizes known newer corrections, prefers whole snippets and
+  clips only complete trailing sentences or statements into leftover space. It
+  skips the model when no meaningful evidence fits. The default
+  remains disabled (#1684).
+
+- `GET /admin/status` and `ai-memory status --json` now carry a
+  `consolidation` block: the queue counts plus up to 20 `failed_sessions`
+  (`session_id`, `attempts`, `failed_at_us`, scrubbed `last_error`), newest
+  first. A consolidation run that gives up after its retries now has a
+  machine-readable record with the session ids needed to re-run it, instead of
+  only a journal line and the `/health` panel's count — which also resets with
+  the process. The web health panel's own view stays counts-only, and an older
+  server's status shape is unchanged (#1692).
+
+- Added the bundled `coding-v1` retrieval-evaluation corpus for offline checks
+  of decision rationale, resolved-error causes, correction evidence, and late
+  session details. It reuses the existing scorer and A/B reports; it measures
+  evidence retrieval, not semantic answer correctness or handoff behavior (#1686).
+
+- `[auto_improve.eval] builtin = "structure"` runs the eval gate's structural
+  checks in process, so the gate needs no interpreter, no scorer script inside
+  the container and no timeout to hit. It checks an H1, an upper-case
+  `TODO`/`TBD` placeholder (a hard failure), a `##` section and a list of steps
+  for `procedures/`, and text beyond the heading within 2,400 characters for
+  `_rules/` — never a section name or a wording, so the wiki's language does
+  not matter. `eval_results` records `checker_name = "builtin:structure"`.
+  `builtin` and `command` are mutually exclusive; `command` is unchanged for
+  project-specific scorers (#1638).
+
+- `ai-memory llm-test --server` probes the server's own configured provider
+  instead of building one from the caller's environment, through a new
+  root-only `POST /admin/llm-test`. The retry hint that `status` and the health
+  panel print now names it: with the server in a container or on another host
+  its keys exist only there, so the old client-side hint failed with "no API
+  key" or a provider `400` while the server was healthy. The probe runs one
+  fixed short prompt, reports provider, model, latency and the error class, and
+  scrubs the provider's message before printing it (#1639).
+
+- Added `[handoff] deliver_on_session_start = false` to `.ai-memory.toml`. A
+  project that sets it no longer gets its handoff, or the continuity notice, at
+  session start; the handoff is still created when the session ends and stays
+  open for `memory_handoff_accept`. The native hook, the shell and PowerShell
+  scripts and the generated TypeScript integrations send `handoff=0` only when
+  the value is explicitly falsy (#1621).
+
+- Added first-party Qoder CLI/IDE lifecycle and MCP support. Both installers
+  merge into `~/.qoder/settings.json`: `install-mcp --client qoder` writes a
+  sessionless stdio bridge, while `install-hooks --agent qoder` registers the
+  eight documented memory-bearing events as native commands. Session start
+  delivers a pending handoff through `hookSpecificOutput.additionalContext`,
+  prompt/tool capture uses Qoder's Claude-shaped payloads, and a missing hook
+  `cwd` falls back only to `QODER_PROJECT_DIR`. Setup detects `~/.qoder`,
+  uninstall removes both entries, and agent backups include its settings and
+  shared AGENTS-compatible skills/instructions (#1611).
+
+- Profile writes now return `digest_warning` when the selected summary,
+  abstract, or prose statement exceeds the 240-byte session-start digest
+  limit. The write still succeeds, but its author can shorten the summary
+  instead of discovering the truncation only in a later session (#1609).
+
+- Added project routing for the named profiles of a multiplexing Hermes
+  gateway. The gateway exports only the default profile's `terminal.cwd`, so
+  every other profile's events used to fall back to the gateway's own working
+  directory and all its bots landed in one project. A gateway event of a named
+  profile now routes by an `.ai-memory.toml` placed in that profile's Hermes
+  home (`~/.hermes/profiles/<name>`, or under the gateway's `HERMES_HOME`), and
+  that marker's capture exclusions and server profile apply. A profile without
+  such a marker keeps the old behavior. The profile name is checked against
+  Hermes' profile-id pattern before it is used as a path (#1597).
+
+- Added Hermes Agent hook consent to `ai-memory doctor`. Hermes runs a shell
+  hook only when that exact command is approved in the home's
+  `shell-hooks-allowlist.json`, and each profile under
+  `~/.hermes/profiles/<name>` keeps its own allowlist. A profile with the
+  ai-memory hooks in `config.yaml` but no approvals captured nothing, and its
+  gateway only logged `not allowlisted — skipped` for each event. `doctor` now
+  reads the root home and every profile, reports which ai-memory hook events
+  each one wires, and warns about every profile whose events are not
+  allowlisted (unless `hooks_auto_accept` is on), with the `hermes -p <name>
+  --accept-hooks` command that approves them. The JSON output gains a `hermes`
+  array. It never writes either file and never prints the hook commands,
+  which can embed a bearer token (#1598).
+
+- Added `AI_MEMORY_RERANK_TIMEOUT_SECS` (`rerank_timeout_secs` in
+  `config.toml`) to set the `memory_query` reranker budget, which was fixed at
+  20 seconds. The default stays 20 and zero is rejected at startup. A hosted
+  provider behind an LLM fallback chain can spend the whole fixed budget on one
+  slow 503 before the next candidate answers, and every such query then keeps
+  its pre-rerank order. ([#1614](https://github.com/akitaonrails/ai-memory/issues/1614))
+
+- `ai-memory status` now shows the client's version next to the server's: a
+  `ai-memory X (client)` line under `ai-memory X (server)`, and `version` in
+  the JSON `client` object. In a split install (native client and hooks, the
+  server in a container or on another host) the two drift apart when only one
+  side is upgraded, and nothing showed it. When they differ in major version,
+  the text report adds a warning to upgrade the older side (#1644).
+
+### Changed
+
+- `memory_lint` now reports embedding-band pairs as
+  `similarity_candidate` instead of `contradiction`, and no longer infers that
+  a newer page supersedes an older one from timestamps alone. Explicit
+  `contradicts` edges remain `contradiction` findings (#1685).
+
+- `move-project` now refuses the **copy+purge merge** — the path taken when the
+  destination workspace already holds a project of the same name — unless
+  `--allow-lossy-merge` is passed as well as `--confirm`. That path keeps only
+  the source's latest pages and deletes the project with its sessions,
+  observations, handoffs and older page versions, which `--confirm` written for
+  "move this project" did not say; the refusal answers `409` with the counts it
+  would discard. A true-move (fresh destination, everything preserved) is
+  unchanged, and `merge-workspace`, whose command already says merge, keeps
+  working without the extra flag (#1713).
+
+- `memory_install_self_routing(compact: true)` and `ai-memory
+  install-instructions --compact` now return a block that is actually compact:
+  2.1 KB instead of 5.9 KB, close to the 7.9 KB full block it was supposed to
+  replace. It keeps the rules a session needs without reading anything else
+  (scope selection for session-aware and static clients, managed-run resume,
+  capture, the untrusted-memory trust rule, and where rules belong) and points
+  at the installed `ai-memory-*` Agent Skills for the rest, which it already
+  required to be installed (#1672).
+
+- When the native session linked to a workstream is missing from its store,
+  an interactive `ai-memory run <harness>` now also names the newest session
+  this checkout still holds for that harness and the native selector that
+  resumes it, such as `resume <id>` for Codex. The launch still starts fresh
+  as before; running the same command again with that selector right after
+  the harness name links that session instead (#1654).
+
+- Managed-workstream startup packets now render completed tool calls and
+  results as compact provenance stubs instead of spending the 30,000-character
+  resume budget on raw command output or generated file content. Conversation,
+  checkpoints, compactions, and annotations remain inline; the complete
+  sanitized tool evidence stays searchable in the ledger (#1607).
+
+- The LLM fallback chain now logs its own events. A transient candidate
+  failure logs a warning with that candidate's provider, model, chain
+  position, error class, HTTP status and cooldown, and an info line records
+  each change of the answering candidate. Before, the chain logged nothing,
+  and callers such as the reranker named only the first candidate, so a log
+  could blame the primary for a timeout another candidate caused. Response
+  bodies are never logged (#1628).
 
 ## [3.2.9] - 2026-10-27
 

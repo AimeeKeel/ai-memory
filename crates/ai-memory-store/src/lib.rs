@@ -65,12 +65,13 @@ pub use ops::{
     ConditionalUpsert, DateOnlyTtlPage, DeleteWorkspaceSummary, EmbedOutcome, EmbeddingWrite,
     EntityBackfillSummary, HookSessionAdmission, IdentityResolution, IdleEndAction,
     IdleEndCandidate, IdleEndResult, IngestObservationOutcome, LifecycleOnlyEndOutcome,
-    MAX_PENDING_INBOX_MESSAGES, MoveSessionSummary, MoveSummary, ObservationPruneOutcome,
-    OkfMigratedPage, PAGE_WINDOW_BACKFILL_BATCH, PagePrecondition, PageWindowBackfillSummary,
-    PagesMode, ProjectAliasWriteResolution, PurgeMode, PurgeSessionSummary, PurgeSummary,
-    ReorgSummary, RepairSessionTimesSummary, RepairedSessionTimes, SessionTimesCandidate,
-    SessionTimesSkipReason, SkippedSessionTimes, StaleAfterRepair, backfill_entity_index,
-    backfill_page_windows, backfill_page_windows_in_batches, purge_session, record_embed_failure,
+    MAX_PENDING_INBOX_MESSAGES, MergeProjectPage, MergeProjectSummary, MoveSessionSummary,
+    MoveSummary, ObservationPruneOutcome, OkfMigratedPage, PAGE_WINDOW_BACKFILL_BATCH,
+    PagePrecondition, PageWindowBackfillSummary, PagesMode, ProjectAliasWriteResolution, PurgeMode,
+    PurgeSessionSummary, PurgeSummary, ReorgSummary, RepairSessionTimesSummary,
+    RepairedSessionTimes, SessionTimesCandidate, SessionTimesSkipReason, SkippedSessionTimes,
+    StaleAfterRepair, backfill_entity_index, backfill_page_windows,
+    backfill_page_windows_in_batches, purge_session, record_embed_failure,
 };
 pub use profile::{
     NewProfileCandidate, PROFILE_CANDIDATES_LIMIT, PROFILE_ENTRIES_LIMIT, PROFILE_HARVEST_BATCH,
@@ -83,14 +84,15 @@ pub use project_authz::{
     RESTRICTED_PROJECT_FORBIDDEN, authorize_project, resolve_project_authz,
 };
 pub use reader::{
-    ActivityWindow, AgentSessionCount, AuditEvent, AuditLogFilter, AutoImproveCandidateSession,
-    AutoImproveParkedClaim, BriefPageBody, BriefingPage, BriefingSnapshot, ClientActivity,
-    ContaminationFinding, ContaminationReport, ContaminationSummary, ContradictionEdge,
-    CrossProjectEdge, DecayCandidate, DecayTombstone, DerivedIndexStatus, EmbeddingTripleCount,
-    FTS_HIGHLIGHT_END, FTS_HIGHLIGHT_START, FeedbackFinding, GraphVia, HealthDetail, HealthPage,
-    HybridSearch, HybridSearchOutcome, IdleOpenSession, InboxCount, InboxEntry, LinkGraph,
-    LinkGraphEdge, LinkGraphNode, ObservationHit, ObservationOrder, ObservationPage,
-    ObservationPageResult, ObservationProjectionTotals, ObservationRecord, OpenSession, PAGE_KINDS,
+    ActivityWindow, AgentSessionCount, AnswerEvidenceMeta, AuditEvent, AuditLogFilter,
+    AutoImproveCandidateSession, AutoImproveParkedClaim, BriefPageBody, BriefingPage,
+    BriefingSnapshot, ClientActivity, ContaminationFinding, ContaminationReport,
+    ContaminationSummary, ContradictionEdge, CrossProjectEdge, DecayCandidate, DecayTombstone,
+    DerivedIndexStatus, EmbeddingTripleCount, FTS_HIGHLIGHT_END, FTS_HIGHLIGHT_START,
+    FeedbackFinding, GraphVia, HealthDetail, HealthPage, HybridSearch, HybridSearchOutcome,
+    IdleOpenSession, InboxCount, InboxEntry, LinkGraph, LinkGraphEdge, LinkGraphNode,
+    ObservationHit, ObservationOrder, ObservationPage, ObservationPageResult,
+    ObservationProjectionTotals, ObservationRecord, OpenSession, PAGE_KINDS,
     PAGE_VERSIONS_MAX_LIMIT, PROJECT_LINK_GRAPH_MAX_NODES, PageAuthor, PageFilter, PageHit,
     PageHitWithMeta, PageLinks, PageLinksPreview, PageMeta, PageSummary, PageVersion,
     PageVersionBody, PageVersions, ProjectCoordinateCollisionReason, ProjectCoordinateDiagnostic,
@@ -102,6 +104,7 @@ pub use reader::{
     SessionPromptTitles, SessionSummary, SessionToolTitles, SettledPage, StatusCounts,
     StorageStatus, StoredEmbedding, StoredPageBody, StreamTimings, VectorQuery, WorkspaceScopeRow,
     WorkspaceSummary, f32_vec_to_bytes, highlighted_snippet_html, plain_snippet,
+    project_name_fold_key,
 };
 pub use retrieval_tuning::{RetrievalTuning, is_session_recall_query};
 pub use scope::{

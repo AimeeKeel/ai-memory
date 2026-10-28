@@ -152,6 +152,11 @@ baseline-vs-baseline determinism check is clean (all accuracy/token deltas `0.00
 
 ## Reading the numbers
 
+- **Evidence coverage.** `hit@k` credits any evidence session, `recall@k`
+  measures the fraction found, and `recall-all@k` requires every evidence
+  session in the top k distinct retrieved sessions. Each metric is averaged
+  per question; abstention questions are excluded. Historical reports that
+  omit `recall-all@k` do not establish complete-evidence recall.
 - **mode: local embeddings** is the 2.0 default: the in-process
   all-MiniLM embedder (no API key, no egress) fused with FTS5 + entity +
   graph. **mode: zero-llm** is the deterministic floor (`embedding_provider
@@ -262,3 +267,9 @@ sustained on a 282-question prefix); the local-embeddings run is bounded
 by the embedder at roughly 19 pages/s and lands near half an hour. Expect
 about ±15% of run-to-run spread on wall clock when the machine has other
 work on it; accuracy noise is the ±0.005 band above, not wall clock.
+
+## Local builder measurements
+
+[Draft query-answer context admission](query-answer-context-draft.md) records
+synthetic prompt sizes and local debug timings for #1684. It does not measure
+retrieval quality, answer accuracy or provider token usage.

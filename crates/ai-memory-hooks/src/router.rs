@@ -17,15 +17,13 @@ use ai_memory_core::{
     ActiveProject, ActorKey, AgentKind, DEFAULT_WORKSPACE_NAME, Handoff, IdentityKey,
     MANAGED_WORKSTREAM_PACKET_MARKER, ManagedRunId, MidSessionRouting, NewHandoff, NewObservation,
     NewSession, PageId, PagePath, ProjectId, Sanitized, Sanitizer, SessionId, WorkspaceId,
-    WorkstreamEvent, truncate_utf8_bytes,
+    WorkstreamEvent, WorkstreamEventKind, truncate_utf8_bytes,
 };
 use ai_memory_store::{
     HookSessionAdmission, IngestObservationOutcome, StoreError, WriterHandle,
     lookup_existing_workspace,
 };
 
-#[cfg(test)]
-use ai_memory_core::WorkstreamEventKind;
 use ai_memory_wiki::{AdmissionContext, AdmissionOp, Wiki};
 use axum::body::{Body, to_bytes};
 use axum::extract::{Query, State};
@@ -729,8 +727,9 @@ fn admission_skips(
 }
 
 /// Build a router with `POST /hook` (event ingress), `GET /handoff`
-/// (synchronous handoff-fetch for session-start hooks) and `GET /recap`
-/// (the read-only compaction recap for a "reload context" prompt).
+/// (synchronous handoff-fetch for session-start hooks), `GET /brief` (the
+/// read-only project brief for a subagent start) and `GET /recap` (the
+/// read-only compaction recap for a "reload context" prompt).
 pub fn hook_router(state: HookState) -> Router {
     Router::new()
         .route(
@@ -742,6 +741,7 @@ pub fn hook_router(state: HookState) -> Router {
             post(handle_hook_batch).route_layer(from_fn(repair_hook_json)),
         )
         .route("/handoff", get(handle_handoff))
+        .route("/brief", get(handle_brief))
         .route("/recap", get(crate::recap::handle_recap))
         .with_state(Arc::new(state))
 }
@@ -1676,6 +1676,12 @@ pub struct HandoffQuery {
     /// Set falsy by a client that re-fetches on every prompt (Kimi Code) once
     /// the session already received the digest, so it is delivered once.
     pub profile_digest: Option<String>,
+    /// The marker's `[handoff] deliver_on_session_start`, sent as `0` only
+    /// when the project opted out. An explicit falsy value keeps this
+    /// project's handoff and continuity notice out of its session starts: the
+    /// handoff stays open and unclaimed, and the rest of the on-start context
+    /// is delivered as usual. Absent or anything else delivers as before.
+    pub handoff: Option<String>,
 }
 
 impl HandoffQuery {
@@ -1761,14 +1767,6 @@ async fn fetch_and_accept_handoff_at(
     now: jiff::Timestamp,
 ) -> anyhow::Result<Option<String>> {
     let agent = query.agent.as_deref().map_or(AgentKind::Other, parse_agent);
-    let repository = query.repository_identity();
-    let aliases = crate::payload::marker_aliases_from_wire(
-        query.project.as_deref(),
-        ProjectSource::parse(query.project_src.as_deref()),
-        repository.as_ref(),
-        query.aliases.as_deref(),
-    )
-    .map_err(|_| anyhow::anyhow!("invalid marker aliases"))?;
     // Keep the active-project key compatible with MCP transports: the native
     // session id is carried separately below to bind a destructive handoff
     // claim to its exact receiver.
@@ -1776,32 +1774,9 @@ async fn fetch_and_accept_handoff_at(
         user: actor.as_ref().map(IdentityKey::storage_key),
         session_id: None,
     };
-    let (ws, proj) = resolve_project_ids_inner(
-        state,
-        query.cwd.as_deref(),
-        query.workspace.as_deref(),
-        query.project.as_deref(),
-        ProjectStrategy::parse(query.project_strategy.as_deref()),
-        repository.as_ref(),
-        query.identity_style(),
-        &aliases,
-        ProjectSource::parse(query.project_src.as_deref()),
-        false,
-        viewer,
-    )
-    .await?;
-    // Everything below returns this repository's content — its handoff and
-    // its pinned, rules and slot pages — and claims its handoff, all keyed
-    // only on a project the caller named or a directory they are in (#708).
-    // Checked before the active-project pointer is published, so a refused
+    // Authorized before the active-project pointer is published, so a refused
     // repository does not become the caller's default for later calls.
-    crate::grants::authorize_resolved(
-        &state.reader,
-        Some((ws, proj)),
-        viewer,
-        ai_memory_store::ProjectAccess::Read,
-    )
-    .await?;
+    let (ws, proj) = resolve_authorized_startup_scope(state, &query, viewer).await?;
     // A managed run's ledger is additive, not a replacement. Resolve and
     // authorize the request's repository before interpreting the run id: a
     // shared Codex daemon may carry a terminal id from another checkout, and
@@ -1828,16 +1803,24 @@ async fn fetch_and_accept_handoff_at(
     let busy_since = now
         .saturating_sub(LIVE_BATON_QUIET_PERIOD)
         .unwrap_or(jiff::Timestamp::MIN);
-    let handoff = state
-        .reader
-        .startup_handoff(
-            ws,
-            proj,
-            query.cwd.clone(),
-            owner_filter.clone(),
-            busy_since,
-        )
-        .await?;
+    // `[handoff] deliver_on_session_start = false` never reads the baton, so
+    // there is nothing to claim, announce or render; it stays open for a
+    // project that has not opted out (or for `memory_handoff_accept`).
+    let deliver_handoff = !crate::payload::query_flag_falsy(query.handoff.as_deref());
+    let handoff = if deliver_handoff {
+        state
+            .reader
+            .startup_handoff(
+                ws,
+                proj,
+                query.cwd.clone(),
+                owner_filter.clone(),
+                busy_since,
+            )
+            .await?
+    } else {
+        None
+    };
     let claude_capped = agent == AgentKind::ClaudeCode;
     let handoff_md = handoff.as_ref().map(|handoff| {
         render_handoff_markdown_with_budget(handoff, claude_capped.then_some(CLAUDE_HANDOFF_CHARS))
@@ -1845,7 +1828,8 @@ async fn fetch_and_accept_handoff_at(
     // The brief is additive and non-destructive: unlike the handoff (a
     // single-use slot claimed below), it is recomposed on every opted-in
     // session start — exactly what a Claude Code `/clear` needs (#176).
-    let brief_md = render_requested_session_brief(state, &query, ws, proj, actor.as_ref()).await?;
+    let brief_md =
+        render_requested_session_brief(state, &query, ws, proj, actor.as_ref(), None).await?;
     // The `[profile]` flags are project-wide settings every operator of the
     // project inherits, so recording them is a write: a viewer granted only
     // Read may narrow their own session but must not change the project.
@@ -1901,16 +1885,20 @@ async fn fetch_and_accept_handoff_at(
     // the admission-chain round-trip: the handoff is never claimed, and
     // `handoff_notice` (computed below from the still-open `pending` value,
     // before it is consumed here) is what tells the agent it exists.
-    let continuity_notice = render_continuity_notice(
-        state,
-        &query,
-        ws,
-        proj,
-        owner_filter.clone(),
-        handoff.as_ref().map(|pending| pending.lifecycle.created_at),
-        now,
-    )
-    .await;
+    let continuity_notice = if deliver_handoff {
+        render_continuity_notice(
+            state,
+            &query,
+            ws,
+            proj,
+            owner_filter.clone(),
+            handoff.as_ref().map(|pending| pending.lifecycle.created_at),
+            now,
+        )
+        .await
+    } else {
+        None
+    };
     let handoff_notice = if state.claim_handoff_on_session_start {
         None
     } else {
@@ -2064,6 +2052,91 @@ async fn fetch_and_accept_handoff_at(
         brief_md,
         inbox_notice,
     ))
+}
+
+/// The repository a startup-context request names — by cwd, marker or
+/// explicit scope — once the caller is authorized to read it. What `/handoff`
+/// and `/brief` return is this repository's content (its handoff, its pinned,
+/// rules and slot pages), keyed only on a project the caller named or a
+/// directory they are in (#708), so both resolve it here: a subagent's brief
+/// always comes from the repository its session start reads.
+async fn resolve_authorized_startup_scope(
+    state: &HookState,
+    query: &HandoffQuery,
+    viewer: Option<ai_memory_core::UserId>,
+) -> anyhow::Result<(WorkspaceId, ProjectId)> {
+    let repository = query.repository_identity();
+    let aliases = crate::payload::marker_aliases_from_wire(
+        query.project.as_deref(),
+        ProjectSource::parse(query.project_src.as_deref()),
+        repository.as_ref(),
+        query.aliases.as_deref(),
+    )
+    .map_err(|_| anyhow::anyhow!("invalid marker aliases"))?;
+    let (ws, proj) = resolve_project_ids_inner(
+        state,
+        query.cwd.as_deref(),
+        query.workspace.as_deref(),
+        query.project.as_deref(),
+        ProjectStrategy::parse(query.project_strategy.as_deref()),
+        repository.as_ref(),
+        query.identity_style(),
+        &aliases,
+        ProjectSource::parse(query.project_src.as_deref()),
+        false,
+        viewer,
+    )
+    .await?;
+    crate::grants::authorize_resolved(
+        &state.reader,
+        Some((ws, proj)),
+        viewer,
+        ai_memory_store::ProjectAccess::Read,
+    )
+    .await?;
+    Ok((ws, proj))
+}
+
+/// `GET /brief`: the project brief a subagent starts with when its
+/// repository's marker sets `[briefing] inject_on_subagent_start`. A subagent
+/// runs inside its parent's session, so this route returns only the brief: it
+/// never reads or claims a handoff, publishes no active project and records no
+/// `[profile]` flags. A refusal is a 403 carrying the reason, as on
+/// `/handoff`; any other failure is an empty 200, which the hook reads as
+/// nothing to inject.
+async fn handle_brief(
+    State(state): State<Arc<HookState>>,
+    Query(query): Query<HandoffQuery>,
+    actor_ext: Option<axum::Extension<ai_memory_core::ActorContext>>,
+    viewer_ext: Option<axum::Extension<ai_memory_core::AuthorizedViewer>>,
+) -> impl IntoResponse {
+    let actor = actor_identity(actor_ext);
+    let viewer = viewer_ext.map(|axum::Extension(viewer)| viewer.user());
+    match fetch_brief(&state, &query, actor.as_ref(), viewer).await {
+        Ok(brief) => (StatusCode::OK, brief.unwrap_or_default()),
+        Err(e) => match e.downcast_ref::<ai_memory_store::ScopeResolutionError>() {
+            Some(refusal) if refusal.is_forbidden() => (StatusCode::FORBIDDEN, refusal.to_string()),
+            _ => {
+                warn!(error = %e, "brief fetch failed");
+                (StatusCode::OK, String::new())
+            }
+        },
+    }
+}
+
+async fn fetch_brief(
+    state: &HookState,
+    query: &HandoffQuery,
+    actor: Option<&IdentityKey>,
+    viewer: Option<ai_memory_core::UserId>,
+) -> anyhow::Result<Option<String>> {
+    let (ws, proj) = resolve_authorized_startup_scope(state, query, viewer).await?;
+    let agent = query.agent.as_deref().map_or(AgentKind::Other, parse_agent);
+    // An `additionalContext` over that agent's limit is swapped for a file
+    // path and a short preview, which would cut the brief's closing fence;
+    // render it to fit inline instead.
+    let ceiling = (agent == AgentKind::ClaudeCode).then_some(CLAUDE_ADDITIONAL_CONTEXT_CHARS);
+    render_requested_session_brief(state, query, ws, proj, actor, ceiling).await
 }
 
 /// Non-consuming notice for a pending handoff left unclaimed by
@@ -2376,12 +2449,16 @@ async fn fetch_managed_context(
     }))
 }
 
+/// The `[briefing]` brief the query opted into, or `None`. `budget_ceiling`
+/// lowers the clamped `max_chars` for a harness whose context field holds less
+/// than [`BRIEF_BUDGET_MAX`].
 async fn render_requested_session_brief(
     state: &HookState,
     query: &HandoffQuery,
     workspace_id: WorkspaceId,
     project_id: ProjectId,
     viewer: Option<&ai_memory_core::IdentityKey>,
+    budget_ceiling: Option<usize>,
 ) -> anyhow::Result<Option<String>> {
     if !crate::payload::query_flag_truthy(query.briefing.as_deref()) {
         return Ok(None);
@@ -2391,7 +2468,8 @@ async fn render_requested_session_brief(
         .as_deref()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .unwrap_or(BRIEF_BUDGET_DEFAULT)
-        .clamp(BRIEF_BUDGET_MIN, BRIEF_BUDGET_MAX);
+        .clamp(BRIEF_BUDGET_MIN, BRIEF_BUDGET_MAX)
+        .min(budget_ceiling.unwrap_or(BRIEF_BUDGET_MAX));
     let (core, recent) = state
         .reader
         .session_brief_pages_with_slot_visibility(
@@ -3186,7 +3264,24 @@ pub(crate) fn render_managed_context(
     let mut first_sequence = 0_i64;
     for event in events.iter().rev() {
         let role = event.display_label();
-        let content = cap_chars(&event.content, MAX_EVENT_CHARS);
+        let content = match event.kind {
+            WorkstreamEventKind::ToolCall | WorkstreamEventKind::ToolResult => {
+                let tool = event
+                    .metadata
+                    .get("tool")
+                    .or_else(|| event.metadata.get("tool_name"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(|name| name.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .filter(|name| !name.is_empty())
+                    .map(|name| format!("; tool: {}", cap_chars(&name, 120)))
+                    .unwrap_or_default();
+                format!(
+                    "[payload omitted from startup context{tool}; {} chars; search the managed workstream for full sanitized evidence]",
+                    event.content.chars().count()
+                )
+            }
+            _ => cap_chars(&event.content, MAX_EVENT_CHARS),
+        };
         let block = format!(
             "### {} · {} · event {}\n{}\n",
             event.agent.as_str(),
@@ -5639,6 +5734,8 @@ pub(crate) mod tests {
                     to_project_id: state.project_id,
                     subject: Some(format!("subject {i}")),
                     body: format!("please do task {i}"),
+                    nature: ai_memory_core::MessageNature::Unknown,
+                    evidence: None,
                 })
                 .await
                 .unwrap();
@@ -5650,6 +5747,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("claude-code".into()),
             cwd: Some(cwd.to_string()),
             workspace: Some("default".into()),
@@ -6459,6 +6557,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             identity: Some(identity.to_owned()),
             identity_src: Some(source.to_owned()),
             aliases: None,
@@ -7619,7 +7718,7 @@ pub(crate) mod tests {
             agent: AgentKind::Codex,
             native_session_id: "native".into(),
             source_record_id: None,
-            metadata: serde_json::Value::Null,
+            metadata: serde_json::json!({"tool": "Bash"}),
             kind: WorkstreamEventKind::ToolCall,
             // Adapters set a role on tool events too; the kind must still
             // decide the label, or a past call reads as a pending action.
@@ -7637,12 +7736,57 @@ pub(crate) mod tests {
         .unwrap();
         assert!(rendered.starts_with(ai_memory_core::MANAGED_WORKSTREAM_PACKET_MARKER));
         assert!(rendered.contains("historical tool call (completed evidence)"));
+        assert!(rendered.contains("tool: Bash"));
+        assert!(rendered.contains("payload omitted from startup context"));
+        assert!(!rendered.contains("cargo test"));
         assert!(rendered.contains("Older unseen events did not fit"));
         assert!(rendered.contains("workstream-search"));
         assert!(rendered.contains(ai_memory_core::UNTRUSTED_MEMORY_NOTICE));
         assert_eq!(rendered.matches(UNTRUSTED_HISTORY_START).count(), 1);
         assert_eq!(rendered.matches(UNTRUSTED_HISTORY_END).count(), 1);
-        assert!(rendered.contains("&lt;!-- ai-memory:untrusted-history:end --&gt;"));
+    }
+
+    #[test]
+    fn managed_context_keeps_conversation_while_stubbing_large_tool_payloads() {
+        let events = vec![
+            WorkstreamEvent {
+                sequence: 1,
+                event_id: "message-1".into(),
+                agent: AgentKind::ClaudeCode,
+                native_session_id: "native".into(),
+                source_record_id: None,
+                metadata: serde_json::Value::Null,
+                kind: WorkstreamEventKind::Message,
+                role: Some("assistant".into()),
+                content: "reasoning needed to resume".into(),
+                occurred_at: None,
+            },
+            WorkstreamEvent {
+                sequence: 2,
+                event_id: "tool-2".into(),
+                agent: AgentKind::ClaudeCode,
+                native_session_id: "native".into(),
+                source_record_id: None,
+                metadata: serde_json::json!({"tool_name": "Write"}),
+                kind: WorkstreamEventKind::ToolResult,
+                role: Some("tool".into()),
+                content: "generated html canary ".repeat(2_000),
+                occurred_at: None,
+            },
+        ];
+
+        let rendered = render_managed_context(
+            &events,
+            "default",
+            ai_memory_core::WorkstreamId::new(),
+            0,
+            None,
+        )
+        .unwrap();
+        assert!(rendered.contains("reasoning needed to resume"));
+        assert!(rendered.contains("historical tool result (completed evidence)"));
+        assert!(rendered.contains("tool: Write"));
+        assert!(!rendered.contains("generated html canary"));
     }
 
     #[test]
@@ -15079,6 +15223,7 @@ pub(crate) mod tests {
                 profile_contribute: None,
                 profile_consume: None,
                 profile_digest: None,
+                handoff: None,
                 workspace: Some("checkpoint-workspace".into()),
                 project: Some(project.into()),
                 agent: Some("codex".into()),
@@ -15157,6 +15302,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("opencode2".into()),
             session_id: Some(SessionId::new().to_string()),
             ..Default::default()
@@ -15390,6 +15536,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some(agent.into()),
             session_id: Some(session_id),
             ..Default::default()
@@ -15580,6 +15727,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("claude-code".into()),
             session_id: Some(SessionId::new().to_string()),
             ..Default::default()
@@ -16410,6 +16558,7 @@ pub(crate) mod tests {
                     profile_contribute: None,
                     profile_consume: None,
                     profile_digest: None,
+                    handoff: None,
                     agent: Some("claude-code".into()),
                     cwd: Some(tmp.path().to_string_lossy().into_owned()),
                     workspace: Some("default".into()),
@@ -17030,6 +17179,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("claude-code".into()),
             cwd: Some(cwd.clone()),
             workspace: Some("default".into()),
@@ -17119,6 +17269,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("claude-code".into()),
             cwd: Some(cwd.clone()),
             workspace: Some("default".into()),
@@ -17227,6 +17378,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("claude-code".into()),
             cwd: Some(cwd),
             workspace: Some("default".into()),
@@ -17405,6 +17557,15 @@ pub(crate) mod tests {
     }
 
     async fn session_start_handoff(state: &Arc<HookState>, cwd: &str) -> (String, Duration) {
+        session_start_handoff_for(state, cwd, "scratch", None).await
+    }
+
+    async fn session_start_handoff_for(
+        state: &Arc<HookState>,
+        cwd: &str,
+        project: &str,
+        handoff: Option<&str>,
+    ) -> (String, Duration) {
         let started = std::time::Instant::now();
         let (status, body) = read_handoff_response(
             handle_handoff(
@@ -17413,10 +17574,11 @@ pub(crate) mod tests {
                     profile_contribute: None,
                     profile_consume: None,
                     profile_digest: None,
+                    handoff: handoff.map(str::to_string),
                     agent: Some("claude-code".into()),
                     cwd: Some(cwd.to_string()),
                     workspace: Some("default".into()),
-                    project: Some("scratch".into()),
+                    project: Some(project.to_string()),
                     project_src: None,
                     project_strategy: None,
                     briefing: None,
@@ -17438,6 +17600,91 @@ pub(crate) mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         (body, started.elapsed())
+    }
+
+    /// `[handoff] deliver_on_session_start = false` (sent as `handoff=0`)
+    /// keeps the baton out of that project's session start without claiming
+    /// it; the same project asking again without the opt-out still gets it.
+    #[tokio::test]
+    async fn handoff_opt_out_leaves_the_baton_open_and_undelivered() {
+        let tmp = TempDir::new().unwrap();
+        let state = state_with_pending_handoff(
+            &tmp,
+            ai_memory_wiki::AdmissionChain::new(Vec::new()).unwrap(),
+        )
+        .await;
+        let cwd = tmp.path().to_string_lossy().into_owned();
+
+        for falsy in ["0", "false", "no", "OFF"] {
+            let (body, _) = session_start_handoff_for(&state, &cwd, "scratch", Some(falsy)).await;
+            assert!(
+                !body.contains("HANDOFF-MARKER") && !body.to_lowercase().contains("handoff"),
+                "{falsy}: an opted-out project must receive no handoff or notice: {body}",
+            );
+            assert!(
+                open_handoff_exists(&state).await,
+                "{falsy}: an opted-out start must not claim the baton",
+            );
+        }
+
+        // Control: anything but an explicit falsy value delivers and claims.
+        let (body, _) = session_start_handoff_for(&state, &cwd, "scratch", Some("1")).await;
+        assert!(body.contains("HANDOFF-MARKER"), "{body}");
+        assert!(!open_handoff_exists(&state).await);
+    }
+
+    /// Adversarial: one project's opt-out must not hide or consume another
+    /// project's baton, and the other project's delivery must not touch the
+    /// opted-out project's.
+    #[tokio::test]
+    async fn handoff_opt_out_is_scoped_to_the_requesting_project() {
+        let tmp = TempDir::new().unwrap();
+        let state = state_with_pending_handoff(
+            &tmp,
+            ai_memory_wiki::AdmissionChain::new(Vec::new()).unwrap(),
+        )
+        .await;
+        let cwd = tmp.path().to_string_lossy().into_owned();
+        let other = state
+            .writer
+            .get_or_create_project(state.workspace_id, "project-b".to_string(), None)
+            .await
+            .unwrap();
+        state
+            .writer
+            .insert_handoff(NewHandoff {
+                workspace_id: state.workspace_id,
+                project_id: other,
+                from_session_id: None,
+                from_agent: AgentKind::ClaudeCode,
+                to_agent: None,
+                cwd: None,
+                summary: "HANDOFF-B".to_string(),
+                open_questions: Vec::new(),
+                next_steps: Vec::new(),
+                files_touched: Vec::new(),
+                owner_user: None,
+            })
+            .await
+            .unwrap();
+
+        // scratch opts out; project-b does not.
+        let (scratch, _) = session_start_handoff_for(&state, &cwd, "scratch", Some("0")).await;
+        assert!(!scratch.contains("HANDOFF-MARKER"), "{scratch}");
+        let (b, _) = session_start_handoff_for(&state, &cwd, "project-b", None).await;
+        assert!(b.contains("HANDOFF-B"), "{b}");
+        assert!(
+            !b.contains("HANDOFF-MARKER"),
+            "project-b must never see scratch's baton: {b}"
+        );
+        assert!(
+            open_handoff_exists(&state).await,
+            "project-b's delivery must not consume the opted-out project's baton",
+        );
+
+        // project-b opting out afterwards changes nothing for scratch.
+        let (scratch, _) = session_start_handoff_for(&state, &cwd, "scratch", None).await;
+        assert!(scratch.contains("HANDOFF-MARKER"), "{scratch}");
     }
 
     /// `GET /handoff` is called synchronously by the session-start hook. Under the default
@@ -18422,6 +18669,7 @@ pub(crate) mod tests {
                 profile_contribute: None,
                 profile_consume: None,
                 profile_digest: None,
+                handoff: None,
                 agent: Some("codex".into()),
                 cwd: Some(cwd.into()),
                 workspace: Some("acme".into()),
@@ -18505,6 +18753,7 @@ pub(crate) mod tests {
                 profile_contribute: None,
                 profile_consume: None,
                 profile_digest: None,
+                handoff: None,
                 agent: Some("codex".into()),
                 cwd: Some("/repo/api/src".into()),
                 workspace: Some("default".into()),
@@ -18580,6 +18829,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("codex".into()),
             cwd: Some(cwd.clone()),
             workspace: Some("default".into()),
@@ -18735,6 +18985,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("codex".into()),
             cwd: Some(cwd),
             workspace: Some("default".into()),
@@ -18857,6 +19108,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("claude-code".into()),
             cwd: Some(cwd.into()),
             workspace: None,
@@ -18941,6 +19193,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("claude-code".into()),
             cwd: Some(cwd.into()),
             workspace: None,
@@ -18971,6 +19224,368 @@ pub(crate) mod tests {
             !rendered.contains("BOB-SECRET"),
             "another operator's slot body leaked into this brief: {rendered}"
         );
+    }
+
+    /// The query a `claude-code` subagent start sends to `/brief` for `cwd`.
+    fn subagent_brief_query(cwd: &str, briefing: Option<&str>) -> HandoffQuery {
+        HandoffQuery {
+            agent: Some("claude-code".into()),
+            cwd: Some(cwd.into()),
+            briefing: briefing.map(Into::into),
+            ..HandoffQuery::default()
+        }
+    }
+
+    async fn subagent_brief(state: &Arc<HookState>, query: HandoffQuery) -> (StatusCode, String) {
+        read_handoff_response(handle_brief(State(state.clone()), Query(query), None, None).await)
+            .await
+    }
+
+    async fn upsert_brief_page(state: &HookState, cwd: &str, path: &str, body: &str) {
+        let (ws, proj) = resolve_project_ids(
+            state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+        state
+            .writer
+            .upsert_page(brief_page(ws, proj, path, body, true))
+            .await
+            .unwrap();
+    }
+
+    /// A subagent starts with the brief its repository opted into:
+    /// `GET /brief` compiles the brief a session start appends, slot bodies
+    /// included, inside the untrusted-history fence.
+    #[tokio::test]
+    async fn brief_endpoint_returns_the_project_brief_with_its_slots() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        let cwd = "/home/u/subagent-brief-repo";
+        upsert_brief_page(
+            &state,
+            cwd,
+            "_slots/essential-pages.md",
+            "read notes/architecture.md before acting",
+        )
+        .await;
+
+        let (status, body) =
+            subagent_brief(&Arc::new(state), subagent_brief_query(cwd, Some("true"))).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let slot = body
+            .find("read notes/architecture.md before acting")
+            .unwrap_or_else(|| panic!("the slot body must be delivered: {body}"));
+        let start = body.find(UNTRUSTED_HISTORY_START).expect("the fence opens");
+        let end = body.find(UNTRUSTED_HISTORY_END).expect("the fence closes");
+        assert!(
+            start < slot && slot < end,
+            "the slot must sit inside the fence: {body}"
+        );
+    }
+
+    /// Without the opt-in a subagent start gets nothing, as a session start
+    /// without `[briefing]` gets no brief.
+    #[tokio::test]
+    async fn brief_endpoint_is_empty_without_the_opt_in() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        let cwd = "/home/u/unbriefed-repo";
+        upsert_brief_page(&state, cwd, "_slots/focus.md", "SLOT-BODY").await;
+        let state = Arc::new(state);
+
+        for briefing in [None, Some("false"), Some("0")] {
+            let (status, body) = subagent_brief(&state, subagent_brief_query(cwd, briefing)).await;
+            assert_eq!(status, StatusCode::OK, "{briefing:?}");
+            assert!(body.is_empty(), "{briefing:?}: {body}");
+        }
+    }
+
+    /// A subagent runs inside its parent's session, so its start must never
+    /// take a baton meant for the parent's next session start: `/brief`
+    /// neither renders nor claims a pending handoff. Control: the same query
+    /// on `/handoff` delivers it, so the baton was there to take.
+    #[tokio::test]
+    async fn brief_endpoint_never_claims_a_pending_handoff() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        state
+            .writer
+            .upsert_page(brief_page(
+                state.workspace_id,
+                state.project_id,
+                "_slots/focus.md",
+                "SLOT-BODY",
+                true,
+            ))
+            .await
+            .unwrap();
+        state
+            .writer
+            .insert_handoff(NewHandoff {
+                workspace_id: state.workspace_id,
+                project_id: state.project_id,
+                from_session_id: None,
+                from_agent: AgentKind::ClaudeCode,
+                to_agent: None,
+                cwd: None,
+                summary: "HANDOFF-MARKER".to_string(),
+                open_questions: Vec::new(),
+                next_steps: Vec::new(),
+                files_touched: Vec::new(),
+                owner_user: None,
+            })
+            .await
+            .unwrap();
+        let query = HandoffQuery {
+            workspace: Some("default".into()),
+            project: Some("scratch".into()),
+            ..subagent_brief_query(&tmp.path().to_string_lossy(), Some("true"))
+        };
+        let state = Arc::new(state);
+
+        let (status, body) = subagent_brief(&state, query.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("SLOT-BODY"), "{body}");
+        assert!(
+            !body.contains("HANDOFF-MARKER"),
+            "a subagent start rendered the parent's baton: {body}"
+        );
+        assert!(
+            open_handoff_exists(&state).await,
+            "a subagent start consumed the parent's baton"
+        );
+
+        let (_, body) = read_handoff_response(
+            handle_handoff(
+                State(state.clone()),
+                Query(query),
+                None,
+                None,
+                None,
+                HeaderMap::new(),
+            )
+            .await,
+        )
+        .await;
+        assert!(body.contains("HANDOFF-MARKER"), "{body}");
+    }
+
+    /// The brief keeps to the marker's `max_chars` and, for `claude-code`, to
+    /// its 10,000-character `additionalContext` ceiling, past which the text
+    /// is swapped for a file path and a 2,000-character preview. Control:
+    /// another agent gets the budget it asked for.
+    #[tokio::test]
+    async fn brief_endpoint_keeps_to_the_budget_and_to_the_context_ceiling() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        let cwd = "/home/u/crowded-repo";
+        for i in 0..BRIEF_CORE_PAGES_LIMIT {
+            upsert_brief_page(
+                &state,
+                cwd,
+                &format!("_rules/rule-{i:02}.md"),
+                &format!(
+                    "Rule {i}: {}",
+                    "route every write through the single writer actor. ".repeat(30)
+                ),
+            )
+            .await;
+        }
+        let state = Arc::new(state);
+        let brief = |agent: &'static str, budget: &'static str| {
+            let state = state.clone();
+            async move {
+                let query = HandoffQuery {
+                    agent: Some(agent.into()),
+                    briefing_budget: Some(budget.into()),
+                    ..subagent_brief_query(cwd, Some("true"))
+                };
+                let (status, body) = subagent_brief(&state, query).await;
+                assert_eq!(status, StatusCode::OK);
+                body
+            }
+        };
+
+        let small = brief("claude-code", "2000").await;
+        assert!(
+            !small.is_empty() && small.len() <= 2_000,
+            "{} bytes",
+            small.len()
+        );
+        let capped = brief("claude-code", "20000").await;
+        assert!(
+            capped.len() > 2_000 && capped.len() <= CLAUDE_ADDITIONAL_CONTEXT_CHARS,
+            "{} bytes",
+            capped.len()
+        );
+        let other = brief("codex", "20000").await;
+        assert!(
+            other.len() > CLAUDE_ADDITIONAL_CONTEXT_CHARS,
+            "the ceiling applies to one agent only: {} bytes",
+            other.len()
+        );
+    }
+
+    /// With `[slots] per_user` on, `/brief` carries the requesting operator's
+    /// own slot and withholds everybody else's, as the session-start brief
+    /// does.
+    #[tokio::test]
+    async fn per_user_subagent_brief_carries_own_slot_body_and_not_others() {
+        let tmp = TempDir::new().unwrap();
+        let mut state = make_state(&tmp).await;
+        state.per_user_slots = true;
+        let cwd = "/home/u/per-user-subagent-repo";
+        let carol = ai_memory_core::ActorContext {
+            user: Some("carol".into()),
+            ..ai_memory_core::ActorContext::default()
+        };
+        let carol_ns = carol.identity_key().unwrap().path_segment();
+        let bob_ns = ai_memory_core::IdentityKey::User("bob".into()).path_segment();
+        for (path, body) in [
+            ("_slots/current-focus.md".to_string(), "SHARED-CONTEXT"),
+            (format!("_slots/{carol_ns}/focus.md"), "CAROL-SECRET"),
+            (format!("_slots/{bob_ns}/focus.md"), "BOB-SECRET"),
+        ] {
+            upsert_brief_page(&state, cwd, &path, body).await;
+        }
+
+        let (status, body) = read_handoff_response(
+            handle_brief(
+                State(Arc::new(state)),
+                Query(subagent_brief_query(cwd, Some("true"))),
+                Some(axum::Extension(carol)),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("SHARED-CONTEXT"), "{body}");
+        assert!(body.contains("CAROL-SECRET"), "{body}");
+        assert!(
+            !body.contains("BOB-SECRET"),
+            "another operator's slot body leaked into this brief: {body}"
+        );
+    }
+
+    /// `/brief` returns a repository's pinned and slot pages keyed on a
+    /// project the caller names (#708), so it enforces `/handoff`'s Read gate:
+    /// Bob, holding nothing on a restricted project, gets the 403 with its
+    /// reason and none of the brief; Alice, granted Read, gets the brief.
+    #[tokio::test]
+    async fn brief_endpoint_delivers_nothing_from_a_repository_the_viewer_cannot_read() {
+        use ai_memory_core::{AuthorizedViewer, NewUser, UserRole};
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        state
+            .writer
+            .set_access_mode(state.project_id, ai_memory_store::AccessMode::Restricted)
+            .await
+            .unwrap();
+        state
+            .writer
+            .upsert_page(brief_page(
+                state.workspace_id,
+                state.project_id,
+                "_slots/focus.md",
+                "SLOT-SECRET",
+                true,
+            ))
+            .await
+            .unwrap();
+        let human = |name: &'static str| {
+            let writer = state.writer.clone();
+            async move {
+                writer
+                    .create_human_user(
+                        NewUser {
+                            username: name.into(),
+                            name: None,
+                            email: None,
+                        },
+                        UserRole::User,
+                        None,
+                        false,
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+        let alice = human("alice").await;
+        let bob = human("bob").await;
+        state
+            .writer
+            .grant_memory(
+                alice,
+                state.project_id,
+                ai_memory_store::GrantLevel::Read,
+                None,
+            )
+            .await
+            .unwrap();
+        let query = HandoffQuery {
+            workspace: Some("default".into()),
+            project: Some("scratch".into()),
+            ..subagent_brief_query(&tmp.path().to_string_lossy(), Some("1"))
+        };
+        let state = Arc::new(state);
+        let brief = |viewer: ai_memory_core::UserId| {
+            let state = state.clone();
+            let query = query.clone();
+            async move {
+                read_handoff_response(
+                    handle_brief(
+                        State(state),
+                        Query(query),
+                        None,
+                        Some(axum::Extension(AuthorizedViewer(viewer))),
+                    )
+                    .await,
+                )
+                .await
+            }
+        };
+
+        let (status, body) = brief(bob).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("not authorized for scratch"), "{body}");
+        assert!(!body.contains("SLOT-SECRET"), "leaked the brief: {body}");
+
+        let (status, body) = brief(alice).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("SLOT-SECRET"), "{body}");
+    }
+
+    /// The route is mounted: a hook reaches `/brief` through the router.
+    #[tokio::test]
+    async fn hook_router_serves_the_brief() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        upsert_brief_page(
+            &state,
+            "/home/u/routed-repo",
+            "_slots/focus.md",
+            "ROUTED-SLOT",
+        )
+        .await;
+        let request = Request::builder()
+            .method("GET")
+            .uri("/brief?agent=claude-code&cwd=%2Fhome%2Fu%2Frouted-repo&briefing=true")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = hook_router(state).oneshot(request).await.unwrap();
+
+        let (status, body) = read_handoff_response(response).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("ROUTED-SLOT"), "{body}");
     }
 
     /// `briefing=true` on the `/handoff` query returns the compiled project
@@ -19009,6 +19624,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("claude-code".into()),
             cwd: Some(cwd.into()),
             workspace: None,
@@ -19173,6 +19789,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some("kimi-code".into()),
             cwd: Some("/repo".into()),
             workspace: Some("default".into()),
@@ -20028,6 +20645,7 @@ pub(crate) mod tests {
                 profile_contribute: None,
                 profile_consume: None,
                 profile_digest: None,
+                handoff: None,
                 agent: Some("codex".into()),
                 cwd: Some(cwd.into()),
                 workspace: None,
@@ -23189,6 +23807,7 @@ pub(crate) mod tests {
                     profile_contribute: None,
                     profile_consume: None,
                     profile_digest: None,
+                    handoff: None,
                     managed_run: Some(run.run_id.to_string()),
                     session_id: Some("private-vendor".into()),
                     cwd: Some(cwd.clone()),
@@ -23259,6 +23878,7 @@ pub(crate) mod tests {
             profile_contribute: None,
             profile_consume: None,
             profile_digest: None,
+            handoff: None,
             agent: Some(agent.into()),
             cwd: Some(cwd.into()),
             workspace: None,

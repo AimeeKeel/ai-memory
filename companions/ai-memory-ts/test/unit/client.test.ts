@@ -94,6 +94,40 @@ describe("pages", () => {
     );
   });
 
+  it("patch sends typed anchored edits and decodes the new version", async () => {
+    const { server, memory } = setup();
+    server.tools.set("memory_patch_page", () => payloads.patch);
+    const result = await memory.pages.patch({
+      path: "notes/retries.md",
+      expectedPageId: payloads.PAGE_ID,
+      edits: [
+        { op: "append", target: "section", anchor: "Log", content: "next" },
+        {
+          op: "replace_section",
+          anchor: "Open",
+          sectionSha256: "a".repeat(64),
+          content: "none",
+        },
+      ],
+    });
+    assert.deepEqual(server.lastArgs(), {
+      workspace: "demo",
+      project: "app",
+      path: "notes/retries.md",
+      expected_page_id: payloads.PAGE_ID,
+      edits: [
+        { op: "append", target: "section", anchor: "Log", content: "next" },
+        {
+          op: "replace_section",
+          anchor: "Open",
+          section_sha256: "a".repeat(64),
+          content: "none",
+        },
+      ],
+    });
+    assert.equal(result.pageId, payloads.NEXT_PAGE_ID);
+  });
+
   it("read by path or query, never both, and decodes the page", async () => {
     const { server, memory } = setup();
     server.tools.set("memory_read_page", () => payloads.read);
@@ -101,6 +135,8 @@ describe("pages", () => {
     assert.deepEqual(server.lastArgs(), { workspace: "demo", project: "app", path: "notes/retries.md" });
     assert.equal(page.pageId, payloads.PAGE_ID);
     assert.equal(page.body, payloads.read.body);
+    assert.equal(page.sections[0]?.anchor, "Retry policy");
+    assert.equal(page.sectionsTruncated, false);
     assert.equal(page.related, undefined);
     await memory.pages.read({ query: "retry", includeRelated: true, relatedDepth: 2 });
     assert.deepEqual(server.lastArgs(), {
@@ -243,6 +279,25 @@ describe("query", () => {
     assert.equal(result.globalScopeHits.length, 1);
   });
 
+  it("decodes optional answer context accounting and accepts older responses", async () => {
+    const { server, memory } = setup();
+    server.tools.set("memory_query", () => ({ hits: [payloads.hit] }));
+    const legacy = await memory.query({ query: "retry" });
+    assert.equal(legacy.answerContext, undefined);
+    assert.equal(Object.hasOwn(legacy, "answerContext"), false);
+    server.tools.set("memory_query", () => ({
+      hits: [payloads.hit],
+      answer_unavailable: "no evidence space",
+      answer_context: { admitted: 0, omitted: 1, clipped: 0, estimated_input_tokens: 2000,
+        reserved_output_tokens: 2000, max_context_tokens: 1000 },
+    }));
+    const result = await memory.query({ query: "retry", answer: true });
+    assert.deepEqual(result.answerContext, { admitted: 0, omitted: 1, clipped: 0,
+      estimatedInputTokens: 2000, reservedOutputTokens: 2000, maxContextTokens: 1000 });
+    assert.equal(result.hits.length, 1);
+    assert.equal(result.answerUnavailable, "no evidence space");
+  });
+
   it("raises ProtocolError when a promised field is missing", async () => {
     const { server, memory } = setup();
     server.tools.set("memory_query", () => ({ hits: [{ path: "notes/a.md" }] }));
@@ -322,7 +377,13 @@ describe("messages", () => {
   it("send uses the client scope as sender and names the recipient", async () => {
     const { server, memory } = setup();
     server.tools.set("memory_message_send", () => ({ message_id: payloads.MESSAGE_ID }));
-    const sent = await memory.messages.send({ to: OTHER, body: "please do X", subject: "hi" });
+    const sent = await memory.messages.send({
+      to: OTHER,
+      body: "please do X",
+      subject: "hi",
+      nature: "measured",
+      evidence: "tests/export.test.ts:42",
+    });
     assert.deepEqual(server.lastArgs(), {
       to_workspace: "demo",
       to_project: "other",
@@ -330,6 +391,8 @@ describe("messages", () => {
       from_project: "app",
       body: "please do X",
       subject: "hi",
+      nature: "measured",
+      evidence: "tests/export.test.ts:42",
     });
     assert.equal(sent.messageId, payloads.MESSAGE_ID);
   });
@@ -345,6 +408,8 @@ describe("messages", () => {
     const listed = await memory.messages.list({ box: "outbox", limit: 3 });
     assert.deepEqual(server.lastArgs(), { workspace: "demo", project: "app", box: "outbox", limit: 3 });
     assert.equal(listed.messages[0]?.body, "please do X");
+    assert.equal(listed.messages[0]?.nature, "reported");
+    assert.equal(listed.messages[0]?.evidence, "source message 42");
     const popped = await memory.messages.pop({ messageId: payloads.MESSAGE_ID });
     assert.equal(popped.message?.state, "claimed");
     assert.equal(popped.securityNotice, "UNTRUSTED");
@@ -527,6 +592,16 @@ describe("wire names", () => {
         expectedPageId: "v",
       }),
       memory.pages.write({ path: "p", body: "b", createOnly: true }),
+      memory.pages.patch({
+        path: "p",
+        expectedPageId: "v",
+        edits: [
+          { op: "append", target: "section", anchor: "A", content: "a" },
+          { op: "append", target: "end_of_page", content: "b" },
+          { op: "add_section", anchor: "## B", content: "c" },
+          { op: "replace_section", anchor: "C", sectionSha256: "h", content: "d" },
+        ],
+      }),
       memory.pages.read({ path: "p", includeRelated: true, relatedDepth: 2 }),
       memory.pages.read({ query: "q" }),
       memory.pages.delete({ path: "p", expectedPageId: "v" }),
@@ -571,7 +646,14 @@ describe("wire names", () => {
       memory.handoffs.list({ anyOwner: true, limit: 1 }),
       memory.handoffs.accept({ handoffId: "h", anyOwner: true }),
       memory.handoffs.cancel({ handoffId: "h", anyOwner: true }),
-      memory.messages.send({ to: OTHER, from: SCOPE, body: "b", subject: "s" }),
+      memory.messages.send({
+        to: OTHER,
+        from: SCOPE,
+        body: "b",
+        subject: "s",
+        nature: "measured",
+        evidence: "test:1",
+      }),
       memory.messages.list({ box: "inbox", limit: 1 }),
       memory.messages.pop({ messageId: "m" }),
       memory.messages.cancel({ messageId: "m" }),
