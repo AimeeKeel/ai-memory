@@ -18784,7 +18784,7 @@ mod tests {
             project_id: project,
             path: ai_memory_core::PagePath::new(path).unwrap(),
             title: path.to_string(),
-            body: "?".repeat(600),
+            body: "é".repeat(600),
             tier: ai_memory_core::Tier::Semantic,
             frontmatter_json: serde_json::json!({}),
             pinned: false,
@@ -18862,7 +18862,7 @@ mod tests {
                 let payload = call_tool_json(result);
                 assert_eq!(payload["truncated"], true);
                 assert_eq!(payload["total_chars"], 600);
-                assert_ne!(payload["body"], "?".repeat(600));
+                assert_ne!(payload["body"], "é".repeat(600));
                 payload["related"]
                     .as_array()
                     .expect("include_related attaches a related block")
