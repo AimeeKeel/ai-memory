@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Fixed `restore` replacing live data when a backup without `config.toml`
+  contains API keys that the configured pepper cannot verify. It now refuses
+  before the swap, preserving the live wiki, database and config, and names
+  the original configuration as the remedy (#1495).
+
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
