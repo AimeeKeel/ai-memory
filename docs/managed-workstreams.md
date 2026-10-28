@@ -187,9 +187,9 @@ was a session, and `--executable` was not used; utility commands, failed or
 interrupted exits, and non-interactive launches do not prompt. A switch or
 re-run does not replay the previous harness's native arguments, which may be
 specific to that CLI; wrapper settings such as `--workspace`, `--project`,
-`--yolo` / `--true-yolo`, ai-jail controls, `--no-autowire`, `--env`, and
-`--env-file` remain in effect. The initial `--fresh` choice applies only to the
-first launch.
+`--yolo` / `--true-yolo`, ai-jail controls, `--no-autowire`, `--no-exit-prompt`,
+`--env`, and `--env-file` remain in effect. The initial `--fresh` choice applies
+only to the first launch.
 
 To return to the shell without the menu, pass `--no-exit-prompt` before or
 after the harness name:
@@ -235,7 +235,7 @@ available through `ai-memory workstream-search`.
 ```text
 ai-memory run [--workspace NAME] [--project NAME]
               [--workstream NAME | --new NAME] [--executable PATH]
-              [--yolo] [--fresh] [--force-unlock] [--profile NAME]
+              [--yolo] [--fresh] [--force-unlock] [--no-exit-prompt] [--profile NAME]
               [--env KEY=VALUE]... [--env-file PATH] [--require-server]
               [claude|claude*|codex|opencode|opencode2|pi|crush|omp|kimi|command-code|kiro|grok|antigravity|copilot]
               [native arguments...]
