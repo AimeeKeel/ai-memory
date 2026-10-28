@@ -86,13 +86,19 @@ export class Core {
   /** `initialize` + `tools/list`, probed once per client and cached. */
   toolIndex(options?: CallOptions): Promise<ToolIndex> {
     if (this.#index === undefined) {
-      const probe = this.#initialize(options).then((session) =>
-        probeTools(this.transport, session, options),
+      const session = this.#initialize(options);
+      const probe = session.then((info) =>
+        probeTools(this.transport, info, options),
       );
       this.#index = probe;
       // A failed probe is not cached: the next call probes again.
       probe.catch(() => {
-        if (this.#index === probe) this.forgetToolIndex();
+        if (this.#index === probe) {
+          this.#index = undefined;
+          // A raw caller may already have started a new handshake after the
+          // old one failed; this probe must not discard that pending retry.
+          if (this.#session === session) this.#session = undefined;
+        }
       });
     }
     return this.#index;

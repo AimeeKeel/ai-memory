@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { AiMemoryClient } from "../../src/client.js";
+import { Core } from "../../src/core.js";
 import {
   AbortError,
   AuthError,
@@ -288,6 +289,62 @@ describe("response bounds", () => {
 });
 
 describe("stateful sessions", () => {
+  it("a failed probe cannot discard a newer raw call's pending handshake", async () => {
+    const server = new FakeServer();
+    server.sessionId = "retry-session";
+    server.tools.set("memory_lint", () => ({ report: "ok" }));
+    let failFirst = () => {};
+    let releaseRetries = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      failFirst = resolve;
+    });
+    const retryGate = new Promise<void>((resolve) => {
+      releaseRetries = resolve;
+    });
+    let initializations = 0;
+    const core = new Core(
+      new Transport({
+        serverUrl: "http://127.0.0.1:49374",
+        fetch: async (url, init) => {
+          const body = JSON.parse(init.body as string) as { method: string };
+          if (body.method === "initialize") {
+            initializations += 1;
+            if (initializations === 1) {
+              await firstGate;
+              return json({ error: "unavailable" }, 503);
+            }
+            await retryGate;
+          }
+          return server.fetch(url, init);
+        },
+      }),
+      SCOPE,
+    );
+
+    // Observe the core directly so the retry runs before the old probe's
+    // rejection handler, without relying on a fixed number of microtasks.
+    let retry: Promise<unknown> | undefined;
+    const first = core.callTool("memory_lint", {}, true).catch((error: unknown) => {
+      assert.ok(error instanceof HttpError);
+      retry = core.callTool("memory_lint", {}, true);
+    });
+    const wrapped = assert.rejects(core.invoke("memory_status", SCOPE, false), HttpError);
+    failFirst();
+    await Promise.all([first, wrapped]);
+    assert.ok(retry !== undefined);
+    const third = core.callTool("memory_lint", {}, true);
+    try {
+      assert.equal(initializations, 2, "the third call must share the pending retry session");
+    } finally {
+      releaseRetries();
+      assert.deepEqual(await Promise.all([retry, third]), [{ report: "ok" }, { report: "ok" }]);
+    }
+    assert.equal(server.toolCalls().length, 2);
+    for (const request of server.requests.slice(1)) {
+      assert.equal(request.headers["mcp-session-id"], "retry-session");
+    }
+  });
+
   it("raw and wrapped calls share one handshake and refresh opens a new session", async () => {
     const server = new FakeServer();
     server.sessionId = "session-raw";
