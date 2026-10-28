@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Kept a wiki-sync server page when its repository file was recreated after
+  the sync planned a deletion. `sync --propagate-deletes --apply` now rechecks
+  local absence before sending the delete, preserves the page's baseline and
+  reports the changed file for the next sync, including with `--prefer repo`
+  (#PR).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
