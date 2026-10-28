@@ -265,7 +265,8 @@ from hook paths.
    enumerate every existing workspace/project scope before doing per-project
    work, matching the auto-improvement scheduler's store-wide scope model. A
    separate daily cleanup removes week-old project rows only when they contain
-   no pages, sessions, observations, handoffs, managed workstreams, or
+   no pages, sessions, observations, handoffs, managed workstreams, sent or
+   received agent messages (including claimed/cancelled history), or
    auto-improvement data; managed continuity history therefore keeps its
    project scope alive even when no lifecycle-hook session has been captured.
 8. Backups: `ai-memory backup --to <tarball>` uses SQLite's online
