@@ -562,6 +562,10 @@ another shell, pass `--workstream-id <uuid>` explicitly. Search results preserve
 the source harness, role, event sequence, and content. Historical tool activity
 is labelled completed evidence and must never be replayed as a pending call.
 
+OpenCode 2 compaction messages import their `summary` as a compaction event
+(and, when a failed compaction has no summary, `error.message`). The V1 adapter
+already imported compaction parts the same way.
+
 Search and tail also return optional `source_record_id` and `metadata` fields.
 The text CLI prints the source record and correlation metadata as escaped JSON;
 `--json` preserves these fields for consumers. Older server responses without
