@@ -15,7 +15,7 @@ version in [`docs/changelog/`](docs/changelog/):
 
 - Fixed `server add` rejecting valid inline tables in `servers.toml`, including
   token rotations and URL changes. Updates now accept the same table forms as
-  reads and removal, preserving registered roots and other profiles (#PR).
+  reads and removal, preserving registered roots and other profiles (#1812).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
