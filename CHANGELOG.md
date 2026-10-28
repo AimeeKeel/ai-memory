@@ -215,6 +215,25 @@ version in [`docs/changelog/`](docs/changelog/):
   could blame the primary for a timeout another candidate caused. Response
   bodies are never logged (#1628).
 
+### Fixed
+
+- Refused empty and whitespace-only `--workspace` and `--project` flags at the
+  shared CLI scope-resolution choke point (`resolve_scope`,
+  `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
+  `resolve_workspace`) so an unset shell variable (`--project "$UNSET"`) or
+  blank value fails closed across all scoped CLI subcommands instead of
+  silently falling back to the current directory's scope or forwarding a
+  whitespace name (#1774).
+- OMP subagent sessions (the task tool, eval `agent()`, `/tan` clones) no
+  longer claim the pending handoff or leave one behind. OMP runs them inside
+  the parent's process and loads the extension into each, so a subagent's
+  first prompt claimed the newest open handoff in the checkout and its end left
+  a sub-task handoff for the next session. The extension now reads OMP's
+  `ctx.agent`, skips the claim for a subagent and posts its events with
+  `agent_id`, which the router treats like an OpenCode child session.
+  `drop_subagent_captures` now covers OMP subagents too, and an advisor's tool
+  calls stay with the session they advise (#1779).
+
 ## [3.2.9] - 2026-10-27
 
 ### Fixed
