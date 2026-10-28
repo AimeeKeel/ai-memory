@@ -1320,8 +1320,14 @@ mod tests {
         let target_url = format!("http://{}/target", target.local_addr().unwrap());
         let source_url = redirect_server("307 Temporary Redirect", &target_url).await;
 
-        let outcome =
-            post_hook(&build_client(), &source_url, "{}", None, Duration::from_secs(1)).await;
+        let outcome = post_hook(
+            &build_client(),
+            &source_url,
+            "{}",
+            None,
+            Duration::from_secs(1),
+        )
+        .await;
         assert_eq!(outcome, PostOutcome::Failed);
         assert!(
             tokio::time::timeout(Duration::from_millis(100), target.accept())
@@ -1337,8 +1343,14 @@ mod tests {
         let target_url = format!("http://{}/target", target.local_addr().unwrap());
         let source_url = redirect_server("307 Temporary Redirect", &target_url).await;
 
-        let outcome =
-            post_batch(&build_client(), &source_url, "[]", None, Duration::from_secs(1)).await;
+        let outcome = post_batch(
+            &build_client(),
+            &source_url,
+            "[]",
+            None,
+            Duration::from_secs(1),
+        )
+        .await;
         assert_eq!(outcome, BatchOutcome::Failed);
         assert!(
             tokio::time::timeout(Duration::from_millis(100), target.accept())
