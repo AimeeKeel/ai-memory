@@ -1877,9 +1877,35 @@ mod tests {
         let now = Timestamp::now().as_second();
         assert!(now - n_days > 29 * 86_400);
         assert!(now - n_days < 31 * 86_400);
+
+        let day1 = parse_since_to_epoch("1 day ago").unwrap();
+        let day2 = parse_since_to_epoch("2 days ago").unwrap();
+        assert!(day1 > day2);
+
+        let week1 = parse_since_to_epoch("1 week ago").unwrap();
+        let week2 = parse_since_to_epoch("2 weeks ago").unwrap();
+        assert!(week1 > week2);
+
+        let month1 = parse_since_to_epoch("1 month ago").unwrap();
+        let month2 = parse_since_to_epoch("2 months ago").unwrap();
+        assert!(month1 > month2);
+
+        assert!(day1 > week1);
+        assert!(week1 > month1);
+
         assert!(parse_since_to_epoch("1 year ago").is_some());
+        assert!(parse_since_to_epoch("2 years ago").is_some());
+        assert!(parse_since_to_epoch("  30 days ago  ").is_some());
         assert!(parse_since_to_epoch("2026-01-01").is_some());
+
+        // Negative intervals and malformed expressions are rejected.
+        assert!(parse_since_to_epoch("-5 days ago").is_none());
+        assert!(parse_since_to_epoch("-1 month ago").is_none());
         assert!(parse_since_to_epoch("garbage").is_none());
+        assert!(parse_since_to_epoch("days ago").is_none());
+
+        // Overflow is safely rejected without panicking.
+        assert!(parse_since_to_epoch("999999999999999999 days ago").is_none());
     }
 
     #[test]
