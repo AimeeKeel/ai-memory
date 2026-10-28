@@ -145,6 +145,11 @@ by formatting may still be extracted; deleted revisions and field instructions
 are excluded. Review `--show-body` before every live import of a document whose
 visibility rules matter.
 
+DOCX and PPTX extraction preserves explicit run-level line breaks, including
+DOCX carriage returns and formatted PPTX breaks, and DOCX tabs. Paired XML
+start/end tags and self-closing tags produce the same separators.
+Paragraph tab-stop definitions are formatting and do not insert text.
+
 VTT/SRT files accept LF, CRLF, or CR line endings and any number of blank lines
 between cues. WebVTT comments are omitted; identifiers such as `NOTE123` keep
 their cue text.

@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Preserved explicit DOCX/PPTX line breaks and DOCX tabs in document imports
+  when XML uses paired tags, including formatted PowerPoint breaks in slides
+  and speaker notes. DOCX carriage returns now also keep adjacent text runs
+  on separate lines instead of joining their words. Paragraph tab-stop
+  definitions no longer insert spurious tabs into the extracted text (#PR).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
