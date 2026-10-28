@@ -432,7 +432,8 @@ Re-running `ai-memory server add` for an existing profile keeps its roots when
 `--root` is omitted, so rotating a token cannot lift the restriction. Changing
 a profile's `--url` without a new token discards the old token first: a token
 belongs to the server it was issued for, so the profile refuses events until
-you add one for the new URL.
+you add one for the new URL. Both `[servers.<name>]` tables and an inline
+`servers = { ... }` table can be read and updated by these commands.
 
 Check the decision for a directory without sending anything:
 
