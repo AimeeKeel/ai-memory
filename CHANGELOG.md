@@ -27,12 +27,12 @@ version in [`docs/changelog/`](docs/changelog/):
   at least 20,000 tokens and responses above three times the project average.
   Only counters, response identities and model names are kept, and project
   authorization and session-owner filters apply before ranking or aggregation
-  (#1804).
+  (#1811).
 
 - Added Light, Dark and System theme controls to the web UI. The choice is
   stored in the browser and System follows the operating system. Tailwind's
   dark variant now uses the `dark` class instead of the media query, so a
-  manual choice overrides the system setting (#1804).
+  manual choice overrides the system setting (#1811).
 
 - Added a memory dashboard to the read-only web home, using sanitized data:
   projects, sessions, sanitized capture events, compiled pages, open-session
