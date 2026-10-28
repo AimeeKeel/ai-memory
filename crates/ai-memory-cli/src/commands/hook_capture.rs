@@ -774,12 +774,15 @@ const NATIVE_HOOK_CLIENT_KIND: &str = "hook";
 /// ignores `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY`, which have no
 /// business on a loopback/LAN POST; reqwest is built without its
 /// `system-proxy` feature, so no OS proxy setting is read either way.
+/// Redirects are disabled so a 3xx from an SSO portal or proxy never drops
+/// spooled events, replays payloads, or injects foreign HTML into context.
 /// Built once per invocation and reused for both the event POST and the
 /// handoff GET. Default root certs are kept so HTTPS targets (e.g. a TLS
 /// proxy) still work.
 pub fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
