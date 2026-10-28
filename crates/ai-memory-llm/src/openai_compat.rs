@@ -22,23 +22,13 @@ use crate::provider::LlmProvider;
 use crate::text::{suffix_within_bytes, truncate_with_ellipsis};
 use crate::types::{ChatRequest, ChatResponse, LlmOperationId};
 
-// Compiled once. Matches <think>, <thinking>, <analysis>, <reasoning> blocks
-// (case-insensitive, non-greedy, DOTALL) that reasoning models emit before
-// the JSON payload. These blocks often contain `{` braces that confuse the
-// balanced-brace extractor when unstripped.
-//
-// Each tag is listed explicitly because the `regex` crate does not support
-// backreferences — we cannot write `<(tag)>.*?</\1>`.
-static REASONING_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?is)(?:<think>.*?</think>|<thinking>.*?</thinking>|<analysis>.*?</analysis>|<reasoning>.*?</reasoning>)",
-    )
-    .unwrap()
+// Scan reasoning tags and JSON starts in order.
+// A reasoning block consumes its draft JSON, but a JSON value encountered
+// first must survive intact even when its strings contain reasoning tags.
+static REASONING_OR_JSON_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:</?(?:think|thinking|analysis|reasoning)>|[\{\[])").unwrap()
 });
 
-// The first closing reasoning tag. Chat templates that open the reasoning
-// block themselves (DeepSeek-R1, QwQ, Qwen3 thinking models) return the
-// reasoning followed by a bare `</think>`, with no opening tag to pair it.
 static REASONING_CLOSE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)</(?:think|thinking|analysis|reasoning)>").unwrap());
 
@@ -47,25 +37,61 @@ static CODE_FENCE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\A\s*```(?:json)?\s*\n(.*?)\n\s*```\s*\z").unwrap());
 
 /// Remove `<think>`, `<thinking>`, `<analysis>`, and `<reasoning>` blocks
-/// (case-insensitive) from `s`, then unwrap any surrounding markdown code
-/// fence. Returns a freshly allocated `String` so the caller can choose
-/// between the cleaned and the raw form.
+/// (case-insensitive) outside JSON values in `s`, then unwrap any surrounding
+/// markdown code fence. JSON string contents are copied verbatim.
 pub(crate) fn strip_reasoning_blocks(s: &str) -> String {
-    let stripped = REASONING_BLOCK_RE.replace_all(s, "");
-    // A closing tag left after the paired blocks are gone ends a reasoning
-    // section whose opening tag the chat template supplied. Drop that
-    // section too, unless the text before it already looks like the JSON
-    // answer (a literal closing tag inside a JSON string must survive).
-    let stripped = match REASONING_CLOSE_RE.find(stripped.as_ref()) {
-        Some(close)
-            if !stripped[..close.start()]
-                .trim_start()
-                .starts_with(['{', '[', '`']) =>
-        {
-            std::borrow::Cow::Owned(stripped[close.end()..].to_string())
+    let mut stripped = String::with_capacity(s.len());
+    let mut cursor = 0;
+    let mut saw_unopened_close = false;
+    let mut no_closing_tag: Vec<&str> = Vec::new();
+    while let Some(token) = REASONING_OR_JSON_RE.find_at(s, cursor) {
+        stripped.push_str(&s[cursor..token.start()]);
+        cursor = token.end();
+        if matches!(token.as_str(), "{" | "[") {
+            // JSON strings may contain these literal tags (RFC 8259 §7):
+            // https://www.rfc-editor.org/rfc/rfc8259#section-7
+            // Let serde locate the end, honoring escapes and nested values,
+            // rather than matching a tag inside the answer as a wrapper.
+            let mut json = serde_json::Deserializer::from_str(&s[token.start()..])
+                .into_iter::<serde_json::Value>();
+            if matches!(json.next(), Some(Ok(_))) {
+                cursor = token.start() + json.byte_offset();
+                stripped.push_str(&s[token.start()..cursor]);
+            } else {
+                stripped.push_str(token.as_str());
+            }
+        } else if token.as_str().starts_with("</") {
+            // Some chat templates supply the opening tag themselves. Keep
+            // the existing first-close rule, unless the prefix already looks
+            // like the answer. Closing tags inside JSON never reach this arm.
+            if !saw_unopened_close && !stripped.trim_start().starts_with(['{', '[', '`']) {
+                stripped.clear();
+            } else {
+                stripped.push_str(token.as_str());
+            }
+            saw_unopened_close = true;
+        } else {
+            let tag = &token.as_str()[1..token.len() - 1];
+            if !no_closing_tag
+                .iter()
+                .any(|seen| seen.eq_ignore_ascii_case(tag))
+            {
+                let close = REASONING_CLOSE_RE
+                    .find_iter(&s[cursor..])
+                    .find(|close| close.as_str()[2..close.len() - 1].eq_ignore_ascii_case(tag));
+                if let Some(close) = close {
+                    cursor += close.end();
+                    continue;
+                }
+                // The cursor only moves forward. Cache each of the four
+                // missing closes so repeated unfinished tags cannot rescan
+                // the remaining response once per opening tag.
+                no_closing_tag.push(tag);
+            }
+            stripped.push_str(token.as_str());
         }
-        _ => stripped,
-    };
+    }
+    stripped.push_str(&s[cursor..]);
     // If the entire remaining payload is wrapped in a code fence, unwrap it
     // so `serde_json::from_str` can see the bare JSON directly.
     if let Some(caps) = CODE_FENCE_RE.captures(stripped.as_ref()) {
@@ -754,6 +780,40 @@ mod tests {
             strip_reasoning_blocks(fenced),
             "{\"body\":\"a </think> tag\"}"
         );
+    }
+
+    #[test]
+    fn reasoning_tags_in_json_members_and_nested_values_are_kept() {
+        let input = r#"{"<think>key</think>":[{"body":"<analysis>nested</analysis>"}]}"#;
+        assert_eq!(strip_reasoning_blocks(input), input);
+    }
+
+    /// An unmatched draft brace in reasoning must not hide the template's
+    /// closing tag or prevent the following answer from being protected.
+    #[test]
+    fn malformed_reasoning_draft_still_reaches_the_answer() {
+        let answer = r#"{"body":"<think>literal</think>"}"#;
+        for prefix in [
+            "Rough draft {not JSON</think>\n",
+            "<analysis>Rough draft {not JSON</analysis>\n",
+        ] {
+            assert_eq!(strip_reasoning_blocks(&format!("{prefix}{answer}")), answer);
+        }
+    }
+
+    #[test]
+    fn a_literal_opening_tag_does_not_consume_a_later_reasoning_block() {
+        let answer = r#"{"body":"an opening <think> tag"}"#;
+        assert_eq!(
+            strip_reasoning_blocks(&format!("{answer}<think>actual reasoning</think>")),
+            answer
+        );
+    }
+
+    #[test]
+    fn many_unclosed_reasoning_tags_preserve_prose() {
+        let input = "<think>{<thinking>[<analysis>{<REASONING>[".repeat(2048);
+        assert_eq!(strip_reasoning_blocks(&input), input);
     }
 
     /// `<analysis>` prefix is also stripped.
