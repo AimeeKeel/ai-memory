@@ -47,7 +47,10 @@ version in [`docs/changelog/`](docs/changelog/):
   `agent_id`, which the router treats like an OpenCode child session.
   `drop_subagent_captures` now covers OMP subagents too, and an advisor's tool
   calls stay with the session they advise (#1779).
- a492ec23 (docs(config): map every toml key into template and properties doc)
+- The openai-compat strict path now treats an engine 501 structured-output
+  rejection as a capability gap and falls back to the tolerant parser. It used
+  to return the 501 as a transient failure, so the bootstrap chunk retry loop
+  repeated a call that failed the same way each time.
 
 ## [3.2.9] - 2026-10-27
 
