@@ -119,8 +119,11 @@ pub async fn list_for_user(ep: &ServerEndpoint, args: &UserGrantsArgs) -> Result
 /// `ai-memory project grants --workspace W --project P`.
 ///
 /// # Errors
-/// Transport failures, a non-root token, or an unknown project.
+/// Empty `--workspace` or `--project`; transport failures, a non-root token,
+/// or an unknown project.
 pub async fn list_for_project(ep: &ServerEndpoint, args: &ProjectGrantsArgs) -> Result<()> {
+    super::refuse_empty_explicit(Some(args.workspace.as_str()), "--workspace")?;
+    super::refuse_empty_explicit(Some(args.project.as_str()), "--project")?;
     let resp: GrantList = get_json(
         ep,
         "/admin/projects/grants",
@@ -272,5 +275,39 @@ mod tests {
                 "{cjk}"
             );
         }
+    }
+
+    fn grants_args() -> ProjectGrantsArgs {
+        ProjectGrantsArgs {
+            workspace: "default".into(),
+            project: "app".into(),
+            json: false,
+        }
+    }
+
+    fn dead_ep() -> ServerEndpoint {
+        ServerEndpoint::from_pair(Some("http://127.0.0.1:1".into()), None)
+    }
+
+    #[tokio::test]
+    async fn an_empty_project_flag_is_refused_before_listing_grants() {
+        let mut a = grants_args();
+        a.project = "   ".into();
+        let error = list_for_project(&dead_ep(), &a).await.unwrap_err();
+        assert!(
+            error.to_string().contains("--project was passed empty"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_workspace_flag_is_refused_before_listing_grants() {
+        let mut a = grants_args();
+        a.workspace = "".into();
+        let error = list_for_project(&dead_ep(), &a).await.unwrap_err();
+        assert!(
+            error.to_string().contains("--workspace was passed empty"),
+            "unexpected error: {error}"
+        );
     }
 }
