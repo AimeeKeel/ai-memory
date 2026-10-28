@@ -5642,8 +5642,7 @@ fn parse_opencode2(
             };
             if body.trim().is_empty() {
                 if status != "completed" {
-                    losses
-                        .push(format!("OpenCode 2 compaction ended with status {status}"));
+                    losses.push(format!("OpenCode 2 compaction ended with status {status}"));
                 }
             } else {
                 push_event(
@@ -8889,11 +8888,7 @@ mod tests {
                 .iter()
                 .map(|event| event.content.as_str())
                 .collect::<Vec<_>>(),
-            [
-                "compacted four turns",
-                "rate limited",
-                "provider timeout"
-            ]
+            ["compacted four turns", "rate limited", "provider timeout"]
         );
         assert_eq!(events[0].metadata, json!({"status": "completed"}));
         assert_eq!(events[1].metadata, json!({"status": "failed"}));
@@ -8904,9 +8899,7 @@ mod tests {
                 transcript
                     .losses
                     .iter()
-                    .any(|loss| loss.contains(&format!(
-                        "compaction ended with status {status}"
-                    ))),
+                    .any(|loss| loss.contains(&format!("compaction ended with status {status}"))),
                 "missing loss for {status}: {:?}",
                 transcript.losses
             );
