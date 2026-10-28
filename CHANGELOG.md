@@ -13,6 +13,10 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added `ai-memory run --no-exit-prompt`, `[run] exit_prompt = false`, and
+  `AI_MEMORY_RUN_EXIT_PROMPT=false` to skip the switch/rerun menu after a
+  successful interactive session. The menu remains enabled by default (#1776).
+
 - `ai-memory merge-project --workspace <w> --from <source> --into <target>`
   losslessly joins two project identities inside one workspace. Its default is
   an exact dry run; `--confirm` re-stamps page history, sessions, observations,

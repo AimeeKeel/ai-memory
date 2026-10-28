@@ -187,13 +187,35 @@ was a session, and `--executable` was not used; utility commands, failed or
 interrupted exits, and non-interactive launches do not prompt. A switch or
 re-run does not replay the previous harness's native arguments, which may be
 specific to that CLI; wrapper settings such as `--workspace`, `--project`,
-`--yolo` / `--true-yolo`, ai-jail controls, `--no-autowire`, `--env`, and
-`--env-file` remain in effect. The initial `--fresh` choice applies only to the
-first launch.
+`--yolo` / `--true-yolo`, ai-jail controls, `--no-autowire`, `--no-exit-prompt`,
+`--env`, and `--env-file` remain in effect. The initial `--fresh` choice applies
+only to the first launch.
+
+To return to the shell without the menu, pass `--no-exit-prompt` before or
+after the harness name:
+
+```bash
+ai-memory run --no-exit-prompt codex
+ai-memory run claude --no-exit-prompt
+```
+
+To disable it for all launches, set `AI_MEMORY_RUN_EXIT_PROMPT=false` or add
+this to `config.toml`:
+
+```toml
+[run]
+exit_prompt = false
+```
+
+The default is `true`. The environment variable accepts `true` or `false` and
+overrides the config file; `--no-exit-prompt` disables the menu even when the
+environment enables it. These settings affect only the exit menu. The managed
+session still launches, captures history, and finishes as usual.
 
 Everything after the harness name is native argv except the wrapper-owned exact
-flags `--yolo`, `--fresh`, and `--force-unlock`. No `--` separator is needed,
-and ai-memory does not maintain a second copy of each harness's option schema.
+flags `--yolo`, `--fresh`, `--force-unlock`, and `--no-exit-prompt`. No `--`
+separator is needed, and ai-memory does not maintain a second copy of each
+harness's option schema.
 Other wrapper options come first:
 
 Portable events, handoffs, and project briefs are injected as explicitly
@@ -213,7 +235,7 @@ available through `ai-memory workstream-search`.
 ```text
 ai-memory run [--workspace NAME] [--project NAME]
               [--workstream NAME | --new NAME] [--executable PATH]
-              [--yolo] [--fresh] [--force-unlock] [--profile NAME]
+              [--yolo] [--fresh] [--force-unlock] [--no-exit-prompt] [--profile NAME]
               [--env KEY=VALUE]... [--env-file PATH] [--require-server]
               [claude|claude*|codex|opencode|opencode2|pi|crush|omp|kimi|command-code|kiro|grok|antigravity|copilot]
               [native arguments...]

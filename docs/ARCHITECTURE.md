@@ -1171,6 +1171,14 @@ release_base_url = ""              # override the GitHub releases base URL that 
                                    # For hermetic tests / mirrors, not day-to-day installs.
                                    # Env: AI_MEMORY_RELEASE_BASE_URL.
 
+[run]
+require_server = false             # when true, `ai-memory run` refuses to launch if the server
+                                   # cannot be reached (also `--require-server` /
+                                   # AI_MEMORY_RUN_REQUIRE_SERVER).
+exit_prompt = true                 # when false, skip the interactive switch/rerun menu after a
+                                   # successful session (also `--no-exit-prompt` /
+                                   # AI_MEMORY_RUN_EXIT_PROMPT).
+
 [run.profiles.work.env]            # env-only launch profile for `ai-memory run --profile
 CLAUDE_CONFIG_DIR = "/home/me/.claude-work"  # work <harness>` (#922): same reach as
                                    # `--env` (child, native-session lookup, auto-wire),

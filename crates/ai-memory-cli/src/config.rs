@@ -471,7 +471,8 @@ pub struct Config {
     /// per harness and config home. Turn off with `AI_MEMORY_RUN_AUTOWIRE=false` /
     /// `run_autowire = false`, or per launch with `ai-memory run --no-autowire`.
     pub run_autowire: bool,
-    /// Named, env-only presets for `ai-memory run --profile NAME`.
+    /// Managed-launch settings, including the exit menu and named, env-only
+    /// presets for `ai-memory run --profile NAME`.
     /// Profiles deliberately do not carry executable paths, native argv, or
     /// permission-bypass flags. Configure them under `[run.profiles.<name>.env]`.
     #[serde(default)]
@@ -1473,9 +1474,13 @@ impl Default for Config {
 }
 
 /// `[run]` settings for the managed harness launcher.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunSettings {
+    /// Offer the switch/rerun menu after a successful interactive session.
+    /// On by default; `AI_MEMORY_RUN_EXIT_PROMPT=false` or
+    /// `run --no-exit-prompt` disables it.
+    pub exit_prompt: bool,
     /// Persisted env-only launch profiles, selected with `run --profile`.
     pub profiles: BTreeMap<String, RunProfile>,
     /// Fail a managed launch when the server is unreachable instead of
@@ -1484,6 +1489,16 @@ pub struct RunSettings {
     /// `AI_MEMORY_RUN_REQUIRE_SERVER=true` request it per launch or per
     /// environment.
     pub require_server: bool,
+}
+
+impl Default for RunSettings {
+    fn default() -> Self {
+        Self {
+            exit_prompt: true,
+            profiles: BTreeMap::new(),
+            require_server: false,
+        }
+    }
 }
 
 /// One named managed-launch preset.
@@ -2445,6 +2460,14 @@ impl Config {
         );
         apply_hook_spool_max_attempts_env(&mut config, runtime_env.hook_spool_max_attempts());
         apply_run_require_server_env(&mut config, runtime_env.run_require_server());
+        // The flat spelling would otherwise resolve to `run_exit_prompt`,
+        // not `run.exit_prompt`, through figment's `__` split.
+        if let Some(raw) = runtime_env.var_os("AI_MEMORY_RUN_EXIT_PROMPT") {
+            config.run.exit_prompt = raw
+                .to_str()
+                .and_then(|value| value.trim().parse().ok())
+                .context("AI_MEMORY_RUN_EXIT_PROMPT must be true or false")?;
+        }
 
         // Home is captured once in RuntimeEnv (config-read-path invariant);
         // threaded to the resolver guard and startup heal so neither reads the
@@ -4698,6 +4721,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(overridden.hook_spool.max_attempts, 0);
+    }
+
+    #[test]
+    fn run_exit_prompt_rejects_invalid_environment_values() {
+        let tmp = TempDir::new().unwrap();
+        for raw in ["", "not-a-bool"] {
+            let error = Config::load_with_runtime_env(
+                Some(&tmp.path().join("config.toml")),
+                Some(tmp.path().to_path_buf()),
+                RuntimeEnv::with_process_env_for_tests(&[("AI_MEMORY_RUN_EXIT_PROMPT", raw)]),
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("AI_MEMORY_RUN_EXIT_PROMPT must be true or false")
+            );
+        }
     }
 
     #[test]
