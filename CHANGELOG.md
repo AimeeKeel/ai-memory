@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Sorted recent page lists by timestamp rather than RFC3339 text, so updates
+  with different fractional-second precision appear in chronological order
+  in the legacy recent API, project activity, folder previews and namespace
+  listings. Kept title-sort and equal-timestamp path tie-breaks (#1247).
+
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
