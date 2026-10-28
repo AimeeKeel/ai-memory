@@ -17,7 +17,7 @@ version in [`docs/changelog/`](docs/changelog/):
   Updated native hooks to send measured response usage on `post-tool-use`,
   `stop`, `pre-compact` and `session-end`, keeping open-session totals current
   rather than waiting for session end. Each response is stored once by its
-  native identity in a new `token_calls` ledger (V92). A partial or replayed
+  native identity in a new `token_calls` ledger (V90). A partial or replayed
   delivery raises the stored counters column by column and never adds the same
   response twice. Live extraction reads a bounded 4 MiB transcript tail and
   reports at most 256 responses per event. Fresh input excludes cache reads, so
