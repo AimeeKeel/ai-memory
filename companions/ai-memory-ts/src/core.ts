@@ -6,7 +6,13 @@
  * @module
  */
 
-import { probeTools, requireFeature, type ToolIndex } from "./capabilities.js";
+import {
+  initialize,
+  probeTools,
+  requireFeature,
+  type SessionInfo,
+  type ToolIndex,
+} from "./capabilities.js";
 import { ArgumentError, ProtocolError, ToolError } from "./errors.js";
 import { resolveScope, type Scope } from "./scope.js";
 import type { CallOptions, Transport } from "./transport.js";
@@ -52,6 +58,7 @@ function firstText(content: unknown): string | undefined {
 export class Core {
   readonly transport: Transport;
   readonly defaultScope: Scope | undefined;
+  #session: Promise<SessionInfo> | undefined;
   #index: Promise<ToolIndex> | undefined;
 
   constructor(transport: Transport, defaultScope: Scope | undefined) {
@@ -64,21 +71,36 @@ export class Core {
     return resolveScope(callScope, this.defaultScope, where);
   }
 
+  /** The handshake is needed even by calls that skip schema checks. */
+  #initialize(options?: CallOptions): Promise<SessionInfo> {
+    if (this.#session === undefined) {
+      const session = initialize(this.transport, options);
+      this.#session = session;
+      session.catch(() => {
+        if (this.#session === session) this.#session = undefined;
+      });
+    }
+    return this.#session;
+  }
+
   /** `initialize` + `tools/list`, probed once per client and cached. */
   toolIndex(options?: CallOptions): Promise<ToolIndex> {
     if (this.#index === undefined) {
-      const probe = probeTools(this.transport, options);
+      const probe = this.#initialize(options).then((session) =>
+        probeTools(this.transport, session, options),
+      );
       this.#index = probe;
       // A failed probe is not cached: the next call probes again.
       probe.catch(() => {
-        if (this.#index === probe) this.#index = undefined;
+        if (this.#index === probe) this.forgetToolIndex();
       });
     }
     return this.#index;
   }
 
-  /** Drop the cached tool index. */
+  /** Drop the handshake and tool index so refresh opens a new session. */
   forgetToolIndex(): void {
+    this.#session = undefined;
     this.#index = undefined;
   }
 
@@ -104,6 +126,7 @@ export class Core {
     mutating: boolean,
     options?: CallOptions,
   ): Promise<unknown> {
+    await this.#initialize(options);
     const result = await this.transport.rpc(
       "tools/call",
       { name: tool, arguments: args },

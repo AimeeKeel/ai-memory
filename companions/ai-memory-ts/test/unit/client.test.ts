@@ -492,13 +492,14 @@ describe("capability gating", () => {
     assert.equal(caps.identity, null);
   });
 
-  it("callTool skips probing and returns the decoded JSON", async () => {
+  it("callTool initializes without schema probing and returns the decoded JSON", async () => {
     const { server, memory } = setup();
+    delete server.schemas["memory_lint"];
     server.tools.set("memory_lint", () => ({ report: "ok" }));
     assert.deepEqual(await memory.callTool("memory_lint", { dry_run: true }), { report: "ok" });
     assert.deepEqual(
       server.requests.map((r) => (r.body as { method: string }).method),
-      ["tools/call"],
+      ["initialize", "tools/call"],
     );
   });
 });
