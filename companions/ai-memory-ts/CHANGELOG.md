@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initialized the MCP session before the first `callTool`, so raw tool calls
   work with `--http-stateful` without a preceding wrapped call. Raw calls
-  still skip `tools/list` and schema checks. (#PR)
+  still skip `tools/list` and schema checks. (#1816)
 
 ### Added
 

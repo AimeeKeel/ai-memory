@@ -15,7 +15,7 @@ version in [`docs/changelog/`](docs/changelog/):
 
 - Initialized the TypeScript SDK's MCP session before the first `callTool`,
   fixing HTTP 422 responses with `--http-stateful`. Raw calls still skip
-  schema checks, and later wrapped calls reuse the session (#PR).
+  schema checks, and later wrapped calls reuse the session (#1816).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
