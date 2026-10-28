@@ -5599,9 +5599,8 @@ fn parse_opencode2(
                                 metadata,
                             );
                         } else if status != "completed" {
-                            losses.push(format!(
-                                "OpenCode 2 tool {name} ended with status {status}"
-                            ));
+                            losses
+                                .push(format!("OpenCode 2 tool {name} ended with status {status}"));
                         }
                     }
                     "reasoning" => {
@@ -8810,7 +8809,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO session_v2 VALUES ('s2', ?1, 10)",
-                [home.join("repo").to_string_lossy().to_string()],
+                [home.path().join("repo").to_string_lossy().to_string()],
             )
             .unwrap();
         // Completed tools use `content`; terminal failures use `error` as a
