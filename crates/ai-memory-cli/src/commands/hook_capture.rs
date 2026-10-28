@@ -1354,8 +1354,7 @@ mod tests {
         let target_url = format!("http://{}/login", target.local_addr().unwrap());
         let source_url = redirect_server("302 Found", &target_url).await;
 
-        let got =
-            get_handoff(&build_client(), &source_url, None, Duration::from_secs(1)).await;
+        let got = get_handoff(&build_client(), &source_url, None, Duration::from_secs(1)).await;
         assert!(got.is_none(), "redirect must not inject target content");
         assert!(
             tokio::time::timeout(Duration::from_millis(100), target.accept())
