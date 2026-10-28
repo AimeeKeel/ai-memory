@@ -10,7 +10,6 @@ Defaults that come from a named constant or from another crate say so in the Def
 
 | Key | Default | Env equivalent | Purpose |
 | --- | --- | --- | --- |
-| `data_dir` | `<platform local data dir>/ai-memory` (`dirs::data_local_dir()`) | `AI_MEMORY_DATA_DIR`, or `--data-dir` | Root data directory holding `wiki/`, `raw/`, `db/`, `models/` and `logs/`. The config file lives inside it, so the flag or variable normally chooses it. |
 | `bind` | `127.0.0.1:49374` (`DEFAULT_BIND`) | `AI_MEMORY_BIND` | HTTP bind address used by `ai-memory serve`. |
 | `tcp_keepalive_secs` | `60` (`DEFAULT_TCP_KEEPALIVE_SECS`) | `AI_MEMORY_TCP_KEEPALIVE_SECS` | Idle seconds before TCP keepalive probes start on an accepted connection. 0 disables keepalive. |
 | `server_url` | Derived from `bind`; `http://127.0.0.1:49374` for the default bind (`DEFAULT_SERVER_URL`) | `AI_MEMORY_SERVER_URL` | Base URL thin-client commands use to reach the server. |
