@@ -336,7 +336,6 @@ enum AfterRunAction {
 async fn run_with_exit_prompt(config: &Config, args: RunArgs, cwd: &Path) -> Result<i32> {
     let interactive_terminal =
         io::stdin().is_terminal() && io::stdout().is_terminal() && io::stderr().is_terminal();
-    let custom_executable = args.executable.is_some();
     let mut next_args = args;
     preserve_trailing_run_options(&mut next_args);
 
@@ -348,7 +347,7 @@ async fn run_with_exit_prompt(config: &Config, args: RunArgs, cwd: &Path) -> Res
             &super::run_autowire::WireOverrides::default(),
         )
         .await?;
-        if !should_offer_after_run(&outcome, interactive_terminal, custom_executable) {
+        if !should_offer_after_run(config, &next_args, &outcome, interactive_terminal) {
             return Ok(outcome.exit_code);
         }
 
@@ -379,22 +378,26 @@ async fn run_with_exit_prompt(config: &Config, args: RunArgs, cwd: &Path) -> Res
 }
 
 fn should_offer_after_run(
+    config: &Config,
+    args: &RunArgs,
     outcome: &RunOutcome,
     interactive_terminal: bool,
-    custom_executable: bool,
 ) -> bool {
-    outcome.exit_code == 0
+    config.run.exit_prompt
+        && !args.no_exit_prompt
+        && outcome.exit_code == 0
         && outcome.mode == LaunchMode::Session
         && outcome.interactive_session
         && !outcome.degraded
         && interactive_terminal
-        && !custom_executable
+        && args.executable.is_none()
 }
 
 fn preserve_trailing_run_options(args: &mut RunArgs) {
     args.yolo |= remove_wrapper_yolo(&mut args.native_args);
     args.true_yolo |= remove_wrapper_true_yolo(&mut args.native_args);
     args.no_autowire |= remove_wrapper_no_autowire(&mut args.native_args);
+    args.no_exit_prompt |= remove_wrapper_no_exit_prompt(&mut args.native_args);
     let trailing_jail = remove_wrapper_jail(&mut args.native_args);
     if trailing_jail.jail.is_some() {
         args.jail = trailing_jail.jail;
@@ -526,6 +529,7 @@ async fn run_once_with_wiring(
     let trailing_fresh = remove_wrapper_fresh(&mut native_args);
     let trailing_force_unlock = remove_wrapper_force_unlock(&mut native_args);
     let trailing_no_autowire = remove_wrapper_no_autowire(&mut native_args);
+    remove_wrapper_no_exit_prompt(&mut native_args);
     let trailing_jail = remove_wrapper_jail(&mut native_args);
     let jail_request = jail_request(args.jail, args.no_jail, trailing_jail)?;
     let yolo_modes = yolo_modes(
@@ -2665,7 +2669,7 @@ fn exec_under_ai_jail(
                 .context("resolving the current executable for the ai-jail re-exec");
         }
     };
-    let forwarded: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let forwarded = jail_forwarded_args(config, std::env::args_os().skip(1));
     let resolved = jail_resolved_env(config);
     let present = jail_forwarded_names(config, &resolved);
     // `--agent-state` is a bare toggle: enable it so the harness's own login
@@ -2683,6 +2687,28 @@ fn exec_under_ai_jail(
     );
     eprintln!("{}", jail_summary(toggles, project_config));
     reexec_under_ai_jail(ai_jail, &jail_args, &resolved)
+}
+
+fn jail_forwarded_args(
+    config: &Config,
+    original: impl IntoIterator<Item = OsString>,
+) -> Vec<OsString> {
+    let mut args: Vec<_> = original.into_iter().collect();
+    // The jail's private home cannot reload the host config, and its env
+    // allowlist does not forward this setting. Carry the resolved opt-out
+    // as a wrapper flag instead.
+    // `resume`, `continue`, and `show` also reach this re-exec through
+    // `run_from`, but have no menu and do not accept this run-only flag.
+    let is_run = || {
+        crate::cli::try_parse_from(
+            std::iter::once(OsString::from("ai-memory")).chain(args.iter().cloned()),
+        )
+        .is_ok_and(|cli| matches!(cli.command, crate::cli::Command::Run(_)))
+    };
+    if !config.run.exit_prompt && !args.iter().any(|arg| arg == "--no-exit-prompt") && is_run() {
+        args.push(OsString::from("--no-exit-prompt"));
+    }
+    args
 }
 
 /// The [`FORWARDED_ENV_NAMES`] the re-exec passes with `--env NAME`: those set
@@ -3163,6 +3189,12 @@ fn remove_wrapper_force_unlock(args: &mut Vec<OsString>) -> bool {
 fn remove_wrapper_no_autowire(args: &mut Vec<OsString>) -> bool {
     let before = args.len();
     args.retain(|arg| arg != OsStr::new("--no-autowire"));
+    args.len() != before
+}
+
+fn remove_wrapper_no_exit_prompt(args: &mut Vec<OsString>) -> bool {
+    let before = args.len();
+    args.retain(|arg| arg != OsStr::new("--no-exit-prompt"));
     args.len() != before
 }
 
@@ -5109,6 +5141,30 @@ mod tests {
     }
 
     #[test]
+    fn jail_reexec_preserves_the_resolved_exit_prompt_opt_out() {
+        let mut config = Config::default();
+        let original = ["run", "codex", "--model", "model"].map(OsString::from);
+        assert_eq!(jail_forwarded_args(&config, original.clone()), original);
+
+        config.run.exit_prompt = false;
+        let forwarded = jail_forwarded_args(&config, original);
+        let mut argv = vec![OsString::from("ai-memory")];
+        argv.extend(forwarded.clone());
+        let CliCommand::Run(mut args) = crate::cli::try_parse_from(argv).unwrap().command else {
+            panic!("expected run command");
+        };
+        preserve_trailing_run_options(&mut args);
+        assert!(args.no_exit_prompt);
+        assert_eq!(args.native_args, ["--model", "model"].map(OsString::from));
+        assert_eq!(jail_forwarded_args(&config, forwarded.clone()), forwarded);
+
+        for command in ["resume", "continue", "show"] {
+            let original = ["--config", "/tmp/run", command].map(OsString::from);
+            assert_eq!(jail_forwarded_args(&config, original.clone()), original);
+        }
+    }
+
+    #[test]
     fn jail_forwarded_names_come_from_the_captured_env_and_resolved_values() {
         let mut config = Config {
             runtime_env: crate::config::RuntimeEnv::with_process_env_for_tests(&[
@@ -5300,6 +5356,7 @@ mod tests {
             fresh: true,
             force_unlock: false,
             no_autowire: true,
+            no_exit_prompt: false,
             require_server: false,
             profile: Some("work".into()),
             env: vec![("MODEL_HOME".into(), "custom".into())],
@@ -5436,16 +5493,64 @@ mod tests {
             workstream_name: "research".into(),
             degraded: false,
         };
-        assert!(should_offer_after_run(&outcome, true, false));
-        assert!(!should_offer_after_run(&outcome, false, false));
-        assert!(!should_offer_after_run(&outcome, true, true));
+        let config = Config::default();
+        let mut args = run_args_for_after_run_test();
+        assert!(should_offer_after_run(&config, &args, &outcome, true));
+        assert!(!should_offer_after_run(&config, &args, &outcome, false));
+        args.executable = Some(PathBuf::from("custom-harness"));
+        assert!(!should_offer_after_run(&config, &args, &outcome, true));
+        args.executable = None;
 
         let mut failed = outcome;
         failed.exit_code = 1;
-        assert!(!should_offer_after_run(&failed, true, false));
+        assert!(!should_offer_after_run(&config, &args, &failed, true));
         failed.exit_code = 0;
         failed.mode = LaunchMode::Passthrough;
-        assert!(!should_offer_after_run(&failed, true, false));
+        assert!(!should_offer_after_run(&config, &args, &failed, true));
+    }
+
+    #[test]
+    fn post_run_prompt_respects_config_env_and_flag_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let outcome = RunOutcome {
+            exit_code: 0,
+            harness: ManagedHarness::Claude,
+            interactive_session: true,
+            mode: LaunchMode::Session,
+            workstream_name: "research".into(),
+            degraded: false,
+        };
+        for (file, env, enabled) in [
+            ("", None, true),
+            ("[run]\nrequire_server = false\n", None, true),
+            ("[run]\nexit_prompt = false\n", None, false),
+            ("[run]\nexit_prompt = true\n", None, true),
+            ("", Some("false"), false),
+            ("[run]\nexit_prompt = true\n", Some("false"), false),
+            ("[run]\nexit_prompt = false\n", Some("true"), true),
+        ] {
+            std::fs::write(&config_path, file).unwrap();
+            let pairs: Vec<_> = env
+                .map(|value| ("AI_MEMORY_RUN_EXIT_PROMPT", value))
+                .into_iter()
+                .collect();
+            let config = Config::load_with_runtime_env(
+                Some(&config_path),
+                Some(dir.path().to_path_buf()),
+                crate::config::RuntimeEnv::with_process_env_for_tests(&pairs),
+            )
+            .unwrap();
+            for no_exit_prompt in [false, true] {
+                let mut args = run_args_for_after_run_test();
+                args.no_exit_prompt = no_exit_prompt;
+                assert_eq!(
+                    should_offer_after_run(&config, &args, &outcome, true),
+                    enabled && !no_exit_prompt,
+                    "file={file:?}, env={env:?}, flag={no_exit_prompt}",
+                );
+            }
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -7185,6 +7290,59 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_no_exit_prompt_parses_before_or_after_the_harness() {
+        for argv in [
+            vec![
+                "ai-memory",
+                "run",
+                "--no-exit-prompt",
+                "codex",
+                "--model",
+                "model",
+            ],
+            vec![
+                "ai-memory",
+                "run",
+                "codex",
+                "--no-exit-prompt",
+                "--model",
+                "model",
+            ],
+            vec![
+                "ai-memory",
+                "run",
+                "codex",
+                "--model",
+                "model",
+                "--no-exit-prompt",
+            ],
+            vec![
+                "ai-memory",
+                "run",
+                "--no-exit-prompt",
+                "codex",
+                "--model",
+                "model",
+                "--no-exit-prompt",
+            ],
+        ] {
+            let mut args = parse_run(&argv);
+            preserve_trailing_run_options(&mut args);
+            assert!(args.no_exit_prompt, "{argv:?}");
+            assert_eq!(args.native_args, ["--model", "model"].map(OsString::from));
+        }
+        let mut native = [
+            "--no-exit-prompt=literal",
+            "prompt with --no-exit-prompt inside",
+        ]
+        .map(OsString::from)
+        .to_vec();
+        let original = native.clone();
+        assert!(!remove_wrapper_no_exit_prompt(&mut native));
+        assert_eq!(native, original);
+    }
+
+    #[test]
     fn resolve_run_env_merges_profile_file_then_cli_pairs() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("vars.env");
@@ -7253,6 +7411,7 @@ mod tests {
             fresh: false,
             force_unlock: false,
             no_autowire: true,
+            no_exit_prompt: false,
             require_server: false,
             profile: Some("missing".into()),
             env: Vec::new(),
@@ -7600,6 +7759,7 @@ mod tests {
             fresh: false,
             force_unlock: false,
             no_autowire: true,
+            no_exit_prompt: false,
             require_server: false,
             profile: Some("work".into()),
             env: vec![("CLAUDE_CONFIG_DIR".to_string(), "/from/cli".to_string())],
@@ -7707,6 +7867,7 @@ mod tests {
             fresh: false,
             force_unlock: false,
             no_autowire: true,
+            no_exit_prompt: false,
             require_server: false,
             profile: None,
             env: Vec::new(),
@@ -8200,6 +8361,7 @@ mod tests {
             fresh: false,
             force_unlock: false,
             no_autowire: true,
+            no_exit_prompt: false,
             require_server: false,
             profile: None,
             // Pinned so a contributor's own CLAUDE_CONFIG_DIR cannot leak in.
@@ -9006,6 +9168,7 @@ mod tests {
             fresh: false,
             force_unlock: false,
             no_autowire: false,
+            no_exit_prompt: false,
             require_server: false,
             env: vec![
                 ("PATH".into(), executable_dir.display().to_string()),
@@ -9135,6 +9298,7 @@ mod tests {
             fresh: false,
             force_unlock: false,
             no_autowire: false,
+            no_exit_prompt: false,
             require_server: false,
             profile: None,
             env: Vec::new(),
@@ -9420,6 +9584,7 @@ mod tests {
             fresh: false,
             force_unlock: false,
             no_autowire: false,
+            no_exit_prompt: false,
             require_server: false,
             profile: None,
             env,

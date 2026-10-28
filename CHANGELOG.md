@@ -11,6 +11,12 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Added
+
+- Added `ai-memory run --no-exit-prompt`, `[run] exit_prompt = false`, and
+  `AI_MEMORY_RUN_EXIT_PROMPT=false` to skip the switch/rerun menu after a
+  successful interactive session. The menu remains enabled by default (#909).
+
 ## [3.2.9] - 2026-10-27
 
 ### Fixed

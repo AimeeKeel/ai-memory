@@ -476,6 +476,11 @@ pub struct RunArgs {
     /// `AI_MEMORY_RUN_AUTOWIRE=false`) to launch without touching harness config.
     #[arg(long)]
     pub no_autowire: bool,
+    /// Return to the shell after the harness exits without offering the
+    /// switch/rerun menu. Also set with `[run] exit_prompt = false` in
+    /// config.toml or `AI_MEMORY_RUN_EXIT_PROMPT=false`.
+    #[arg(long)]
+    pub no_exit_prompt: bool,
     /// Refuse to launch when the ai-memory server is unreachable, restoring
     /// the pre-degraded-launch fail-closed behavior. Without this flag an
     /// unreachable server downgrades the launch: the harness still starts
