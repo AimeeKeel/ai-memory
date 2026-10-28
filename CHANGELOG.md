@@ -13,6 +13,9 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Decoded WebVTT cue character references before document-import sanitization,
+  preserving literal escaped tags and applying the existing text-size limit
+  to the decoded text. SRT extraction is unchanged (#PR).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
