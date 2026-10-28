@@ -4918,11 +4918,11 @@ async fn interrupted_recovery_refuses_foreign_scope_owner_and_receiver_with_cont
     .enumerate()
     {
         let session = SessionId::new();
-        let occurred = format!("2026-10-01T00:00:{index:02}Z");
+        let occurred = 1_790_812_800_000_i64 + i64::try_from(index).unwrap() * 1_000;
         store
             .writer
             .begin_session(NewSession {
-                occurred_at: Some(occurred.parse().unwrap()),
+                occurred_at: Some(occurred),
                 id: session,
                 workspace_id: ws,
                 project_id: proj,
@@ -4936,7 +4936,7 @@ async fn interrupted_recovery_refuses_foreign_scope_owner_and_receiver_with_cont
             .writer
             .insert_observation(Sanitized::new(
                 NewObservation {
-                    occurred_at: Some(occurred.parse().unwrap()),
+                    occurred_at: Some(occurred),
                     session_id: session,
                     workspace_id: ws,
                     project_id: proj,
