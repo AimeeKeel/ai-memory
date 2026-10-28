@@ -127,7 +127,6 @@ pub(crate) fn agent_label(kind: ai_memory_core::AgentKind) -> &'static str {
         AgentKind::Dsh => "DSH",
         AgentKind::Cline => "Cline",
         AgentKind::QwenCode => "Qwen Code",
-        AgentKind::Qoder => "Qoder",
         AgentKind::Other => "Other",
     }
 }
