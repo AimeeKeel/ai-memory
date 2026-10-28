@@ -18784,7 +18784,7 @@ mod tests {
             project_id: project,
             path: ai_memory_core::PagePath::new(path).unwrap(),
             title: path.to_string(),
-            body: "body".into(),
+            body: "?".repeat(600),
             tier: ai_memory_core::Tier::Semantic,
             frontmatter_json: serde_json::json!({}),
             pinned: false,
@@ -18847,7 +18847,7 @@ mod tests {
                 let result = server
                     .memory_read_page(
                         Parameters(ReadPageArgs {
-                            max_chars: None,
+                            max_chars: Some(500),
                             include_related: true,
                             related_depth: Some(3),
                             path: Some("notes/a.md".into()),
@@ -18859,7 +18859,11 @@ mod tests {
                     )
                     .await
                     .expect("the open project's page is readable");
-                call_tool_json(result)["related"]
+                let payload = call_tool_json(result);
+                assert_eq!(payload["truncated"], true);
+                assert_eq!(payload["total_chars"], 600);
+                assert_ne!(payload["body"], "?".repeat(600));
+                payload["related"]
                     .as_array()
                     .expect("include_related attaches a related block")
                     .iter()
