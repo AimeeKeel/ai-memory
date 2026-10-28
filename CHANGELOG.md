@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Admission webhook HTTP requests now follow redirects only within the
+  configured `scheme://host:port` origin (up to 10 hops) and fail on
+  cross-origin redirects without forwarding page payloads or applying foreign
+  response mutations, surfacing the redirect refusal cause in logs and
+  `reject`-policy errors (#1794).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
