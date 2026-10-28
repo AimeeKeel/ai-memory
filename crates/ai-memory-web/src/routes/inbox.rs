@@ -338,8 +338,6 @@ pub(crate) async fn send(
         to_agent: Some(agent),
         subject: Some(input.subject.trim().to_owned()),
         body: input.body.trim().to_owned(),
-        nature: ai_memory_core::MessageNature::Unknown,
-        evidence: None,
     };
     match state.wiki.send_agent_message(message, actor).await {
         Ok(id) => (

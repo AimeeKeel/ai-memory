@@ -9083,8 +9083,6 @@ mod tests {
                 to_agent: Some(AgentKind::Codex),
                 subject: Some("Browser request".into()),
                 body: "Inspect this project".into(),
-                nature: ai_memory_core::MessageNature::Unknown,
-                evidence: None,
             })
             .await
             .unwrap();
