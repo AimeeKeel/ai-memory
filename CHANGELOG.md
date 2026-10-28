@@ -15,7 +15,7 @@ version in [`docs/changelog/`](docs/changelog/):
 
 - Scheduled empty-project cleanup now preserves projects that have sent or
   received agent messages, including claimed/cancelled history, so it cannot
-  silently delete their inbox/outbox through a project cascade (#PR).
+  silently delete their inbox/outbox through a project cascade (#1810).
 
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
