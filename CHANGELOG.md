@@ -17,7 +17,7 @@ version in [`docs/changelog/`](docs/changelog/):
   SQLite update, including a rejected case-colliding historical path. Restores
   now share the page writer's lock through conformance, file replacement and
   indexing so a concurrent write to that same path cannot leave disk and
-  SQLite disagreeing (#PR).
+  SQLite disagreeing (#1807).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
