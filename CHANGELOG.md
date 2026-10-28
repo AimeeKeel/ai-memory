@@ -22,7 +22,7 @@ version in [`docs/changelog/`](docs/changelog/):
   destination project can also queue a message for a registered harness of that
   project. The text goes through the configured sanitizer and admission before
   the single writer, and the browser never claims mail or starts an agent.
-  Messages can now be addressed to one harness (`to_agent`, migration V93).
+  Messages can now be addressed to one harness (`to_agent`, migration V91).
   `memory_message_pop` and `ai-memory message pop` take an optional `agent`,
   and only that harness can claim the message, even by id. Existing shared mail
   (`to_agent = NULL`) behaves as before. A claim from a session-aware client
