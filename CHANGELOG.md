@@ -15,7 +15,7 @@ version in [`docs/changelog/`](docs/changelog/):
 
 - Dropping the final store writer handle now finishes when its command queue
   is full. Accepted writes still drain before the writer thread exits, including
-  when callers have cancelled their waits (#PR).
+  when callers have cancelled their waits (#1809).
 
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
