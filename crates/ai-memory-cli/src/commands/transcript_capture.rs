@@ -264,9 +264,7 @@ impl TranscriptCapture {
             record_cwd(event).is_some_and(ai_memory_core::is_codex_memory_agent_cwd)
                 || (matches!(event.kind, WorkstreamEventKind::Message)
                     && matches!(event.role.as_deref(), Some("user" | "human"))
-                    && ai_memory_core::looks_like_codex_memory_agent_prompt(
-                        &event.content,
-                    ))
+                    && ai_memory_core::looks_like_codex_memory_agent_prompt(&event.content))
         })
     }
 
@@ -764,10 +762,7 @@ mod tests {
                 ),
                 &memories,
             )),
-            as_codex(at(
-                read_call(&memories.join("notes.md"), None),
-                &memories,
-            )),
+            as_codex(at(read_call(&memories.join("notes.md"), None), &memories)),
             as_codex(at(result("notes", None), &memories)),
         ];
         assert_eq!(kinds(&capture.decide(&events)), ["drop", "drop", "drop"]);
