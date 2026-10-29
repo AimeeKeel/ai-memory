@@ -1670,7 +1670,14 @@ async fn recent_page_lists_order_timestamps_chronologically() {
         );
     };
     let (_, project) = get_body(&web, "/w/default/scratch").await;
-    let sidebar = &project[..project.find("</aside>").unwrap()];
+    let sidebar_start = project
+        .find("<aside aria-label=\"Project pages\">")
+        .expect("project page sidebar");
+    let sidebar_end = sidebar_start
+        + project[sidebar_start..]
+            .find("</aside>")
+            .expect("project page sidebar end");
+    let sidebar = &project[sidebar_start..sidebar_end];
     assert_order(sidebar, &expected[..5]);
     assert!(
         !sidebar.contains("p/notes/oldest.md\""),

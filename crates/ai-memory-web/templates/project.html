@@ -64,6 +64,7 @@
               {% else %}
               <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 shrink-0">from {{ message.sender }}</span>
               {% endif %}
+              <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 shrink-0">{{ message.nature }}</span>
               <span class="text-xs text-slate-500 dark:text-slate-400 truncate">{{ message.snippet }}</span>
             </div>
           </div>

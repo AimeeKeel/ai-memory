@@ -165,10 +165,10 @@ mod tests {
     use rusqlite::{Connection, params};
 
     #[test]
-    fn v92_preserves_old_response_rows_and_cascades_context() {
+    fn v94_preserves_old_response_rows_and_cascades_context() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
-        run_to(&mut conn, 91).unwrap();
+        run_to(&mut conn, 93).unwrap();
         conn.execute_batch("INSERT INTO workspaces(id,name,created_at) VALUES(zeroblob(16),'usage',1);
             INSERT INTO projects(id,workspace_id,name,created_at) VALUES(zeroblob(16),zeroblob(16),'usage',1);
             INSERT INTO sessions(id,workspace_id,project_id,agent_kind,started_at) VALUES(zeroblob(16),zeroblob(16),zeroblob(16),'codex',1);
@@ -189,10 +189,10 @@ mod tests {
     }
 
     #[test]
-    fn v90_normalizes_codex_cache_once_and_preserves_claude() {
+    fn v92_normalizes_codex_cache_once_and_preserves_claude() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
-        run_to(&mut conn, 89).unwrap();
+        run_to(&mut conn, 91).unwrap();
         conn.execute_batch("INSERT INTO workspaces(id,name,created_at) VALUES(zeroblob(16),'usage',1);
             INSERT INTO projects(id,workspace_id,name,created_at) VALUES(zeroblob(16),zeroblob(16),'usage',1);
             INSERT INTO sessions(id,workspace_id,project_id,agent_kind,started_at) VALUES(zeroblob(16),zeroblob(16),zeroblob(16),'codex',1);
@@ -216,10 +216,10 @@ mod tests {
     /// Existing mail keeps its text, state, order and addressee, the three
     /// indexes come back, and `editing` is the only value the constraint gained.
     #[test]
-    fn v93_accepts_the_editing_state_and_keeps_existing_messages() {
+    fn v95_accepts_the_editing_state_and_keeps_existing_messages() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
-        run_to(&mut conn, 92).unwrap();
+        run_to(&mut conn, 94).unwrap();
         conn.execute_batch(
             "INSERT INTO workspaces(id,name,created_at) VALUES(zeroblob(16),'mail',1);
              INSERT INTO projects(id,workspace_id,name,created_at) VALUES(zeroblob(16),zeroblob(16),'mail',1);

@@ -356,6 +356,7 @@ pub(crate) struct MailboxRow {
     /// Subject line, or a placeholder when the sender gave none.
     pub subject: String,
     /// Epistemic classification supplied by the sender.
+    pub nature: &'static str,
     /// `workspace/project` of the sender, or a neutral label when the viewer
     /// may not read it.
     pub sender: String,

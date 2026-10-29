@@ -385,6 +385,7 @@ async fn mailbox(
                     .subject
                     .filter(|subject| !subject.trim().is_empty())
                     .unwrap_or_else(|| "(no subject)".to_owned()),
+                nature: entry.message.nature.as_str(),
                 sender,
                 sender_href,
                 snippet: snippet(&entry.message.body),
