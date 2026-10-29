@@ -837,8 +837,21 @@ pub fn claude_continued_session(
     native_session_id: &str,
     started_at: SystemTime,
 ) -> Result<Option<ClaudeContinuation>> {
+    Ok(claude_continued_sessions(home, cwd, session_dir, native_session_id, started_at)?.pop())
+}
+
+/// Find every session a Claude Code process continued in during this run,
+/// oldest first. This lets callers preserve turns from each transcript in a
+/// chain of `/clear` commands while still following the newest session.
+pub fn claude_continued_sessions(
+    home: &Path,
+    cwd: &Path,
+    session_dir: Option<&Path>,
+    native_session_id: &str,
+    started_at: SystemTime,
+) -> Result<Vec<ClaudeContinuation>> {
     if !valid_native_session_id(native_session_id) {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let mut candidates = collect_session_files(ManagedHarness::Claude, home, session_dir)?;
     candidates.sort_by(|left, right| {
@@ -847,7 +860,8 @@ pub fn claude_continued_session(
             .then_with(|| left.cmp(right))
     });
     let attached_marker = format!("\"session_id\":\"{native_session_id}\"");
-    for path in candidates.into_iter().take(512) {
+    let mut continuations = Vec::new();
+    'candidate: for path in candidates.into_iter().take(512) {
         if modified(&path).is_some_and(|time| time + Duration::from_secs(2) < started_at) {
             break;
         }
@@ -884,7 +898,8 @@ pub fn claude_continued_session(
             }
             if value.get("sessionKind").and_then(Value::as_str) == Some("bg") {
                 if recorded_cwd.is_some_and(|recorded| same_path(recorded, cwd)) {
-                    return Ok(Some(ClaudeContinuation::Background(session.to_string())));
+                    continuations.push(ClaudeContinuation::Background(session.to_string()));
+                    continue 'candidate;
                 }
             } else if session == stem
                 && recorded_cwd.is_some_and(|recorded| path_within(recorded, cwd))
@@ -893,10 +908,11 @@ pub fn claude_continued_session(
             }
         }
         if cleared && cleared_in_checkout {
-            return Ok(Some(ClaudeContinuation::Cleared(stem.to_string())));
+            continuations.push(ClaudeContinuation::Cleared(stem.to_string()));
         }
     }
-    Ok(None)
+    continuations.reverse();
+    Ok(continuations)
 }
 
 const CLAUDE_CLEAR_COMMAND: &str = "<command-name>/clear</command-name>";
@@ -8557,6 +8573,13 @@ mod tests {
         assert_eq!(
             find("launch"),
             Some(ClaudeContinuation::Cleared("cleared-again".into()))
+        );
+        assert_eq!(
+            claude_continued_sessions(temp.path(), &cwd, None, "launch", started_at).unwrap(),
+            vec![
+                ClaudeContinuation::Cleared("cleared".into()),
+                ClaudeContinuation::Cleared("cleared-again".into()),
+            ]
         );
     }
 

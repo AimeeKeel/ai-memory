@@ -31,6 +31,10 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Imported every Claude transcript left behind by `/clear`, oldest first,
+  before finalizing the managed run on the newest session. Pre-clear turns now
+  retain their native-session provenance instead of disappearing from the
+  workstream ledger (#1797).
 - Kept purge-session tombstones out of automatic hollow-project cleanup, so
   an old otherwise-empty project cannot lose replay protection immediately
   after its session is purged (GHSA-pphw-hm98-3wh4).

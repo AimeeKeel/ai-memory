@@ -541,7 +541,15 @@ selected explicitly on the next managed run.
    result whose call was imported by an earlier run is dropped under a
    policy. Messages are unaffected. Under allowlist capture mode a checkout
    without a marker uploads no events at all, as the live hook emits none
-   there; the run still finishes. Each delivered
+   there; the run still finishes.
+
+   Claude process can write one run across several native transcripts when
+   `/clear` starts a new conversation. The launcher enumerates those
+   continuations, imports each abandoned transcript oldest first as a
+   non-final ledger segment, and only then finalizes the run on the newest
+   session. Thus pre-clear turns keep their original native-session identity,
+   while the next managed launch still resumes the conversation after the last
+   `/clear`. Each delivered
    workstream packet begins with a versioned origin marker. If Claude Code
    persists that packet and its `Read` tool returns it, the Claude transcript
    normalizer excludes the marked result instead of feeding delivered history
