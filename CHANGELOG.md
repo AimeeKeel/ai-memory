@@ -44,6 +44,11 @@ version in [`docs/changelog/`](docs/changelog/):
   cross-origin redirects without forwarding page payloads or applying foreign
   response mutations, surfacing the redirect refusal cause in logs and
   `reject`-policy errors (#1794).
+- `ai-memory project access` and `ai-memory project grants` now refuse empty
+  or whitespace-only `--workspace`, `--project`, and (for access) `--mode`
+  values before sending any request to the server. These commands take
+  required names and never call `resolve_scope`, so the #1774 choke point
+  did not cover them (#1791).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
