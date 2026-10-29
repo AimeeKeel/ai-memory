@@ -13065,23 +13065,26 @@ model = "gpt-5"
         assert!(plugin.contains("projectSource = \"repo-root\";"));
     }
 
+    /// A single `event?.type === "..."` branch of the generated OpenCode
+    /// plugin, so an assertion cannot be satisfied by a marker that lives in a
+    /// neighbouring branch.
+    fn opencode_event_branch<'a>(plugin: &'a str, event: &str) -> &'a str {
+        let needle = format!("event?.type === \"{event}\"");
+        let start = plugin
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{event} branch missing"));
+        let rest = &plugin[start..];
+        let end = rest[needle.len()..]
+            .find("event?.type ===")
+            .map(|offset| offset + needle.len())
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
     #[test]
     fn opencode_plugin_marks_a_subagent_session_end() {
         let plugin = build_opencode_plugin("http://127.0.0.1:49374", None, None, "denylist");
-        // Slice a single `event?.type === "..."` branch so an assertion cannot
-        // be satisfied by a marker that lives in a neighbouring branch.
-        let branch = |event: &str| {
-            let needle = format!("event?.type === \"{event}\"");
-            let start = plugin
-                .find(&needle)
-                .unwrap_or_else(|| panic!("{event} branch missing"));
-            let rest = &plugin[start..];
-            let end = rest[needle.len()..]
-                .find("event?.type ===")
-                .map(|offset| offset + needle.len())
-                .unwrap_or(rest.len());
-            &rest[..end]
-        };
+        let branch = |event: &str| opencode_event_branch(&plugin, event);
         // #755: the router refuses to hand the next session a sub-task baton
         // only when a child session's `session-end` carries the marker, so the
         // end event must forward parentID just like `session.created` does.
