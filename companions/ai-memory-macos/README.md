@@ -44,7 +44,7 @@ Drag the `.app` to `/Applications` for a stable LaunchAgent path. Notarization, 
 3. The status item turns green when `GET /admin/status` succeeds.
 4. **Open Web UI**, **Show Status…** (bundled `ai-memory status`), **Open Config**, **Open Data Directory**, **Open Logs**.
 
-Updates: replace `/Applications/AI Memory.app`. The data dir is untouched. If the helper path inside the bundle changed, **Restart Server** re-renders the plist.
+Updates: replace `/Applications/AI Memory.app`. The data dir is untouched. If the helper path inside the bundle changed, **Restart Server** re-renders the plist. App and home-directory paths preserve spaces and XML characters such as `&` in the generated LaunchAgent.
 
 ## Tests
 

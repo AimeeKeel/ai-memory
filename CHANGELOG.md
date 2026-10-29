@@ -11,6 +11,10 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the macOS menu app’s LaunchAgent installation and restart checks for app and home-directory paths containing XML characters such as `&`. (#PR)
+
 ## [3.2.10] - 2026-10-29
 
 ### Changed
