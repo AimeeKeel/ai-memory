@@ -13,6 +13,9 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Preserved `title:` and `body:` filters inside parenthesized CJK searches,
+  so grouped queries no longer include matches from other columns (#1846).
+
 - Made `auth login --timeout-secs` stop device-authorization polling requests
   and waits at the deadline for OpenAI OAuth, GitHub Copilot and OIDC device
   login. Late polling results no longer reach credential storage; provider
