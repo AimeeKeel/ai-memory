@@ -3494,11 +3494,19 @@ fn parse_opencode(
                 None,
                 json!({"tool": name}),
             );
-            if let Some(output) = state
-                .get("output")
-                .map(value_text)
-                .filter(|value| !value.is_empty())
-            {
+            let status = state.get("status").and_then(Value::as_str);
+            // V1 terminal failures store their visible result in `error`, not
+            // `output`; only that state's string field is conversation text.
+            // https://github.com/anomalyco/opencode/blob/c63a93995f1e5c28dd73cc032dcb224780f208ff/packages/schema/src/v1/session.ts#L277-L302
+            let output = if status == Some("error") {
+                state
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            } else {
+                state.get("output").map(value_text)
+            };
+            if let Some(output) = output.filter(|value| !value.is_empty()) {
                 push_event(
                     events,
                     AgentKind::OpenCode,
@@ -3509,7 +3517,11 @@ fn parse_opencode(
                     Some("tool"),
                     &output,
                     None,
-                    json!({"status": state.get("status").and_then(Value::as_str)}),
+                    if status == Some("error") {
+                        json!({"status": status, "is_error": true})
+                    } else {
+                        json!({"status": status})
+                    },
                 );
             }
         }
@@ -8666,6 +8678,105 @@ mod tests {
             export_opencode(home.path(), None, "s1", first.source_cursor.as_deref()).unwrap();
         assert_eq!(second.events.len(), 1);
         assert_eq!(second.events[0].content, "second");
+    }
+
+    #[test]
+    fn opencode_failed_tool_results_keep_the_visible_error() {
+        let home = tempfile::tempdir().unwrap();
+        let db = opencode_db(home.path(), None);
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE message(id TEXT PRIMARY KEY, session_id TEXT, data TEXT);\n\
+                 CREATE TABLE part(id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, \
+                                   time_updated INTEGER, data TEXT);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO message VALUES ('m1', 's1', ?1)",
+                [json!({"role":"assistant"}).to_string()],
+            )
+            .unwrap();
+        // OpenCode's terminal error state has `error`, whereas completed
+        // tools have `output`. Other fields are not visible error text.
+        let states = [
+            (
+                "completed",
+                json!({"status":"completed", "output":"success", "error":"not a completed result"}),
+            ),
+            (
+                "failed",
+                json!({"status":"error", "error":"Permission denied"}),
+            ),
+            (
+                "pending",
+                json!({"status":"pending", "error":"not a terminal result"}),
+            ),
+            (
+                "running",
+                json!({"status":"running", "error":"not a terminal result"}),
+            ),
+            (
+                "malformed",
+                json!({"status":"error", "error":{"private":"not visible text"}}),
+            ),
+            ("legacy", json!({"output":"legacy output"})),
+        ];
+        for (id, mut state) in states {
+            state["input"] = json!({"command":"test-command"});
+            connection
+                .execute(
+                    "INSERT INTO part VALUES (?1, 'm1', 's1', 1, ?2)",
+                    params![
+                        id,
+                        json!({"type":"tool", "tool":"bash", "state":state}).to_string()
+                    ],
+                )
+                .unwrap();
+        }
+        let before = fs::read(&db).unwrap();
+        let transcript = export_opencode(home.path(), None, "s1", None).unwrap();
+        let results: Vec<_> = transcript
+            .events
+            .iter()
+            .filter(|event| event.kind == WorkstreamEventKind::ToolResult)
+            .collect();
+        assert_eq!(
+            results
+                .iter()
+                .map(|event| event.content.as_str())
+                .collect::<Vec<_>>(),
+            ["success", "Permission denied", "legacy output"]
+        );
+        let failed = results[1];
+        assert_eq!(failed.role.as_deref(), Some("tool"));
+        assert_eq!(failed.source_record_id.as_deref(), Some("failed"));
+        assert_eq!(failed.metadata, json!({"status":"error", "is_error":true}));
+        assert_eq!(results[0].metadata, json!({"status":"completed"}));
+        assert_eq!(results[2].metadata, json!({"status":null}));
+        assert!(transcript.losses.is_empty());
+        let replay = export_opencode(home.path(), None, "s1", None).unwrap();
+        assert_eq!(
+            transcript
+                .events
+                .iter()
+                .map(|event| &event.event_id)
+                .collect::<Vec<_>>(),
+            replay
+                .events
+                .iter()
+                .map(|event| &event.event_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            export_opencode(home.path(), None, "s1", transcript.source_cursor.as_deref())
+                .unwrap()
+                .events
+                .is_empty()
+        );
+        assert_eq!(fs::read(&db).unwrap(), before);
     }
 
     /// Beta store fixture: `session_v2` + `session_message` with the shapes
