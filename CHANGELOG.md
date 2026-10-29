@@ -13,6 +13,9 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Fixed false command timeouts in the macOS menu app when CLI output or
+  diagnostics exceeded a pipe buffer (#1845).
+
 - Fixed the macOS menu app's LaunchAgent installation and restart checks for
   app and home-directory paths containing XML characters such as `&` (#1844).
 
