@@ -222,8 +222,11 @@ async fn strict_501_structured_output_unavailable_falls_back_to_tolerant_parser(
                     }
                 }))
             } else {
-                ResponseTemplate::new(200)
-                    .set_body_json(qwen_body(Some("{\"findings\": []}"), "stop", 5))
+                ResponseTemplate::new(200).set_body_json(qwen_body(
+                    Some("{\"findings\": []}"),
+                    "stop",
+                    5,
+                ))
             }
         })
         .mount(&server)
@@ -237,7 +240,11 @@ async fn strict_501_structured_output_unavailable_falls_back_to_tolerant_parser(
 
     assert_eq!(value, json!({ "findings": [] }));
     let requests = server.received_requests().await.expect("requests recorded");
-    assert_eq!(requests.len(), 2, "strict call, then exactly one tolerant call");
+    assert_eq!(
+        requests.len(),
+        2,
+        "strict call, then exactly one tolerant call"
+    );
 }
 
 /// The guard lives in the shared OpenAI-wire structured path, so the
