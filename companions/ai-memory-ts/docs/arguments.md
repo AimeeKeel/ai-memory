@@ -48,6 +48,7 @@ Methods: `pages.read`, `pages.update`
 |---|---|
 | `workspace` | `workspace` |
 | `project` | `project` |
+| `scope` | `scope` |
 | `path` | `path` |
 | `query` | `query` |
 | `include_related` | `includeRelated` |

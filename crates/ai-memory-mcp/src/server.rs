@@ -833,6 +833,12 @@ struct QueryHit {
     hit: ai_memory_store::PageHit,
     #[serde(skip_serializing_if = "Option::is_none")]
     score_details: Option<ai_memory_store::SearchExplain>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<&'static str>,
     #[serde(skip)]
     evidence: Option<ai_memory_store::AnswerEvidenceMeta>,
 }
@@ -842,6 +848,9 @@ impl From<ai_memory_store::PageHit> for QueryHit {
         Self {
             hit,
             score_details: None,
+            workspace: None,
+            project: None,
+            scope: None,
             evidence: None,
         }
     }
@@ -1725,6 +1734,10 @@ struct ReadPageArgs {
     /// both for the current project; static MCP clients must pass both.
     #[serde(default)]
     workspace: Option<String>,
+    /// Set to `"global"` to read from the reserved cross-project global
+    /// scope. Cannot be combined with `workspace` or `project`.
+    #[serde(default)]
+    scope: Option<String>,
     /// Opt-in: also walk the link graph outward from this page and return the
     /// reachable pages in a `related` array. Default false → the response is
     /// byte-identical to a plain single-page read (no `related` field).
@@ -3064,6 +3077,9 @@ impl AiMemoryServer {
                     .map(|(hit, details)| QueryHit {
                         hit,
                         score_details: details,
+                        workspace: None,
+                        project: None,
+                        scope: None,
                         evidence: None,
                     })
                     .collect(),
@@ -3250,6 +3266,9 @@ impl AiMemoryServer {
                             .map(|(hit, score_details)| QueryHit {
                                 hit,
                                 score_details,
+                                workspace: Some(ai_memory_core::DEFAULT_WORKSPACE_NAME.to_owned()),
+                                project: Some(ai_memory_core::GLOBAL_SCOPE_PROJECT.to_owned()),
+                                scope: Some("global"),
                                 evidence: None,
                             })
                             .collect()
@@ -3300,6 +3319,8 @@ impl AiMemoryServer {
                     .await
                 {
                     Ok(Some(scope)) if scope.as_tuple() != current => {
+                        let (scope_workspace, scope_project) =
+                            self.scope_names(scope.workspace_id, scope.project_id).await;
                         let ai_memory_store::HybridSearchOutcome { hits, .. } = self
                             .search_project(
                                 scope.workspace_id,
@@ -3325,6 +3346,9 @@ impl AiMemoryServer {
                             QueryHit {
                                 hit,
                                 score_details,
+                                workspace: Some(scope_workspace.clone()),
+                                project: Some(scope_project.clone()),
+                                scope: None,
                                 evidence: None,
                             }
                         }));
@@ -3342,6 +3366,9 @@ impl AiMemoryServer {
             .map(|(hit, score_details)| QueryHit {
                 hit,
                 score_details: score_details.filter(|_| explain),
+                workspace: None,
+                project: None,
+                scope: None,
                 evidence: None,
             })
             .collect();
@@ -5170,6 +5197,8 @@ impl AiMemoryServer {
         `total_chars` (the untruncated length) so you know the real size \
         even when it wasn't cut. Raise `max_chars` only when you need the \
         whole page. \
+        Set `scope: \"global\"` to read the reserved cross-project global \
+        scope; do not combine it with `workspace`/`project`. \
         \
         Set `include_related: true` to also walk the link graph outward from \
         this page and get a `related` array of the reachable pages, each with \
@@ -5194,22 +5223,63 @@ impl AiMemoryServer {
         // Same scope resolution as memory_query: an explicit workspace+project
         // can target a page in a DIFFERENT workspace (a sibling project on a
         // shared server). Plain `project` keeps the active-project chain.
-        let (ws, proj) = self
-            .effective_ids_for_read_args_with_actor(
-                args.workspace.as_deref(),
-                args.project.as_deref(),
-                &aps_actor,
-                Self::viewer_from_parts(Some(&parts)),
-            )
-            .await?;
+        // The reserved global spelling is a no-create lookup and cannot be
+        // mixed with explicit coordinates.
+        let requested_scope = args.scope.as_deref().map(str::trim);
+        let (ws, proj) = match requested_scope {
+            None | Some("") => {
+                self.effective_ids_for_read_args_with_actor(
+                    args.workspace.as_deref(),
+                    args.project.as_deref(),
+                    &aps_actor,
+                    Self::viewer_from_parts(Some(&parts)),
+                )
+                .await?
+            }
+            Some("global") => {
+                if args
+                    .workspace
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty())
+                    || args
+                        .project
+                        .as_deref()
+                        .is_some_and(|s| !s.trim().is_empty())
+                {
+                    return Err(McpError::invalid_params(
+                        "scope: \"global\" cannot be combined with workspace/project",
+                        None,
+                    ));
+                }
+                ai_memory_store::lookup_global_scope(&self.reader)
+                    .await
+                    .map_err(Self::scope_error)?
+                    .ok_or_else(|| {
+                        Self::scope_error(
+                            ai_memory_store::ScopeResolutionError::ProjectNotFoundInWorkspace {
+                                workspace: ai_memory_core::DEFAULT_WORKSPACE_NAME.to_owned(),
+                                project: ai_memory_core::GLOBAL_SCOPE_PROJECT.to_owned(),
+                            },
+                        )
+                    })?
+                    .as_tuple()
+            }
+            Some(other) => {
+                return Err(McpError::invalid_params(
+                    format!("unknown scope '{other}': the only supported value is \"global\""),
+                    None,
+                ));
+            }
+        };
         // Diagnose cross-project scope-bleed: a read with no explicit scope
         // resolves to the active project, which may differ from the scope a
         // concurrent write landed in — the write persists but the by-path
         // read looks in the wrong bucket and 404s.
-        let auto_scoped = args
-            .workspace
-            .as_deref()
-            .is_none_or(|s| s.trim().is_empty())
+        let auto_scoped = requested_scope.is_none_or(str::is_empty)
+            && args
+                .workspace
+                .as_deref()
+                .is_none_or(|s| s.trim().is_empty())
             && args.project.as_deref().is_none_or(|s| s.trim().is_empty());
         let max_chars = args
             .max_chars
@@ -13140,6 +13210,10 @@ mod tests {
             "default query must union the reserved global scope: {}",
             text.text
         );
+        let payload: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(payload["global_scope_hits"][0]["workspace"], "default");
+        assert_eq!(payload["global_scope_hits"][0]["project"], "_global");
+        assert_eq!(payload["global_scope_hits"][0]["scope"], "global");
         assert!(
             !text.text.contains("score_details") && !text.text.contains("streams_active"),
             "ordinary default queries must preserve the old response shape"
@@ -15363,6 +15437,7 @@ mod tests {
                     path: None,
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -15413,6 +15488,7 @@ mod tests {
                     path: None,
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -15436,6 +15512,7 @@ mod tests {
                     path: Some(String::new()),
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                 }),
@@ -15464,6 +15541,7 @@ mod tests {
                     path: Some("notes/blankfill.md".into()),
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                 }),
@@ -15522,6 +15600,7 @@ mod tests {
                     path: Some("notes/sibling.md".into()),
                     project: Some("docs".into()),
                     workspace: Some("practice".into()),
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -15578,6 +15657,7 @@ mod tests {
                     path: Some("notes/db-only-tool.md".into()),
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -15635,6 +15715,7 @@ mod tests {
                         path: Some("notes/short.md".into()),
                         project: None,
                         workspace: None,
+                        scope: None,
                         include_related: false,
                         related_depth: None,
                         max_chars: None,
@@ -15684,6 +15765,7 @@ mod tests {
                         path: Some("notes/long.md".into()),
                         project: None,
                         workspace: None,
+                        scope: None,
                         include_related: false,
                         related_depth: None,
                         max_chars: Some(500),
@@ -15768,6 +15850,7 @@ mod tests {
                         path: Some(path.into()),
                         project: None,
                         workspace: None,
+                        scope: None,
                         include_related: false,
                         related_depth: None,
                     }),
@@ -15815,6 +15898,7 @@ mod tests {
                     path: Some("notes/does-not-exist.md".into()),
                     project: Some("scratch".into()),
                     workspace: Some("default".into()),
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                 }),
@@ -15836,6 +15920,7 @@ mod tests {
                     path: None,
                     project: Some("scratch".into()),
                     workspace: Some("default".into()),
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                 }),
@@ -15868,6 +15953,7 @@ mod tests {
                     path: Some("blocked.md".into()),
                     project: Some("scratch".into()),
                     workspace: Some("default".into()),
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                 }),
@@ -15897,6 +15983,7 @@ mod tests {
                     path: Some("does-not-exist.md".into()),
                     project: Some("scratch".into()),
                     workspace: Some("default".into()),
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -15923,6 +16010,7 @@ mod tests {
                     path: Some("does-not-exist.md".into()),
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -18818,6 +18906,7 @@ mod tests {
                     query: None,
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -19067,6 +19156,7 @@ mod tests {
                     path: Some("../x.md".into()),
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                 }),
@@ -19344,6 +19434,7 @@ mod tests {
                     query: None,
                     project: None,
                     workspace: None,
+                    scope: None,
                 }),
                 OptionalParts(parts_as_reader()),
             )
@@ -19393,6 +19484,7 @@ mod tests {
                     query: None,
                     project: None,
                     workspace: None,
+                    scope: None,
                 }),
                 OptionalParts(test_parts_default()),
             )
@@ -19460,6 +19552,7 @@ mod tests {
                         query: None,
                         project: None,
                         workspace: None,
+                        scope: None,
                     }),
                     OptionalParts(test_parts_default()),
                 )
@@ -19503,6 +19596,7 @@ mod tests {
                     query: None,
                     project: None,
                     workspace: None,
+                    scope: None,
                 }),
                 OptionalParts(parts_as_reader()),
             )
@@ -19680,6 +19774,74 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn global_page_reads_are_explicit_and_preserve_local_collisions() {
+        let tmp = TempDir::new().unwrap();
+        let (_store, server, _joao, _maria) = global_gate_fixture(&tmp).await;
+
+        let mut local = global_page("notes/collision.md", None, None, None);
+        local.body = "# Local\n\nlocal-only marker".into();
+        server
+            .memory_write_page(Parameters(local), OptionalParts(test_parts_default()))
+            .await
+            .unwrap();
+        server
+            .memory_write_page(
+                Parameters(global_page(
+                    "notes/collision.md",
+                    Some("global"),
+                    None,
+                    None,
+                )),
+                OptionalParts(test_parts_default()),
+            )
+            .await
+            .unwrap();
+
+        let read = |scope: Option<&str>| ReadPageArgs {
+            query: None,
+            path: Some("notes/collision.md".into()),
+            project: None,
+            workspace: None,
+            scope: scope.map(str::to_owned),
+            include_related: false,
+            related_depth: None,
+            max_chars: None,
+        };
+        let local = server
+            .memory_read_page(Parameters(read(None)), OptionalParts(test_parts_default()))
+            .await
+            .unwrap();
+        let global = server
+            .memory_read_page(
+                Parameters(read(Some("global"))),
+                OptionalParts(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            tool_json(&local)["body"]
+                .as_str()
+                .unwrap()
+                .contains("local-only")
+        );
+        assert!(
+            tool_json(&global)["body"]
+                .as_str()
+                .unwrap()
+                .contains("globalverify")
+        );
+
+        let mut mixed = read(Some("global"));
+        mixed.workspace = Some("default".into());
+        mixed.project = Some("_global".into());
+        let error = server
+            .memory_read_page(Parameters(mixed), OptionalParts(test_parts_default()))
+            .await
+            .expect_err("global scope and explicit coordinates are mutually exclusive");
+        assert!(error.message.contains("cannot be combined"));
+    }
+
     /// GHSA-7qj3-7wqw-m5w6: the reserved global scope is unioned into every
     /// user's reads, so a database user without a write grant on it must not
     /// write it — through `scope: "global"` or by naming `default/_global` —
@@ -19759,6 +19921,7 @@ mod tests {
                     query: None,
                     project: Some("_global".into()),
                     workspace: Some("default".into()),
+                    scope: None,
                 }),
                 OptionalParts(parts_as_user(maria)),
             )
@@ -20023,6 +20186,7 @@ mod tests {
                     query: None,
                     project: Some(joaos.clone()),
                     workspace: Some("default".into()),
+                    scope: None,
                 }),
                 OptionalParts(parts_as_user(maria)),
             )
@@ -20540,6 +20704,7 @@ mod tests {
                             query: None,
                             project: None,
                             workspace: None,
+                            scope: None,
                         }),
                         OptionalParts(parts),
                     )
@@ -20671,6 +20836,7 @@ mod tests {
                             query: None,
                             project: None,
                             workspace: None,
+                            scope: None,
                         }),
                         OptionalParts(parts),
                     )
@@ -21393,6 +21559,7 @@ mod tests {
                     path: Some("notes/default.md".into()),
                     project: Some("typo".into()),
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -21479,6 +21646,7 @@ mod tests {
                     path: Some("notes/temp.md".into()),
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -21629,6 +21797,7 @@ mod tests {
                         path: Some("notes/retries.md".into()),
                         project: None,
                         workspace: None,
+                        scope: None,
                         include_related: false,
                         related_depth: None,
                     }),
@@ -21860,6 +22029,7 @@ mod tests {
                     path: Some("notes/keep.md".into()),
                     project: None,
                     workspace: None,
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -21982,6 +22152,7 @@ mod tests {
                     path: Some("notes/twin.md".into()),
                     project: Some("shared".into()),
                     workspace: Some("alpha".into()),
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -22002,6 +22173,7 @@ mod tests {
                     path: Some("notes/twin.md".into()),
                     project: Some("shared".into()),
                     workspace: Some("beta".into()),
+                    scope: None,
                     include_related: false,
                     related_depth: None,
                     max_chars: None,
@@ -22827,6 +22999,7 @@ mod tests {
                         path: Some("notes/bob-authored.md".into()),
                         project: None,
                         workspace: None,
+                        scope: None,
                         include_related: false,
                         related_depth: None,
                         max_chars: None,
@@ -25105,6 +25278,7 @@ mod tests {
                         path: Some(path.into()),
                         project: Some("scratch".into()),
                         workspace: Some("default".into()),
+                        scope: None,
                         include_related: false,
                         related_depth: None,
                     }),

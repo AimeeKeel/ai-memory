@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- `global_scope_hits` now include their workspace, project, and global scope,
+  and `memory_read_page` accepts `scope: "global"`. Supplemental global search
+  results can therefore be read directly without risking a same-path lookup in
+  the caller's active project (#1802).
+
 - Added `--project-id` to managed launches and checkout-local discovery to
   recover populated legacy name collisions without moving or merging history.
   An interactive launch offers authorized project choices and remembers the

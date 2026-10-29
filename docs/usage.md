@@ -250,6 +250,11 @@ a page: a query aimed at a session-specific term can still return that session.
 `pinned` remains primarily a retention and automation-mutation control, not an
 unconditional search override.
 
+Supplemental `global_scope_hits` are self-describing: each includes
+`workspace`, `project`, and `scope: "global"`. Read one directly with its path
+and `scope: "global"`; an unscoped read still selects the current project, so
+same-path local and global pages remain distinct.
+
 ### Keep a lookup cheap
 
 `memory_read_session_observations` defaults to 20 rows of up to 1000 characters

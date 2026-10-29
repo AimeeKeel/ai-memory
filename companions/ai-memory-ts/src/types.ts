@@ -168,6 +168,8 @@ export type PatchPageResult = WritePageResult;
 
 /** Options shared by both forms of {@link ReadPageArgs}. */
 export interface ReadPageBase extends ScopedArgs {
+  /** Read from the reserved cross-project global scope. Cannot be combined with `scope`. */
+  global?: boolean;
   /** Also walk the link graph and return the reachable pages in `related`. */
   includeRelated?: boolean;
   /** Hops to walk with `includeRelated` (default 1, capped at 3 by the server). */

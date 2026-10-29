@@ -291,7 +291,10 @@ export class PagesNamespace {
   async read(args: ReadPageArgs, options?: CallOptions): Promise<Page> {
     const where = "pages.read";
     const a = argsObject(args, where);
-    const scope = this.#core.scope(a.scope, where);
+    if (a.global === true && a.scope !== undefined) {
+      throw new ArgumentError(`${where}: global cannot be combined with scope`);
+    }
+    const scope = a.global === true ? undefined : this.#core.scope(a.scope, where);
     const hasPath = a.path !== undefined;
     const hasQuery = a.query !== undefined;
     if (hasPath === hasQuery) {
@@ -302,7 +305,7 @@ export class PagesNamespace {
     const decoded = await this.#core.invoke(
       "memory_read_page",
       wire({
-        ...scopeWire(scope),
+        ...(scope === undefined ? { scope: "global" } : scopeWire(scope)),
         path: a.path,
         query: a.query,
         include_related: a.includeRelated === true ? true : undefined,

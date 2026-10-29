@@ -161,6 +161,15 @@ describe("pages", () => {
     });
     assert.equal(capped.truncated, true);
     assert.equal(capped.totalChars, 40_000);
+    await memory.pages.read({ path: "preferences/style.md", global: true });
+    assert.deepEqual(server.lastArgs(), {
+      scope: "global",
+      path: "preferences/style.md",
+    });
+    await assert.rejects(
+      memory.pages.read({ path: "preferences/style.md", global: true, scope: OTHER }),
+      ArgumentError,
+    );
     server.tools.set("memory_read_page", () => payloads.read);
     const older = await memory.pages.read({ path: "notes/retries.md" });
     assert.equal(older.truncated, undefined);
@@ -690,6 +699,7 @@ describe("wire names", () => {
         ],
       }),
       memory.pages.read({ path: "p", includeRelated: true, relatedDepth: 2, maxChars: 500 }),
+      memory.pages.read({ path: "global", global: true }),
       memory.pages.read({ query: "q" }),
       memory.pages.delete({ path: "p", expectedPageId: "v" }),
       memory.query({

@@ -762,6 +762,12 @@
           "null"
         ]
       },
+      "scope": {
+        "type": [
+          "null",
+          "string"
+        ]
+      },
       "workspace": {
         "type": [
           "null",
