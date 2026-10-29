@@ -54,6 +54,10 @@ version in [`docs/changelog/`](docs/changelog/):
   `--level` values before sending any request to the server. These commands
   take required names and never call `resolve_scope`, so the #1774 choke
   point did not cover them (#1792).
+- Stopped the lifecycle relay from treating an oversized HTTP response as a
+  transport failure and immediately resending its batch. A response beyond the
+  64 KiB acknowledgement cap now retains its HTTP status, stops the flush, and
+  keeps unacknowledged events pending, including on HTTP 429 backpressure (#1799).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
