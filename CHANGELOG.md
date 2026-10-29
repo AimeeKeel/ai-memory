@@ -380,6 +380,24 @@ version in [`docs/changelog/`](docs/changelog/):
   growing. It attaches no usage and starts no consolidation, because the
   server cannot read a client's transcript outside a live hook request (#1803).
 
+### Added
+
+- Added optional `max_chars` to `memory_read_page` (default 12000,
+  minimum 500, maximum 64000). It caps the returned body with the same visible
+  truncation marker as `memory_read_session_observations`. The response always
+  includes `truncated` and `total_chars`, which report whether the body was cut
+  and its full size (#1827).
+
+### Changed
+
+- Reduced the default output of `memory_read_session_observations`: `limit`
+  from 50 to 20 and `body_max_chars` from 4000 to 1000. Callers can still raise
+  them to the unchanged ceilings of 200 and 16384. The smaller response reduces
+  token costs for routine "what did this session do" lookups. Updated the
+  retrieval skill with an `order="desc"` recipe using a narrow `kinds` filter
+  and small `limit` and `body_max_chars` values to avoid reading the whole
+  session (#1827).
+
 ### Fixed
 
 - Updated `libz-sys` to 1.1.31 so its build probe no longer records the build
