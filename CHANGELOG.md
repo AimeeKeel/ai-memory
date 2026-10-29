@@ -20,7 +20,7 @@ version in [`docs/changelog/`](docs/changelog/):
   call keeps its subagent type. Session pages count calls by name and
   handoffs list them by name. Only short identifiers are kept, never a tool's
   arguments, and a call that a capture policy reduced to metadata stays
-  unnamed (#PRNUM).
+  unnamed (#1851).
 
 - `global_scope_hits` now include their workspace, project, and global scope,
   and `memory_read_page` accepts `scope: "global"`. Supplemental global search
