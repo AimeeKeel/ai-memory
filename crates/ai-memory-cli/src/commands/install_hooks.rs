@@ -5165,6 +5165,8 @@ function textFromParts(parts: unknown): string {{
 
 const sessionCwds = new Map<string, string>();
 const startedSessions = new Set<string>();
+// A subagent session's parent, from the session info OpenCode publishes.
+const sessionParents = new Map<string, string>();
 const handoffFetches = new Map<string, Promise<string | undefined>>();
 // "reload context": the session's compaction recap, kept until its next
 // compaction like the handoff it sits beside.
@@ -5178,6 +5180,11 @@ function cwdFor(id: string | undefined, directory: string): string {{
 
 function rememberCwd(id: string | undefined, cwd: string | undefined): void {{
   if (id && cwd) sessionCwds.set(id, cwd);
+}}
+
+function rememberParent(id: string | undefined, parentID: unknown): void {{
+  // A root session has no parentID; only a real string marks a child (#755).
+  if (id && typeof parentID === "string" && parentID) sessionParents.set(id, parentID);
 }}
 
 function startSession(id: string | undefined, cwd: string, extra: Record<string, unknown> = {{}}): void {{
@@ -5294,6 +5301,9 @@ export const AiMemoryHooks: Plugin = async ({{ directory }}) => {{
         const info = properties.info ?? {{}};
         const id = properties.sessionID ?? info.id;
         const cwd = info.directory ?? directory;
+        // A `task` subagent runs in a child session created with its
+        // parent's id (OpenCode `tool/task.ts`).
+        rememberParent(id, info.parentID);
         startSession(id, cwd, {{
           title: info.title,
           projectID: info.projectID,
@@ -5376,6 +5386,9 @@ export const AiMemoryHooks: Plugin = async ({{ directory }}) => {{
       const id = sessionID(input);
       if (!id) return;
       startSession(id, cwdFor(id, directory));
+      // A subagent must not claim the handoff waiting for the user's next
+      // session. The OpenCode 2 `context` hook skips a child session the same way.
+      if (sessionParents.has(id)) return;
       let pending = handoffFetches.get(id);
       if (!pending) {{
         pending = fetchHandoff(cwdFor(id, directory), id);
