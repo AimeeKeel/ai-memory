@@ -228,6 +228,8 @@ version in [`docs/changelog/`](docs/changelog/):
   could blame the primary for a timeout another candidate caused. Response
   bodies are never logged (#1628).
 
+## [3.2.10] - 2026-10-29
+
 ### Changed
 
 - Documented the settings that `config.default.toml` had left out, and added
@@ -405,6 +407,18 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Made the per-session auto-improve reviewer, the cross-session experience
+  pass, the dream merge and the lint contradiction pass write their prose in
+  the dominant natural language of their input, as the consolidation prompts
+  already did. Their English-only system prompts gave no language rule, so
+  sessions held in Portuguese could still produce English `gotchas/`,
+  `decisions/` and `concepts/` pages and English lint findings. Code,
+  identifiers, paths, patch anchors, evidence quotes, JSON keys and enum
+  values stay verbatim (#1839).
+- Pinned `zip` 8.6 to upstream's official security-backport commit for
+  GHSA-m665-v7pm-7grj. Candle still requires the yanked 8.x line, so the
+  immutable backport keeps fresh builds resolvable while adding the header
+  consistency hardening shipped in `zip` 9.0.5.
 - Updated `libz-sys` to 1.1.31 so its build probe no longer records the build
   environment, including possible secrets, in Cargo target artifacts
   (RUSTSEC-2026-0418).
@@ -3475,7 +3489,8 @@ version in [`docs/changelog/`](docs/changelog/):
   session-timeline owner rule. Another operator's observations still rank
   shared session pages.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.9...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v3.2.10...HEAD
+[3.2.10]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.10
 [3.2.9]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.9
 [3.2.8]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.8
 [3.2.7]: https://github.com/akitaonrails/ai-memory/releases/tag/v3.2.7
