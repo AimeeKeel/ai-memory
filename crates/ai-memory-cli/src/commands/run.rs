@@ -1370,7 +1370,7 @@ async fn run_once_with_wiring(
     let mut left_behind_losses = Vec::new();
     for session_id in &left_behind_session_ids {
         let source_cursor = (prepared.native_session_id.as_deref() == Some(session_id.as_str()))
-            .then(|| prepared.source_cursor.as_deref())
+            .then_some(prepared.source_cursor.as_deref())
             .flatten();
         let mut exported = export_after_flush(
             harness,
