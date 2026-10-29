@@ -14695,10 +14695,13 @@ process.exit(0);
         /// Drives the rendered OpenCode V1 plugin in the order OpenCode 1.x
         /// calls it: a top-level session, then a `task` subagent that
         /// `tool/task.ts` runs in a child session (a prompt as
-        /// `session/prompt.ts` runs it, a tool call, a second model call), then
-        /// the `dispose` that `cli/bootstrap.ts` runs at exit. Records every
-        /// `/handoff` claim by session id, what each session's first model call
-        /// was given, and every `/hook` event with the `agent_id` it carried.
+        /// `session/prompt.ts` runs it, a tool call, a second model call), a
+        /// subagent the task tool resumes by `task_id` and a top-level session
+        /// continued from an earlier process (neither has a `session.created`
+        /// here), then the `dispose` that `cli/bootstrap.ts` runs at exit.
+        /// Records every `/handoff` claim by session id, what each session's
+        /// first model call was given, and every `/hook` event with the
+        /// `agent_id` it carried.
         const OPENCODE_SUBAGENT_HARNESS: &str = r#"import { createServer } from "node:http";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -14762,9 +14765,13 @@ await plugin["tool.execute.before"](read, { args: { filePath: "README.md" } });
 await plugin["tool.execute.after"]({ ...read, args: { filePath: "README.md" } }, { title: "README.md", output: "ok", metadata: {} });
 await modelCall("task");
 await plugin.event({ event: { type: "session.idle", properties: { sessionID: "task" } } });
+// A child the task tool resumes by `task_id` and a top-level session
+// continued from an earlier process: neither has a `session.created` here.
+await prompt("resumed", "root");
+await prompt("continued");
 await plugin.dispose();
 // The plugin delivers in order; wait for every session's end.
-const sessions = ["root", "task"];
+const sessions = ["root", "task", "resumed", "continued"];
 const ended = (id: string) => hooks.some((hook) => hook.event === "session-end" && hook.sessionID === id);
 const deadline = Date.now() + 20000;
 while (!sessions.every(ended)) {
@@ -14790,11 +14797,22 @@ process.exit(0);
                 OPENCODE_SUBAGENT_HARNESS,
                 &project,
             );
-            // Only the top-level session claims. No model call of the
-            // subagent asks for the baton or is given one.
-            assert_eq!(run["claims"], serde_json::json!(["root"]), "{run}");
-            assert_eq!(run["delivered"]["root"], "PENDING-HANDOFF", "{run}");
-            assert_eq!(run["delivered"]["task"], serde_json::Value::Null, "{run}");
+            // Only the top-level sessions claim, the continued one included.
+            // No model call of a subagent, resumed or not, asks for the baton
+            // or is given one.
+            assert_eq!(
+                run["claims"],
+                serde_json::json!(["root", "continued"]),
+                "{run}"
+            );
+            for (id, given) in [
+                ("root", serde_json::json!("PENDING-HANDOFF")),
+                ("task", serde_json::Value::Null),
+                ("resumed", serde_json::Value::Null),
+                ("continued", serde_json::json!("PENDING-HANDOFF")),
+            ] {
+                assert_eq!(run["delivered"][id], given, "{id}: {run}");
+            }
             let hooks = run["hooks"].as_array().unwrap();
             let markers = |id: &str, event: &str| -> Vec<serde_json::Value> {
                 hooks
@@ -14812,19 +14830,28 @@ process.exit(0);
             for event in ["user-prompt", "pre-tool-use", "post-tool-use", "stop"] {
                 assert!(!markers("task", event).is_empty(), "{event}: {run}");
             }
-            // The top-level session stays unmarked, its end included.
+            // The resumed subagent is known from its `session.updated` by the
+            // time OpenCode exits, so its end names the parent too.
             assert_eq!(
-                markers("root", "session-end"),
-                [serde_json::Value::Null],
+                markers("resumed", "session-end"),
+                [serde_json::json!("root")],
                 "{run}"
             );
-            assert!(
-                hooks
-                    .iter()
-                    .filter(|hook| hook["sessionID"] == "root")
-                    .all(|hook| hook["agent_id"].is_null()),
-                "{run}"
-            );
+            // The top-level sessions stay unmarked, their ends included.
+            for id in ["root", "continued"] {
+                assert_eq!(
+                    markers(id, "session-end"),
+                    [serde_json::Value::Null],
+                    "{id}: {run}"
+                );
+                assert!(
+                    hooks
+                        .iter()
+                        .filter(|hook| hook["sessionID"] == id)
+                        .all(|hook| hook["agent_id"].is_null()),
+                    "{id}: {run}"
+                );
+            }
         }
     }
 
