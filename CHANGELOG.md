@@ -11,6 +11,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved `title:` and `body:` filters inside parenthesized CJK searches,
+  so grouped queries no longer include matches from other columns (#PR).
+
 ## [3.2.10] - 2026-10-29
 
 ### Changed
