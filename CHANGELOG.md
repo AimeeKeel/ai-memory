@@ -15,7 +15,7 @@ version in [`docs/changelog/`](docs/changelog/):
 
 - Honored `base_path` from `config.toml` when mounting the HTTP server, so
   thin clients and the web UI use the same prefix. Explicit flag and environment
-  overrides, including an empty value to serve at the root, kept their precedence (#PR).
+  overrides, including an empty value to serve at the root, kept their precedence (#1837).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
