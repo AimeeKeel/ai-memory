@@ -76,6 +76,9 @@ version in [`docs/changelog/`](docs/changelog/):
   now share the page writer's lock through conformance, file replacement and
   indexing so a concurrent write to that same path cannot leave disk and
   SQLite disagreeing (#1807).
+- Kept concurrent page edits current during opt-in cold-cluster dedup and dream
+  merges. Each write batch now skips if a selected source version changed,
+  preserving the newer body, tier and pin along with unchanged peers (#1808).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and

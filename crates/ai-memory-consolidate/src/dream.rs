@@ -24,7 +24,9 @@
 //!   consolidator's dry run.
 //! - **Gated apply.** Each survivor rewrite runs `preflight_admission`
 //!   (`AdmissionOp::Consolidate`) before the LLM and writes through
-//!   `Wiki::apply_batch` (single-writer actor, invariant #2).
+//!   `Wiki::apply_batch_if` (single-writer actor, invariant #2). If any source
+//!   changed since selection, the whole cluster is skipped, preserving newer
+//!   edits and leaving the other members untouched.
 //! - **JSON-schema structured output only** (invariant #7): [`DreamMergedPage`].
 //! - **Bounded + cancellable** (invariant #5 spirit): at most
 //!   [`DreamConfig::max_clusters_per_run`] clusters per run, and a cheap
@@ -48,8 +50,10 @@ use ai_memory_llm::{
     ChatMessage, ChatRequest, LlmOperationId, LlmProvider, LlmWorkload, Role,
     complete_structured_with_operation_id,
 };
-use ai_memory_store::{DecayParams, ReaderPool};
-use ai_memory_wiki::{AdmissionContext, AdmissionOp, Wiki, WritePageRequest};
+use ai_memory_store::{DecayParams, PagePrecondition, ReaderPool};
+use ai_memory_wiki::{
+    AdmissionContext, AdmissionOp, ConditionalBatchWrite, Wiki, WritePageRequest,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -566,7 +570,7 @@ enum MergeOutcome {
     Skipped,
 }
 
-/// Merge one selected cluster: preflight admission → LLM rewrite → `apply_batch`
+/// Merge one selected cluster: preflight admission → LLM rewrite → `apply_batch_if`
 /// (survivor rewrite + loser merge-note supersessions). Any failure at any step
 /// skips the cluster without touching a source.
 async fn merge_one_cluster(
@@ -774,16 +778,33 @@ async fn merge_one_cluster(
     // Gated apply, part 2: one batched write through the single-writer actor
     // (invariant #2). Survivor is request 0.
     let superseded = plan.losers.len();
-    match wiki.apply_batch(requests).await {
-        Ok(new_ids) => match new_ids.first().copied() {
+    // Selection predates the LLM call. Compare every source version while the
+    // wiki holds the page locks, so a fresh correction to either the survivor
+    // or a loser refuses the whole cluster, including its unchanged peers.
+    let source_ids = std::iter::once(survivor.id).chain(plan.losers.iter().map(|loser| loser.id));
+    let conditional = requests
+        .into_iter()
+        .zip(source_ids.map(PagePrecondition::Latest))
+        .collect();
+    match wiki.apply_batch_if(conditional).await {
+        Ok(ConditionalBatchWrite::Written(new_ids)) => match new_ids.first().copied() {
             Some(new_survivor_id) => MergeOutcome::Applied {
                 new_survivor_id,
                 superseded,
             },
             None => MergeOutcome::Skipped,
         },
+        Ok(ConditionalBatchWrite::Mismatch { index, current }) => {
+            tracing::debug!(
+                path = %survivor.path.as_str(),
+                index,
+                ?current,
+                "dream pass: source changed during merge; skipping cluster"
+            );
+            MergeOutcome::Skipped
+        }
         Err(error) => {
-            tracing::warn!(path = %survivor.path.as_str(), %error, "dream pass: apply_batch failed; skipping cluster (retried next run)");
+            tracing::warn!(path = %survivor.path.as_str(), %error, "dream pass: apply_batch_if failed; skipping cluster (retried next run)");
             MergeOutcome::Skipped
         }
     }
