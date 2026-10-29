@@ -5320,6 +5320,13 @@ export const AiMemoryHooks: Plugin = async ({{ directory }}) => {{
             : {{}}),
         }});
       }}
+      if (event?.type === "session.updated") {{
+        // A child the task tool resumes by `task_id` in a later process has no
+        // `session.created` here, but every prompt publishes `session.updated`
+        // before its model call (OpenCode `session/prompt.ts`).
+        const info = properties.info ?? {{}};
+        rememberParent(properties.sessionID ?? info.id, info.parentID);
+      }}
       if (event?.type === "session.idle") {{
         const id = properties.sessionID;
         startSession(id, cwdFor(id, directory));
