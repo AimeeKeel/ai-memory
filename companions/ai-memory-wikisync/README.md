@@ -95,6 +95,14 @@ each successful write batch): per page, the SHA-256 of the bytes last
 written plus the server `ETag` and version id observed at that write.
 Nothing else is stored: no tokens and no server credentials.
 
+Mutating `export --apply` and `sync --apply` runs take an exclusive OS lock
+for the destination before loading this state and hold it through planning,
+writes, and the final state save. A second mutating run fails promptly with a
+busy-destination error; a crash releases the lock automatically. Read-only
+`plan`, dry-run export/sync, and `sync --check` do not create or take the lock,
+so they remain strictly non-mutating; when run alongside an apply, their report
+may describe the state before that apply finishes.
+
 The state is per clone. The state directory carries a `.gitignore` of `*`,
 so committing the destination never commits the state: two clones that
 shared one would conflict on every merge and trust each other's baselines.
