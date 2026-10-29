@@ -11,6 +11,10 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed false command timeouts in the macOS menu app when CLI output or diagnostics exceeded a pipe buffer. (#PR)
+
 ## [3.2.10] - 2026-10-29
 
 ### Changed
