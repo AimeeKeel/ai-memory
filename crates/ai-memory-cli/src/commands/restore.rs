@@ -206,6 +206,11 @@ async fn stage_then_swap(
     let mut archive = tar::Archive::new(decoder);
     unpack_checked_archive(&mut archive, staging)
         .with_context(|| format!("extracting {} into {}", from.display(), staging.display()))?;
+    // tar stops at its zero header, before the gzip decoder necessarily reads
+    // the checksum/size trailer. Finish the member before trusting its files.
+    // https://docs.rs/tar/latest/tar/struct.Archive.html#method.set_ignore_zeros
+    std::io::copy(&mut archive.into_inner(), &mut std::io::sink())
+        .with_context(|| format!("verifying gzip stream in {}", from.display()))?;
     info!(from = %from.display(), into = %staging.display(), "tarball extracted into staging");
 
     let placement = if !staging.join(CONFIG_FILE).is_file() {
@@ -882,6 +887,53 @@ mod tests {
 
         assert!(
             format!("{err:#}").contains("extracting"),
+            "unexpected error: {err:#}"
+        );
+        assert_live_data_untouched(data.path());
+    }
+
+    #[tokio::test]
+    async fn restore_force_keeps_live_data_when_the_gzip_checksum_is_invalid() {
+        let data = tempfile::TempDir::new().unwrap();
+        seed_live_data(data.path());
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut bytes = good_archive();
+        // All tar entries are readable, but the gzip trailer's CRC32 is wrong.
+        let checksum_offset = bytes.len() - 8;
+        bytes[checksum_offset] ^= 0x80;
+        let from = write_tarball(scratch.path(), "bad-crc.tar.gz", &bytes);
+
+        let err = restore_data_dir(data.path(), &from, true, false)
+            .await
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("verifying gzip stream"),
+            "unexpected error: {err:#}"
+        );
+        assert_live_data_untouched(data.path());
+    }
+
+    #[tokio::test]
+    async fn restore_force_keeps_live_data_when_the_gzip_trailer_is_missing() {
+        let data = tempfile::TempDir::new().unwrap();
+        seed_live_data(data.path());
+        let scratch = tempfile::TempDir::new().unwrap();
+        let bytes = good_archive();
+        // Keep the compressed tar, including its end marker, but remove the
+        // gzip checksum and original-size trailer.
+        let from = write_tarball(
+            scratch.path(),
+            "no-trailer.tar.gz",
+            &bytes[..bytes.len() - 8],
+        );
+
+        let err = restore_data_dir(data.path(), &from, true, false)
+            .await
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("verifying gzip stream"),
             "unexpected error: {err:#}"
         );
         assert_live_data_untouched(data.path());

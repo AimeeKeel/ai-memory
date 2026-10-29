@@ -1221,7 +1221,9 @@ Order of operations:
 
 1. Check the data dir is empty (or the user passed `--force`).
 2. Extract the tarball into a staging directory beside the live data
-   (`<data_dir>/.restore-staging-<stamp>/`), validating every entry.
+   (`<data_dir>/.restore-staging-<stamp>/`), validating every entry and
+   reading the gzip stream through its checksum and size trailer. A missing
+   or invalid trailer fails here even when every tar entry was readable.
 3. Require an existing `db/memory.sqlite` snapshot with applied ai-memory
    migration history, then open the staged store so pending migrations run
    and the SQLite snapshot is checked, still without touching the live data.
