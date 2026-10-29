@@ -13,6 +13,10 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Serialized mutating wikisync runs per destination across their full
+  read/plan/write lifecycle, so overlapping exports no longer race on the
+  shared state temporary file or apply plans from the same baseline (#1847).
+
 - Bounded the wiki append-versus-commit concurrency regression so filesystem
   scheduling cannot turn its background writers into an unbounded fsync
   workload on macOS, while every round still contends with a commit (#1850).
