@@ -1031,6 +1031,8 @@ What happens:
 4. Server reads the exact markdown blob for that project/page from git at
    `--from`, parses it, writes it back to the live wiki tree, and upserts a new
    latest page row in SQLite so search, links, and `/web` agree with disk.
+   It shares the same-path lock with writes and watcher reindexing, including
+   the read of current frontmatter used to preserve `generated.at`.
 5. Server writes a post-restore checkpoint (`restore-page ...`) when the live
    tree changed.
 
@@ -1042,6 +1044,10 @@ Failure modes:
   pre-restore checkpoint remains as an audit breadcrumb.
 - **Historical markdown is malformed or non-UTF-8** → 500, live file is not
   replaced.
+- **SQLite rejects the restored version** (for example, the historical path
+  collides with a current page under case folding) → 500, the previous file is
+  restored or a newly created file is removed. If that rollback also fails,
+  the error explicitly reports an inconsistent state requiring repair.
 
 What it does not recover:
 

@@ -71,6 +71,11 @@ version in [`docs/changelog/`](docs/changelog/):
 - Kept separate pre-migration archives when installations share a backup
   destination and start in the same second, instead of overwriting an
   existing installation's snapshot (#1806).
+- Restored the previous wiki file when `restore-page` could not commit its
+  SQLite update, including a rejected case-colliding historical path. Restores
+  now share the page writer's lock through conformance, file replacement and
+  indexing so a concurrent write to that same path cannot leave disk and
+  SQLite disagreeing (#1807).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
