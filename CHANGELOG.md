@@ -11,6 +11,18 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenCode 1.x `task` subagents no longer claim the pending handoff or leave
+  one behind. OpenCode runs each subagent in a child session, which the
+  generated plugin took for a top-level one: the subagent's first model call
+  claimed the newest open handoff in the checkout, and the end the plugin
+  posts for it when OpenCode exits carried no subagent marker, so the user's
+  next session got the subagent's handoff instead of the top-level session's.
+  The plugin now records a child session's parent from OpenCode's session
+  events, skips the claim for it and marks its end on every close path, a
+  subagent the task tool resumes by `task_id` included (#1842).
+
 ## [3.2.10] - 2026-10-29
 
 ### Changed
