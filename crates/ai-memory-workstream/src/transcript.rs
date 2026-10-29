@@ -5624,6 +5624,45 @@ fn parse_opencode2(
                 }
             }
         }
+        "compaction" => {
+            let status = data
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("completed");
+            let summary = data.get("summary").and_then(Value::as_str).unwrap_or("");
+            let body = match status {
+                "completed" => summary.to_owned(),
+                "failed" if !summary.trim().is_empty() => summary.to_owned(),
+                "failed" => match data.get("error") {
+                    Some(Value::String(text)) => text.clone(),
+                    Some(obj) => obj
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned(),
+                    None => String::new(),
+                },
+                _ => String::new(),
+            };
+            if body.trim().is_empty() {
+                if status != "completed" {
+                    losses.push(format!("OpenCode 2 compaction ended with status {status}"));
+                }
+            } else {
+                push_event(
+                    events,
+                    AgentKind::OpenCode,
+                    session,
+                    id,
+                    0,
+                    WorkstreamEventKind::Compaction,
+                    Some("assistant"),
+                    &body,
+                    None,
+                    json!({"status": status}),
+                );
+            }
+        }
         // System catalog notices and similar non-conversation records.
         _ => {}
     }
@@ -9069,6 +9108,158 @@ mod tests {
                 .count(),
             1,
             "malformed error should stay a loss: {:?}",
+            transcript.losses
+        );
+        let replay = export_opencode2(home.path(), None, "s2", None).unwrap();
+        assert_eq!(
+            transcript
+                .events
+                .iter()
+                .map(|event| &event.event_id)
+                .collect::<Vec<_>>(),
+            replay
+                .events
+                .iter()
+                .map(|event| &event.event_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            export_opencode2(home.path(), None, "s2", transcript.source_cursor.as_deref())
+                .unwrap()
+                .events
+                .is_empty()
+        );
+        assert_eq!(fs::read(&db).unwrap(), before);
+    }
+
+    #[test]
+    fn opencode2_compaction_summaries_are_imported() {
+        let home = tempfile::tempdir().unwrap();
+        let db = opencode_db(home.path(), None);
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session_v2(id TEXT PRIMARY KEY, directory TEXT NOT NULL, \
+                                   time_updated INTEGER NOT NULL);\
+                 CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT, \
+                                   time_updated INTEGER, data TEXT);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO session_v2 VALUES ('s2', ?1, 10)",
+                [home.path().join("repo").to_string_lossy().to_string()],
+            )
+            .unwrap();
+        let rows = [
+            (
+                "done",
+                1,
+                json!({
+                    "status": "completed",
+                    "reason": "auto",
+                    "summary": "compacted four turns"
+                }),
+            ),
+            (
+                "running",
+                2,
+                json!({
+                    "status": "running",
+                    "reason": "manual",
+                    "summary": "compacting now"
+                }),
+            ),
+            (
+                "failed-object",
+                3,
+                json!({
+                    "status": "failed",
+                    "reason": "auto",
+                    "error": {"type": "ProviderError", "message": "rate limited"}
+                }),
+            ),
+            (
+                "failed-string",
+                4,
+                json!({
+                    "status": "failed",
+                    "reason": "auto",
+                    "error": "provider timeout"
+                }),
+            ),
+            (
+                "failed-empty",
+                5,
+                json!({
+                    "status": "failed",
+                    "reason": "auto",
+                    "error": {"type": "ProviderError"}
+                }),
+            ),
+            (
+                "empty-completed",
+                6,
+                json!({
+                    "status": "completed",
+                    "reason": "auto",
+                    "summary": "   "
+                }),
+            ),
+        ];
+        for (id, updated, data) in rows {
+            connection
+                .execute(
+                    "INSERT INTO session_message VALUES (?1, 's2', 'compaction', ?2, ?3)",
+                    params![id, updated, data.to_string()],
+                )
+                .unwrap();
+        }
+        let before = fs::read(&db).unwrap();
+        let transcript = export_opencode2(home.path(), None, "s2", None).unwrap();
+        let events: Vec<_> = transcript
+            .events
+            .iter()
+            .filter(|event| event.kind == WorkstreamEventKind::Compaction)
+            .collect();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.content.as_str())
+                .collect::<Vec<_>>(),
+            ["compacted four turns", "rate limited", "provider timeout"]
+        );
+        assert_eq!(events[0].metadata, json!({"status": "completed"}));
+        assert_eq!(events[1].metadata, json!({"status": "failed"}));
+        assert_eq!(events[1].source_record_id.as_deref(), Some("failed-object"));
+        assert_eq!(events[2].metadata, json!({"status": "failed"}));
+        for status in ["running", "failed"] {
+            assert!(
+                transcript
+                    .losses
+                    .iter()
+                    .any(|loss| loss.contains(&format!("compaction ended with status {status}"))),
+                "missing loss for {status}: {:?}",
+                transcript.losses
+            );
+        }
+        assert_eq!(
+            transcript
+                .losses
+                .iter()
+                .filter(|loss| loss.contains("compaction ended with status failed"))
+                .count(),
+            1,
+            "empty failed compaction should stay a loss: {:?}",
+            transcript.losses
+        );
+        assert!(
+            !transcript
+                .losses
+                .iter()
+                .any(|loss| loss.contains("status completed")),
+            "empty completed compaction is omitted, not a loss: {:?}",
             transcript.losses
         );
         let replay = export_opencode2(home.path(), None, "s2", None).unwrap();

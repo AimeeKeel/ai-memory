@@ -570,6 +570,10 @@ OpenCode 2 tool failures contribute their visible error text as a result, with
 `status: "error"` and `is_error: true` in the ledger metadata. Successful calls
 keep their ordinary `state.content` text parts.
 
+OpenCode 2 compaction messages import their `summary` as a compaction event
+(and, when a failed compaction has no summary, `error.message`). The V1 adapter
+already imported compaction parts the same way.
+
 Search and tail also return optional `source_record_id` and `metadata` fields.
 The text CLI prints the source record and correlation metadata as escaped JSON;
 `--json` preserves these fields for consumers. Older server responses without
