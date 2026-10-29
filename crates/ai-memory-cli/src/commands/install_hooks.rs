@@ -14451,6 +14451,19 @@ process.exit(0);
             extension
         }
 
+        /// The rendered OpenCode V1 plugin with the same wider handoff deadline
+        /// as [`extension_under_test`].
+        fn opencode_plugin_under_test() -> String {
+            let plugin = build_opencode_plugin(PLACEHOLDER_SERVER, None, None, "denylist")
+                .replacen(
+                    "signal: timeoutSignal(1000)",
+                    "signal: timeoutSignal(5000)",
+                    1,
+                );
+            assert!(plugin.contains("signal: timeoutSignal(5000)"));
+            plugin
+        }
+
         /// Runs `harness` against `extension` in Node with `tmp` as its home
         /// and returns the JSON line the harness prints last.
         fn run_harness(
@@ -14675,6 +14688,141 @@ process.exit(0);
             );
             assert!(
                 session("legacy").iter().all(|(_, marker)| marker.is_null()),
+                "{run}"
+            );
+        }
+
+        /// Drives the rendered OpenCode V1 plugin in the order OpenCode 1.x
+        /// calls it: a top-level session, then a `task` subagent that
+        /// `tool/task.ts` runs in a child session (a prompt as
+        /// `session/prompt.ts` runs it, a tool call, a second model call), then
+        /// the `dispose` that `cli/bootstrap.ts` runs at exit. Records every
+        /// `/handoff` claim by session id, what each session's first model call
+        /// was given, and every `/hook` event with the `agent_id` it carried.
+        const OPENCODE_SUBAGENT_HARNESS: &str = r#"import { createServer } from "node:http";
+import { readFileSync, writeFileSync } from "node:fs";
+
+const project = process.argv[2]!;
+const claims: string[] = [];
+const hooks: { event: string; sessionID: unknown; agent_id: unknown }[] = [];
+const server = createServer((req, res) => {
+  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  let body = "";
+  req.setEncoding("utf8");
+  req.on("data", (chunk) => { body += chunk; });
+  req.on("end", () => {
+    if (url.pathname === "/handoff") {
+      claims.push(url.searchParams.get("session_id") ?? "<none>");
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("PENDING-HANDOFF");
+      return;
+    }
+    if (url.pathname === "/hook") {
+      const payload = JSON.parse(body);
+      hooks.push({
+        event: url.searchParams.get("event") ?? "",
+        sessionID: payload.sessionID ?? null,
+        agent_id: payload.agent_id ?? null,
+      });
+    }
+    res.writeHead(204);
+    res.end();
+  });
+});
+await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+const port = (server.address() as any).port;
+writeFileSync(
+  "./ext.ts",
+  readFileSync("./ext.template.ts", "utf8").replace("http://127.0.0.1:65535", `http://127.0.0.1:${port}`),
+);
+const { default: AiMemoryHooks } = await import("./ext.ts");
+const plugin = await AiMemoryHooks({ directory: project });
+const info = (id: string, parentID?: string) => ({ id, directory: project, ...(parentID ? { parentID } : {}) });
+const created = (id: string, parentID?: string) =>
+  plugin.event({ event: { type: "session.created", properties: { sessionID: id, info: info(id, parentID) } } });
+const delivered: Record<string, unknown> = {};
+async function modelCall(id: string) {
+  const output = { system: [] as string[] };
+  await plugin["experimental.chat.system.transform"]({ sessionID: id }, output);
+  if (!(id in delivered)) delivered[id] = output.system.join("\n") || null;
+}
+// A prompt: the user message, the session touch that publishes
+// `session.updated`, then the model call.
+async function prompt(id: string, parentID?: string) {
+  await plugin["chat.message"]({ sessionID: id }, { parts: [{ type: "text", text: "continue" }] });
+  await plugin.event({ event: { type: "session.updated", properties: { sessionID: id, info: info(id, parentID) } } });
+  await modelCall(id);
+}
+await created("root");
+await prompt("root");
+await created("task", "root");
+await prompt("task", "root");
+const read = { tool: "read", sessionID: "task", callID: "call-1" };
+await plugin["tool.execute.before"](read, { args: { filePath: "README.md" } });
+await plugin["tool.execute.after"]({ ...read, args: { filePath: "README.md" } }, { title: "README.md", output: "ok", metadata: {} });
+await modelCall("task");
+await plugin.event({ event: { type: "session.idle", properties: { sessionID: "task" } } });
+await plugin.dispose();
+// The plugin delivers in order; wait for every session's end.
+const sessions = ["root", "task"];
+const ended = (id: string) => hooks.some((hook) => hook.event === "session-end" && hook.sessionID === id);
+const deadline = Date.now() + 20000;
+while (!sessions.every(ended)) {
+  if (Date.now() > deadline) break;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+console.log(JSON.stringify({ claims, delivered, hooks }));
+process.exit(0);
+"#;
+
+        #[test]
+        fn opencode_plugin_keeps_task_subagents_off_the_baton() {
+            if !node_strips_types() {
+                eprintln!("skipping: node lacks --experimental-strip-types");
+                return;
+            }
+            let tmp = TempDir::new().unwrap();
+            let project = tmp.path().join("project");
+            fs::create_dir(&project).unwrap();
+            let run = run_harness(
+                &tmp,
+                opencode_plugin_under_test(),
+                OPENCODE_SUBAGENT_HARNESS,
+                &project,
+            );
+            // Only the top-level session claims. No model call of the
+            // subagent asks for the baton or is given one.
+            assert_eq!(run["claims"], serde_json::json!(["root"]), "{run}");
+            assert_eq!(run["delivered"]["root"], "PENDING-HANDOFF", "{run}");
+            assert_eq!(run["delivered"]["task"], serde_json::Value::Null, "{run}");
+            let hooks = run["hooks"].as_array().unwrap();
+            let markers = |id: &str, event: &str| -> Vec<serde_json::Value> {
+                hooks
+                    .iter()
+                    .filter(|hook| hook["sessionID"] == id && hook["event"] == event)
+                    .map(|hook| hook["agent_id"].clone())
+                    .collect()
+            };
+            // The subagent's end, which `dispose` posts at exit, names its
+            // parent, so the server closes it without a baton. Its prompt and
+            // tool calls are still captured.
+            let parent = [serde_json::json!("root")];
+            assert_eq!(markers("task", "session-start"), parent, "{run}");
+            assert_eq!(markers("task", "session-end"), parent, "{run}");
+            for event in ["user-prompt", "pre-tool-use", "post-tool-use", "stop"] {
+                assert!(!markers("task", event).is_empty(), "{event}: {run}");
+            }
+            // The top-level session stays unmarked, its end included.
+            assert_eq!(
+                markers("root", "session-end"),
+                [serde_json::Value::Null],
+                "{run}"
+            );
+            assert!(
+                hooks
+                    .iter()
+                    .filter(|hook| hook["sessionID"] == "root")
+                    .all(|hook| hook["agent_id"].is_null()),
                 "{run}"
             );
         }
