@@ -8,9 +8,9 @@ use std::collections::{BTreeSet, HashSet};
 
 use ai_memory_core::{
     AgentKind, EntityId, HandoffAcceptance, HandoffId, IdentityKey, LinkTarget, MessageClaim,
-    MessageId, NewAgentMessage, NewHandoff, NewObservation, NewPage, NewSession, ObservationId,
-    ObservationKind, OwnerFilter, PageEvidence, PageId, PagePath, ProjectId, SessionId,
-    WorkspaceId,
+    MessageId, NewAgentMessage, NewHandoff, NewObservation, NewPage, NewSession, NewSessionUsage,
+    ObservationId, ObservationKind, OwnerFilter, PageEvidence, PageId, PagePath, ProjectId,
+    SessionId, WorkspaceId,
 };
 
 /// Summary returned by [`reorg_sessions`] and exposed via
@@ -2790,6 +2790,149 @@ fn end_session_row(
          WHERE id = ?3",
         params![now, page_blob, session_id.as_bytes()],
     )?;
+    Ok(())
+}
+
+/// Close every session across every scope that has been open with no
+/// activity since before `cutoff_us` (safety net).
+///
+/// This is the general case a `SessionStart`-triggered backfill never
+/// reaches — a session that is never continued anywhere, in any scope, so
+/// nothing ever asks the store about it again. It exists only to stop
+/// `open_session_count` leaking forever; deliberately narrower than a
+/// normal session end:
+/// - No usage is attached (the server has no access to a client's
+///   transcript file outside a live hook request).
+/// - No consolidation is enqueued and `summary_page_id` stays `NULL` —
+///   running LLM consolidation inside a blind time-based sweep against a
+///   session that might still be slow-but-alive is a bigger risk than this
+///   sweep should take (invariant #16). The observations remain durable and
+///   reachable through the bounded raw-observation retrieval fallback.
+///
+/// One batched `UPDATE`, no per-scope iteration (invariant #2). Returns the
+/// number of sessions closed.
+///
+/// # Errors
+/// Propagates any SQL error.
+pub fn close_abandoned_sessions(conn: &Connection, cutoff_us: i64) -> StoreResult<u64> {
+    let changed = conn.execute(
+        "UPDATE sessions \
+         SET ended_at = COALESCE( \
+                 (SELECT MAX(o.created_at) FROM observations o WHERE o.session_id = sessions.id), \
+                 started_at), \
+             ended_observation_count = ( \
+                 SELECT COUNT(*) FROM observations WHERE session_id = sessions.id \
+             ) \
+         WHERE ended_at IS NULL \
+           AND COALESCE( \
+                 (SELECT MAX(o.created_at) FROM observations o WHERE o.session_id = sessions.id), \
+                 started_at) < ?1",
+        params![cutoff_us],
+    )?;
+    Ok(u64::try_from(changed).unwrap_or(0))
+}
+
+/// Record a session's reported cumulative token usage (token-cost
+/// visibility). The reported values are the harness's own running totals
+/// for the whole session, not deltas, so the upsert keeps `MAX(existing,
+/// reported)` per column: a replayed or out-of-order hook delivery can
+/// therefore never lower a total. `model` only overwrites a stored value
+/// when the new report actually names one, so a later report that could
+/// not determine the model does not blank out an earlier one.
+pub fn upsert_session_usage(conn: &Connection, usage: &NewSessionUsage) -> StoreResult<()> {
+    let now = Timestamp::now().as_microsecond();
+    conn.execute(
+        "INSERT INTO session_usage \
+             (session_id, input_tokens, output_tokens, cache_write_tokens, \
+              cache_read_tokens, model, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+         ON CONFLICT(session_id) DO UPDATE SET \
+             input_tokens = MAX(input_tokens, excluded.input_tokens), \
+             output_tokens = MAX(output_tokens, excluded.output_tokens), \
+             cache_write_tokens = MAX(cache_write_tokens, excluded.cache_write_tokens), \
+             cache_read_tokens = MAX(cache_read_tokens, excluded.cache_read_tokens), \
+             model = COALESCE(excluded.model, model), \
+             updated_at = excluded.updated_at",
+        params![
+            usage.session_id.as_bytes(),
+            i64::try_from(usage.input_tokens).unwrap_or(i64::MAX),
+            i64::try_from(usage.output_tokens).unwrap_or(i64::MAX),
+            i64::try_from(usage.cache_write_tokens).unwrap_or(i64::MAX),
+            i64::try_from(usage.cache_read_tokens).unwrap_or(i64::MAX),
+            usage.model,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Persist one bounded batch and its derived session totals in one transaction.
+pub fn upsert_token_calls(
+    conn: &mut Connection,
+    session_id: SessionId,
+    calls: &[ai_memory_core::TokenCall],
+) -> StoreResult<()> {
+    let tx = conn.transaction()?;
+    let now = Timestamp::now().as_microsecond();
+    for call in calls.iter().take(256) {
+        let context = call.context.as_ref();
+        let response_at = context
+            .and_then(|c| c.recorded_at.as_deref())
+            .and_then(|s| s.parse::<Timestamp>().ok())
+            .map(|t| t.as_microsecond());
+        tx.execute(
+            "INSERT INTO token_calls \
+                 (session_id, call_id, model, input_tokens, output_tokens, \
+                  cache_write_tokens, cache_read_tokens, observed_at, turn_id, native_response_id, response_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+             ON CONFLICT(session_id, call_id) DO UPDATE SET \
+                 model = COALESCE(excluded.model, model), \
+                 input_tokens = MAX(input_tokens, excluded.input_tokens), \
+                 output_tokens = MAX(output_tokens, excluded.output_tokens), \
+                 cache_write_tokens = MAX(cache_write_tokens, excluded.cache_write_tokens), \
+                 cache_read_tokens = MAX(cache_read_tokens, excluded.cache_read_tokens), \
+                 turn_id = COALESCE(turn_id, excluded.turn_id), \
+                 native_response_id = COALESCE(native_response_id, excluded.native_response_id), \
+                 response_at = COALESCE(response_at, excluded.response_at)",
+            params![
+                session_id.as_bytes(),
+                call.call_id,
+                call.model,
+                call.input_tokens.min(1_000_000_000) as i64,
+                call.output_tokens.min(1_000_000_000) as i64,
+                call.cache_write_tokens.min(1_000_000_000) as i64,
+                call.cache_read_tokens.min(1_000_000_000) as i64,
+                now,
+                context.and_then(|c| c.turn_id.as_deref()),
+                context.and_then(|c| c.response_id.as_deref()),
+                response_at,
+            ],
+        )?;
+        if let Some(context) = context {
+            for tool in context.tools.iter().take(16) {
+                tx.execute("INSERT INTO token_call_tools (session_id,call_id,tool_id,tool_name,relation,is_error) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(session_id,call_id,tool_id,relation) DO UPDATE SET tool_name=excluded.tool_name, is_error=CASE WHEN is_error=1 OR excluded.is_error=1 THEN 1 ELSE COALESCE(excluded.is_error,is_error) END",
+                    params![session_id.as_bytes(),call.call_id,tool.id,tool.name,tool.relation.as_str(),tool.is_error])?;
+            }
+        }
+    }
+    let usage = tx.query_row(
+        "SELECT SUM(input_tokens), SUM(output_tokens), \
+                SUM(cache_write_tokens), SUM(cache_read_tokens) \
+         FROM token_calls WHERE session_id = ?1",
+        params![session_id.as_bytes()],
+        |r| {
+            Ok(NewSessionUsage {
+                session_id,
+                input_tokens: r.get::<_, Option<u64>>(0)?.unwrap_or(0),
+                output_tokens: r.get::<_, Option<u64>>(1)?.unwrap_or(0),
+                cache_write_tokens: r.get::<_, Option<u64>>(2)?.unwrap_or(0),
+                cache_read_tokens: r.get::<_, Option<u64>>(3)?.unwrap_or(0),
+                model: calls.iter().take(256).find_map(|c| c.model.clone()),
+            })
+        },
+    )?;
+    upsert_session_usage(&tx, &usage)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -5641,6 +5784,9 @@ pub(crate) fn row_to_agent_message(
             id: MessageId::from_slice(&id_bytes)?,
             to_workspace_id: WorkspaceId::from_slice(&to_ws)?,
             to_project_id: ProjectId::from_slice(&to_pj)?,
+            to_agent: row
+                .get::<_, Option<String>>(14)?
+                .map(|s| AgentKind::from_wire(&s)),
             origin: MessageOrigin {
                 from_workspace_id: WorkspaceId::from_slice(&from_ws)?,
                 from_project_id: ProjectId::from_slice(&from_pj)?,
@@ -5676,7 +5822,7 @@ pub(crate) fn row_to_agent_message(
 /// The stable column list backing [`row_to_agent_message`].
 pub(crate) const MESSAGE_COLUMNS: &str = "id, from_workspace_id, from_project_id, from_agent, \
      from_owner_user, to_workspace_id, to_project_id, subject, body, state, created_at, claimed_at, \
-     nature, evidence";
+     nature, evidence, to_agent";
 
 /// Send a message into a recipient project's inbox.
 ///
@@ -5721,8 +5867,8 @@ pub fn insert_message(conn: &mut Connection, m: &NewAgentMessage) -> StoreResult
         "INSERT INTO agent_messages ( \
              id, from_workspace_id, from_project_id, from_agent, from_session_id, \
              from_owner_user, to_workspace_id, to_project_id, subject, body, state, created_at, \
-             nature, evidence \
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?12, ?13)",
+             nature, evidence, to_agent \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?11, ?12, ?13, ?14)",
         params![
             id.as_bytes(),
             m.from_workspace_id.as_bytes(),
@@ -5737,6 +5883,7 @@ pub fn insert_message(conn: &mut Connection, m: &NewAgentMessage) -> StoreResult
             now,
             m.nature.as_str(),
             evidence,
+            m.to_agent.map(|a| a.as_str()),
         ],
     )?;
     // Audit records the lifecycle event under the recipient scope (the crossing
@@ -5783,8 +5930,13 @@ pub(crate) fn pop_message_in_transaction(
             .query_row(
                 "SELECT id FROM agent_messages \
                  WHERE to_workspace_id = ?1 AND to_project_id = ?2 AND state = 'pending' \
+                   AND (to_agent IS NULL OR to_agent = ?3) \
                  ORDER BY created_at ASC LIMIT 1",
-                params![claim.workspace_id.as_bytes(), claim.project_id.as_bytes()],
+                params![
+                    claim.workspace_id.as_bytes(),
+                    claim.project_id.as_bytes(),
+                    claim.claiming_agent.as_str()
+                ],
                 |row| row.get::<_, Vec<u8>>(0),
             )
             .optional()?
@@ -5799,11 +5951,13 @@ pub(crate) fn pop_message_in_transaction(
     let exists: bool = tx
         .query_row(
             "SELECT 1 FROM agent_messages \
-             WHERE id = ?1 AND to_workspace_id = ?2 AND to_project_id = ?3 AND state = 'pending'",
+             WHERE id = ?1 AND to_workspace_id = ?2 AND to_project_id = ?3 AND state = 'pending' \
+               AND (to_agent IS NULL OR to_agent = ?4)",
             params![
                 target.as_bytes(),
                 claim.workspace_id.as_bytes(),
-                claim.project_id.as_bytes()
+                claim.project_id.as_bytes(),
+                claim.claiming_agent.as_str(),
             ],
             |_| Ok(true),
         )
@@ -5819,7 +5973,8 @@ pub(crate) fn pop_message_in_transaction(
     let changed = tx.execute(
         "UPDATE agent_messages SET state = 'claimed', claimed_at = ?1, \
              claimed_by_session = ?2, claimed_by_agent = ?3, claimed_by_user = ?4 \
-         WHERE id = ?5 AND to_workspace_id = ?6 AND to_project_id = ?7 AND state = 'pending'",
+         WHERE id = ?5 AND to_workspace_id = ?6 AND to_project_id = ?7 AND state = 'pending' \
+           AND (to_agent IS NULL OR to_agent = ?3)",
         params![
             now,
             session,
@@ -5903,6 +6058,114 @@ pub fn cancel_messages(
     }
     tx.commit()?;
     Ok(changed as u64)
+}
+
+/// Take a pending message out of its recipient's queue so it can be edited.
+///
+/// `pending` becomes `editing` in one guarded `UPDATE` scoped to the recipient
+/// coordinate, so a message that another session already popped, a foreign
+/// project's message and an unknown id all change nothing and return `None`.
+/// While the row is `editing` no claim path can select it. The returned row is
+/// the content to edit.
+pub fn begin_message_edit(
+    conn: &mut Connection,
+    to_workspace_id: &WorkspaceId,
+    to_project_id: &ProjectId,
+    id: MessageId,
+) -> StoreResult<Option<ai_memory_core::AgentMessage>> {
+    let now = Timestamp::now().as_microsecond();
+    let tx = conn.transaction()?;
+    let changed = tx.execute(
+        "UPDATE agent_messages SET state = 'editing' \
+         WHERE id = ?1 AND to_workspace_id = ?2 AND to_project_id = ?3 \
+           AND state = 'pending'",
+        params![
+            id.as_bytes(),
+            to_workspace_id.as_bytes(),
+            to_project_id.as_bytes()
+        ],
+    )?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    let message = tx.query_row(
+        &format!("SELECT {MESSAGE_COLUMNS} FROM agent_messages WHERE id = ?1"),
+        params![id.as_bytes()],
+        row_to_agent_message,
+    )??;
+    audit(
+        &tx,
+        "edit_message_begin",
+        Some(to_workspace_id.as_bytes()),
+        Some(to_project_id.as_bytes()),
+        None,
+        None,
+        now,
+    )?;
+    tx.commit()?;
+    Ok(Some(message))
+}
+
+/// Put an `editing` message back in the queue, optionally with new text.
+///
+/// With `replacement` the subject and body are replaced (bounded like a new
+/// message) and `edited_at` is stamped; without it the message returns
+/// unchanged. The `UPDATE` only matches a row still in `editing` inside the
+/// recipient coordinate, so a message that was already released, collected or
+/// belongs to another project is left alone and `false` is returned. The
+/// message keeps its `created_at`, so it returns to its original place.
+pub fn finish_message_edit(
+    conn: &mut Connection,
+    to_workspace_id: &WorkspaceId,
+    to_project_id: &ProjectId,
+    id: MessageId,
+    replacement: Option<(Option<&str>, &str)>,
+) -> StoreResult<bool> {
+    let now = Timestamp::now().as_microsecond();
+    let tx = conn.transaction()?;
+    let changed = match replacement {
+        Some((subject, body)) => tx.execute(
+            "UPDATE agent_messages \
+             SET state = 'pending', subject = ?4, body = ?5, edited_at = ?6 \
+             WHERE id = ?1 AND to_workspace_id = ?2 AND to_project_id = ?3 \
+               AND state = 'editing'",
+            params![
+                id.as_bytes(),
+                to_workspace_id.as_bytes(),
+                to_project_id.as_bytes(),
+                subject.map(bound_message_field),
+                bound_message_field(body),
+                now,
+            ],
+        )?,
+        None => tx.execute(
+            "UPDATE agent_messages SET state = 'pending' \
+             WHERE id = ?1 AND to_workspace_id = ?2 AND to_project_id = ?3 \
+               AND state = 'editing'",
+            params![
+                id.as_bytes(),
+                to_workspace_id.as_bytes(),
+                to_project_id.as_bytes()
+            ],
+        )?,
+    };
+    if changed > 0 {
+        audit(
+            &tx,
+            if replacement.is_some() {
+                "edit_message_save"
+            } else {
+                "edit_message_release"
+            },
+            Some(to_workspace_id.as_bytes()),
+            Some(to_project_id.as_bytes()),
+            None,
+            None,
+            now,
+        )?;
+    }
+    tx.commit()?;
+    Ok(changed > 0)
 }
 
 fn observation_kind_as_str(kind: ObservationKind) -> &'static str {
@@ -9273,6 +9536,48 @@ pub(crate) mod tests {
             rename_workspace(&mut conn, &ws, "   ").unwrap_err(),
             StoreError::InvalidWorkspaceName(_)
         ));
+    }
+
+    #[test]
+    fn token_calls_are_atomic_idempotent_and_follow_session_deletion() {
+        let (_tmp, mut conn, ws, proj) = fresh_db();
+        let sid = SessionId::new();
+        begin_session(&mut conn, &hook_session(sid, ws, proj, None)).unwrap();
+        let mut call = ai_memory_core::TokenCall {
+            context: None,
+            call_id: "response-1".into(),
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_read_tokens: 20,
+            cache_write_tokens: 0,
+            model: Some("test-model".into()),
+        };
+        upsert_token_calls(&mut conn, sid, &[call.clone(), call.clone()]).unwrap();
+        call.output_tokens = 30;
+        upsert_token_calls(&mut conn, sid, &[call.clone()]).unwrap();
+        call.output_tokens = 5;
+        upsert_token_calls(&mut conn, sid, &[call.clone()]).unwrap();
+        let totals:(u64,u64,u64)=conn.query_row("SELECT input_tokens,output_tokens,(SELECT COUNT(*) FROM token_calls) FROM session_usage WHERE session_id=?1",params![sid.as_bytes()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(totals, (100, 30, 1));
+        assert!(upsert_token_calls(&mut conn, SessionId::new(), &[call]).is_err());
+        let rows: u64 = conn
+            .query_row("SELECT COUNT(*) FROM token_calls", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        purge_session(
+            &mut conn,
+            ws,
+            proj,
+            sid,
+            None,
+            Compaction::Skip,
+            PurgeMode::Commit,
+        )
+        .unwrap();
+        let rows: u64 = conn
+            .query_row("SELECT COUNT(*) FROM token_calls", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     fn fresh_db() -> (
@@ -17063,6 +17368,9 @@ pub(crate) mod tests {
                         to_project_id: to,
                         subject: Some("Retained message".into()),
                         body: "Keep the request and its history".into(),
+                        nature: ai_memory_core::MessageNature::Unknown,
+                        evidence: None,
+                        to_agent: None,
                     },
                 )
                 .unwrap();
@@ -19439,5 +19747,213 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(audit_row_for(&conn, "release_lifecycle_only_handoff").0, 1);
+    }
+
+    /// Token-cost visibility: the harness reports cumulative totals,
+    /// not deltas, so a later report must only ever raise a stored column,
+    /// never lower it — a replayed or out-of-order hook delivery is
+    /// therefore harmless. `model` only updates when the new report
+    /// actually names one.
+    #[test]
+    fn upsert_session_usage_keeps_the_max_per_column() {
+        let (_tmp, mut conn, ws, proj) = fresh_db();
+        let session = hook_session(SessionId::new(), ws, proj, None);
+        begin_session(&mut conn, &session).unwrap();
+
+        upsert_session_usage(
+            &conn,
+            &NewSessionUsage {
+                session_id: session.id,
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_write_tokens: 10,
+                cache_read_tokens: 5,
+                model: Some("claude-sonnet-5".into()),
+            },
+        )
+        .unwrap();
+
+        // A stale, smaller report (e.g. a retried older delivery) must not
+        // lower any column, and an absent model must not blank the stored one.
+        upsert_session_usage(
+            &conn,
+            &NewSessionUsage {
+                session_id: session.id,
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_write_tokens: 1,
+                cache_read_tokens: 0,
+                model: None,
+            },
+        )
+        .unwrap();
+
+        let (input, output, cache_write, cache_read, model): (i64, i64, i64, i64, String) = conn
+            .query_row(
+                "SELECT input_tokens, output_tokens, cache_write_tokens, cache_read_tokens, model \
+                 FROM session_usage WHERE session_id = ?1",
+                params![session.id.as_bytes()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!((input, output, cache_write, cache_read), (100, 50, 10, 5));
+        assert_eq!(model, "claude-sonnet-5");
+
+        // A genuinely larger later report raises every column and updates
+        // the model.
+        upsert_session_usage(
+            &conn,
+            &NewSessionUsage {
+                session_id: session.id,
+                input_tokens: 200,
+                output_tokens: 80,
+                cache_write_tokens: 20,
+                cache_read_tokens: 15,
+                model: Some("claude-opus-5-5".into()),
+            },
+        )
+        .unwrap();
+        let (input, model): (i64, String) = conn
+            .query_row(
+                "SELECT input_tokens, model FROM session_usage WHERE session_id = ?1",
+                params![session.id.as_bytes()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(input, 200);
+        assert_eq!(model, "claude-opus-5-5");
+    }
+
+    /// `session_usage` cascades with its session (V91), same as
+    /// `page_evidence` does with its page (V63) — usage never outlives the
+    /// session it measures.
+    #[test]
+    fn upsert_session_usage_cascades_on_session_purge() {
+        let (_tmp, mut conn, ws, proj) = fresh_db();
+        let session = hook_session(SessionId::new(), ws, proj, None);
+        begin_session(&mut conn, &session).unwrap();
+        upsert_session_usage(
+            &conn,
+            &NewSessionUsage {
+                session_id: session.id,
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
+                model: None,
+            },
+        )
+        .unwrap();
+
+        purge_session(
+            &mut conn,
+            ws,
+            proj,
+            session.id,
+            None,
+            Compaction::Skip,
+            PurgeMode::Commit,
+        )
+        .unwrap();
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_usage WHERE session_id = ?1",
+                params![session.id.as_bytes()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// Safety-net sweep: only a session quiet since before
+    /// the cutoff gets closed, an already-ended session is left untouched,
+    /// and no consolidation is ever implied (`summary_page_id` stays NULL).
+    #[test]
+    fn close_abandoned_sessions_only_closes_stale_open_sessions() {
+        let (_tmp, mut conn, ws, proj) = fresh_db();
+        let now = Timestamp::now().as_microsecond();
+        let one_day_us = 24 * 60 * 60 * 1_000_000;
+
+        let stale = hook_session(SessionId::new(), ws, proj, None);
+        begin_session(&mut conn, &stale).unwrap();
+        conn.execute(
+            "UPDATE sessions SET started_at = ?1 WHERE id = ?2",
+            params![now - 3 * one_day_us, stale.id.as_bytes()],
+        )
+        .unwrap();
+
+        let fresh = hook_session(SessionId::new(), ws, proj, None);
+        begin_session(&mut conn, &fresh).unwrap();
+        conn.execute(
+            "UPDATE sessions SET started_at = ?1 WHERE id = ?2",
+            params![now - one_day_us / 2, fresh.id.as_bytes()],
+        )
+        .unwrap();
+
+        let already_ended = hook_session(SessionId::new(), ws, proj, None);
+        begin_session(&mut conn, &already_ended).unwrap();
+        conn.execute(
+            "UPDATE sessions SET started_at = ?1 WHERE id = ?2",
+            params![now - 3 * one_day_us, already_ended.id.as_bytes()],
+        )
+        .unwrap();
+        end_session(&mut conn, &already_ended.id, None).unwrap();
+        let already_ended_at_before: i64 = conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = ?1",
+                params![already_ended.id.as_bytes()],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let cutoff_us = now - one_day_us;
+        let closed = close_abandoned_sessions(&conn, cutoff_us).unwrap();
+        assert_eq!(closed, 1, "only the stale open session must close");
+
+        let (ended_at, summary_page_id): (Option<i64>, Option<Vec<u8>>) = conn
+            .query_row(
+                "SELECT ended_at, summary_page_id FROM sessions WHERE id = ?1",
+                params![stale.id.as_bytes()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(ended_at.is_some(), "stale session must be closed");
+        assert!(
+            summary_page_id.is_none(),
+            "the safety net must never imply consolidation happened"
+        );
+
+        let fresh_ended_at: Option<i64> = conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = ?1",
+                params![fresh.id.as_bytes()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            fresh_ended_at.is_none(),
+            "a recently-started session must stay open"
+        );
+
+        let already_ended_at_after: i64 = conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = ?1",
+                params![already_ended.id.as_bytes()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            already_ended_at_after, already_ended_at_before,
+            "an already-ended session's ended_at must be left exactly as it was"
+        );
     }
 }

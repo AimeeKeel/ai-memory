@@ -164,6 +164,158 @@ mod tests {
     };
     use rusqlite::{Connection, params};
 
+    #[test]
+    fn v92_preserves_old_response_rows_and_cascades_context() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        run_to(&mut conn, 91).unwrap();
+        conn.execute_batch("INSERT INTO workspaces(id,name,created_at) VALUES(zeroblob(16),'usage',1);
+            INSERT INTO projects(id,workspace_id,name,created_at) VALUES(zeroblob(16),zeroblob(16),'usage',1);
+            INSERT INTO sessions(id,workspace_id,project_id,agent_kind,started_at) VALUES(zeroblob(16),zeroblob(16),zeroblob(16),'codex',1);
+            INSERT INTO token_calls(session_id,call_id,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,observed_at) VALUES(zeroblob(16),'old-response',70,7,0,0,123);").unwrap();
+        run(&mut conn).unwrap();
+        run(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let preserved:(u64,u64,i64,Option<String>,Option<String>,Option<i64>)=conn.query_row("SELECT input_tokens,output_tokens,observed_at,turn_id,native_response_id,response_at FROM token_calls",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
+        assert_eq!(preserved, (70, 7, 123, None, None, None));
+        conn.execute_batch("INSERT INTO token_call_tools(session_id,call_id,tool_id,tool_name,relation) VALUES(zeroblob(16),'old-response','tool-1','Read','requested');
+            DELETE FROM token_calls WHERE call_id='old-response';").unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM token_call_tools", [], |r| r
+                .get::<_, u64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn v90_normalizes_codex_cache_once_and_preserves_claude() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        run_to(&mut conn, 89).unwrap();
+        conn.execute_batch("INSERT INTO workspaces(id,name,created_at) VALUES(zeroblob(16),'usage',1);
+            INSERT INTO projects(id,workspace_id,name,created_at) VALUES(zeroblob(16),zeroblob(16),'usage',1);
+            INSERT INTO sessions(id,workspace_id,project_id,agent_kind,started_at) VALUES(zeroblob(16),zeroblob(16),zeroblob(16),'codex',1);
+            INSERT INTO sessions(id,workspace_id,project_id,agent_kind,started_at) VALUES(x'00000000000000000000000000000001',zeroblob(16),zeroblob(16),'claude-code',1);
+            INSERT INTO session_usage(session_id,input_tokens,cache_read_tokens,updated_at) SELECT id,1000,800,1 FROM sessions;").unwrap();
+        run(&mut conn).unwrap();
+        run(&mut conn).unwrap();
+        let codex: u64 = conn
+            .query_row(
+                "SELECT input_tokens FROM session_usage WHERE session_id=zeroblob(16)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let claude:u64=conn.query_row("SELECT input_tokens FROM session_usage WHERE session_id=x'00000000000000000000000000000001'",[],|r|r.get(0)).unwrap();
+        assert_eq!(codex, 200);
+        assert_eq!(claude, 1000);
+    }
+
+    /// V95 rebuilds `agent_messages` so a message can be held in `editing`.
+    /// Existing mail keeps its text, state, order and addressee, the three
+    /// indexes come back, and `editing` is the only value the constraint gained.
+    #[test]
+    fn v93_accepts_the_editing_state_and_keeps_existing_messages() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        run_to(&mut conn, 92).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces(id,name,created_at) VALUES(zeroblob(16),'mail',1);
+             INSERT INTO projects(id,workspace_id,name,created_at) VALUES(zeroblob(16),zeroblob(16),'mail',1);
+             INSERT INTO agent_messages(id,from_workspace_id,from_project_id,from_agent,to_workspace_id,to_project_id,subject,body,state,created_at,to_agent,from_owner_user)
+                 VALUES(x'01000000000000000000000000000000',zeroblob(16),zeroblob(16),'other',zeroblob(16),zeroblob(16),'s','queued','pending',5,'codex','user:sender');
+             INSERT INTO agent_messages(id,from_workspace_id,from_project_id,from_agent,to_workspace_id,to_project_id,body,state,created_at,claimed_at,claimed_by_agent)
+                 VALUES(x'02000000000000000000000000000000',zeroblob(16),zeroblob(16),'other',zeroblob(16),zeroblob(16),'done','claimed',6,7,'codex');",
+        )
+        .unwrap();
+        run(&mut conn).unwrap();
+        run(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+
+        let rows: Vec<(String, String, i64, Option<String>)> = conn
+            .prepare(
+                "SELECT state, body, created_at, to_agent FROM agent_messages ORDER BY created_at",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "pending".to_owned(),
+                    "queued".to_owned(),
+                    5,
+                    Some("codex".to_owned())
+                ),
+                ("claimed".to_owned(), "done".to_owned(), 6, None),
+            ]
+        );
+        conn.execute(
+            "UPDATE agent_messages SET state='editing' WHERE body='queued'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "UPDATE agent_messages SET state='held' WHERE body='queued'",
+                [],
+            )
+            .is_err(),
+            "the state constraint must still reject unknown values"
+        );
+        let indexes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name='agent_messages' \
+                 AND name IN ('idx_agent_messages_inbox','idx_agent_messages_outbox','idx_messages_agent_inbox')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 3);
+        let edited_at: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_messages') WHERE name='edited_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(edited_at, 1);
+        let provenance: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT from_owner_user, subject FROM agent_messages WHERE body='queued'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            provenance,
+            (Some("user:sender".to_owned()), Some("s".to_owned())),
+            "the sender identity and subject survive the rebuild"
+        );
+        assert!(
+            conn.execute(
+                "UPDATE agent_messages SET from_session_id=zeroblob(16) WHERE body='queued'",
+                [],
+            )
+            .is_err(),
+            "the sender-session foreign key survives the rebuild"
+        );
+        conn.execute_batch("INSERT INTO sessions(id,workspace_id,project_id,agent_kind,started_at) VALUES(zeroblob(16),zeroblob(16),zeroblob(16),'codex',1);
+            UPDATE agent_messages SET from_session_id=zeroblob(16) WHERE body='queued';").unwrap();
+        let dangling: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_check('agent_messages')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dangling, 0);
+    }
+
     /// A store migrated by a newer build (an applied version above anything
     /// this binary embeds) must fail to open with the actionable
     /// `DataSchemaAhead` error, not refinery's raw "missing from the
@@ -1852,6 +2004,83 @@ mod tests {
             };
             assert_eq!(schema_object_count(&conn, kind, name), 1, "missing {name}");
         }
+    }
+
+    #[test]
+    fn v88_to_v89_preserves_existing_sessions_and_keeps_missing_usage_unknown() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_to(&mut conn, 88).unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let before = applied_versions(&conn);
+        let workspace = crate::ops::get_or_create_workspace(&mut conn, "upgrade").unwrap();
+        let project =
+            crate::ops::get_or_create_project(&mut conn, &workspace, "app", None).unwrap();
+        let session = SessionId::new();
+        crate::ops::begin_session(
+            &mut conn,
+            &NewSession {
+                occurred_at: None,
+                id: session,
+                workspace_id: workspace,
+                project_id: project,
+                agent_kind: AgentKind::Codex,
+                cwd: Some("/repo".into()),
+                actor_user: Some("user:alice".into()),
+            },
+        )
+        .unwrap();
+
+        run_to(&mut conn, 89).unwrap();
+        let mut expected = before;
+        expected.push(89);
+        assert_eq!(applied_versions(&conn), expected);
+        run(&mut conn).unwrap();
+        let preserved: (String, String, String) = conn
+            .query_row(
+                "SELECT agent_kind, cwd, actor_user FROM sessions WHERE id = ?1",
+                params![session.as_bytes()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved,
+            ("codex".into(), "/repo".into(), "user:alice".into())
+        );
+        let missing: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_usage", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            missing, 0,
+            "upgrading must not invent usage for existing sessions"
+        );
+
+        let mut report = ai_memory_core::NewSessionUsage {
+            session_id: SessionId::new(),
+            input_tokens: 12,
+            output_tokens: 4,
+            cache_write_tokens: 0,
+            cache_read_tokens: 2,
+            model: Some("fixture-model".into()),
+        };
+        assert!(crate::ops::upsert_session_usage(&conn, &report).is_err());
+        report.session_id = session;
+        crate::ops::upsert_session_usage(&conn, &report).unwrap();
+        conn.execute(
+            "DELETE FROM sessions WHERE id = ?1",
+            params![session.as_bytes()],
+        )
+        .unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_usage", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "usage must not outlive its session");
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
     }
 
     #[test]

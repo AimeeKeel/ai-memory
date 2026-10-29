@@ -17,6 +17,7 @@ use rusqlite::{Connection, TransactionBehavior};
 mod api_credentials;
 mod auto_improve;
 pub mod belief;
+mod dashboard;
 pub mod decay;
 mod error;
 mod fts_query;
@@ -26,6 +27,8 @@ mod migrations;
 mod ops;
 pub mod password;
 mod profile;
+mod provenance;
+pub use provenance::{PageDisagreement, PageProvenance, PageSource};
 mod project_authz;
 mod project_coordinates;
 mod reader;
@@ -50,6 +53,7 @@ pub use auto_improve::{
     StagedAutoImproveRun, StagedAutoImproveRunReport, artifact_path_for,
 };
 pub use belief::{BeliefInputs, CONFIDENCE_CAP, confidence};
+pub use dashboard::{AgentUsage, RegisteredAgent};
 pub use decay::{
     DecayParams, SALIENCE_MAX, SALIENCE_MIN, SALIENCE_STEP, TierLambdas,
     lambda_from_half_life_days, retention_score, retention_score_with_breadth,
@@ -90,8 +94,8 @@ pub use reader::{
     ContaminationSummary, ContradictionEdge, CrossProjectEdge, DecayCandidate, DecayTombstone,
     DerivedIndexStatus, EmbeddingTripleCount, FTS_HIGHLIGHT_END, FTS_HIGHLIGHT_START,
     FeedbackFinding, GraphVia, HealthDetail, HealthPage, HybridSearch, HybridSearchOutcome,
-    IdleOpenSession, InboxCount, InboxEntry, LinkGraph, LinkGraphEdge, LinkGraphNode,
-    ObservationHit, ObservationOrder, ObservationPage, ObservationPageResult,
+    IdleOpenSession, InboxCount, InboxEntry, InterruptedSessionCandidate, LinkGraph, LinkGraphEdge,
+    LinkGraphNode, ObservationHit, ObservationOrder, ObservationPage, ObservationPageResult,
     ObservationProjectionTotals, ObservationRecord, OpenSession, PAGE_KINDS,
     PAGE_VERSIONS_MAX_LIMIT, PROJECT_LINK_GRAPH_MAX_NODES, PageAuthor, PageFilter, PageHit,
     PageHitWithMeta, PageLinks, PageLinksPreview, PageMeta, PageSummary, PageVersion,
@@ -101,8 +105,9 @@ pub use reader::{
     SESSION_LINE_TITLE_CHARS, SUBSTANTIVE_OBSERVATION_KIND_SQL, ScopeRow, SearchExplain,
     SessionActivity, SessionConsolidationQueue, SessionConsolidationSummary, SessionDependentRows,
     SessionEndDisposition, SessionKindSummary, SessionLine, SessionObservationSnapshot,
-    SessionPromptTitles, SessionSummary, SessionToolTitles, SettledPage, StatusCounts,
-    StorageStatus, StoredEmbedding, StoredPageBody, StreamTimings, VectorQuery, WorkspaceScopeRow,
+    SessionPromptTitles, SessionSummary, SessionToolTitles, SessionUsageView, SettledPage,
+    StatusCounts, StorageStatus, StoredEmbedding, StoredPageBody, StreamTimings, TokenCallOrder,
+    TokenCallQuery, TokenCallView, TokenUsageReport, VectorQuery, WorkspaceScopeRow,
     WorkspaceSummary, f32_vec_to_bytes, highlighted_snippet_html, plain_snippet,
     project_name_fold_key,
 };

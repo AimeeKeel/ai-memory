@@ -755,9 +755,13 @@ a human password or completed bootstrap exists. For human-authenticated
 administration, create the first root account ([first-time
 root](install.md#first-time-root-greenfield)) and serve the compiled admin SPA
 with `--web-ui-dir`: it signs in through `/auth/login` and uses an HttpOnly web
-session plus CSRF protection. Browser-stored Bearers remain unsupported.
-`AI_MEMORY_AUTH_TOKEN` and `aim_` API keys remain machine-only credentials sent
-as `Authorization: Bearer <token>` by MCP, hook, handoff, and workstream clients.
+session plus CSRF protection. Browser-stored Bearers remain unsupported. The
+inbox composer can use an explicitly entered write token for a single message
+when the legacy sign-in is
+read-only; it clears the token after the request and never persists it.
+Outside this inbox action, `AI_MEMORY_AUTH_TOKEN` and `aim_` API keys remain
+machine credentials sent as `Authorization: Bearer <token>` by MCP, hook, handoff,
+and workstream clients.
 
 To host the web UI under a URL subpath behind a reverse proxy, the
 `--base-path` / `--web-slug` flags do the work. See
@@ -926,3 +930,116 @@ supersede-by-new-page instead of editing history. Ask an agent to "record this a
 decision" and the skill does the rest. The structured shape also
 retrieves noticeably better through `memory_query` than free-form
 prose.
+
+## Investigate token usage in the dashboard
+
+Filter the complete authorized ledger before pagination by UTC period, exact
+model, harness and session. From is inclusive; Until is exclusive. Turn
+and tool filters connect a response to reported native context. "Turn & tools"
+separates a requested tool, an input result and a same-turn association, and
+shared context does not prove that a token cost belongs to one tool. Update
+native clients as well as the server to collect these fields. Old rows with no
+source metadata stay unknown. The
+[feature guide](features.md#token-accounting-and-investigation) explains
+timestamp fallbacks, filtered totals and capture prerequisites.
+
+Open a project under `/web` and select the Token usage tab. Updated native Claude Code and
+Codex hooks send measured response usage on `post-tool-use`, `stop`,
+`pre-compact` and `session-end`. The server stores usage as it arrives, including while a
+session is open. The panel and session totals refresh every ten seconds. To
+enable capture, update the native client on each agent machine as well as the
+server.
+
+Responses are deduplicated by their native identity, so a partial update raises
+the stored counters instead of adding the same response again. Fresh input
+excludes cache reads. Search, signal filtering and recent ordering query all
+captured responses before fifty-row pages are selected. Page links keep those
+filters, and search results and totals stay separate. Responses link to their
+session and show model, input, output, cache and total tokens. The panel flags
+contexts of at least 100,000 tokens, outputs of at least 20,000 tokens, and
+responses above three times the project's captured-response average once five
+responses exist. These are hints for investigation, not confirmed anomalies or
+currency costs.
+
+Live extraction reads forward in bounded 4 MiB batches and reports at most 256
+responses per event. A cursor under the client's data directory advances only
+after the local enqueue is durable. Later hooks continue any backlog, including
+records outside the previous byte window, and repeated responses stay
+deduplicated. A large backlog needs several events, and a session with no
+further hooks does not drain its transcript on its own. Incomplete lines wait
+for completion, and lines over 4 MiB are skipped in bounded chunks. Truncation
+or changed checkpoint content restarts the scan. Update the native binary on
+each agent machine, because updating only the server does not change transcript
+capture. Reports appear after the agent writes usage. Missing or deleted
+records and unsupported formats stay unknown.
+
+The ledger keeps counters, response and model identifiers, and bounded native
+turn, response-time and tool references when reported. It excludes prompts, tool
+arguments and outputs. Model and tool labels are sanitized before their length
+limit is applied, and private or malformed context identifiers are refused.
+Project authorization and session-owner filters apply before ranking or
+aggregation. Session-end totals remain as a fallback for history.
+
+The header's Light / Dark / System control stores the preference in the browser.
+System follows operating-system changes, and a manual choice overrides it.
+
+### Explore agents and sessions
+
+The workspace sidebar links to projects, the inbox, workstreams, the knowledge
+graph, learning review and server health on desktop and mobile.
+Project cards show the recorded harnesses and can be filtered by name, open
+sessions or queued messages. An open session has no recorded end event; the agent may no longer be online.
+
+Project tabs show one section at a time. Overview summarizes capture and pending
+messages, Agents groups harnesses, Token usage investigates responses, Sessions
+lists recent sessions, and Knowledge browses saved pages. The selected tab is
+kept in the URL (`?tab=agents`, for example), so reload, shared links and
+browser back and forward keep the same section. Section bookmarks such as
+`#agents` still open the matching tab. The tab bar supports Left and Right,
+Home and End, and wraps on narrow screens. Inbox and Link graph open separate
+views.
+
+In Agents, agent cards add up reported usage across sessions and show how many
+sessions reported it. "Explore sessions" pages through one harness's sessions,
+and a session opens to its response ledger and captured event timeline. Missing
+usage stays unknown. Legacy session totals can exist without individual
+response records, so coverage and captured-call counts are shown separately.
+
+The response table can be searched by model, agent or response, filtered by
+investigation signal, and sorted by token usage or capture time. These controls
+query all captured responses in the current scope before fifty-row pages are
+selected. Project and session usage refresh every ten seconds while visible, and
+the filter controls and keyboard focus stay in place.
+
+### Coordinate work from the browser
+
+The Inbox lists the messages a selected project received and sent, fifty per
+page, without claiming them. Received mail opens on pending messages, and "All
+messages" or "Collected" show history. Page links keep the selected state.
+"Waiting for agents" shows real queued counts and mailbox links for each
+workspace and project you can access. By default the page opens a project with
+queued messages, and the heading names the current mailbox. The sidebar
+refreshes pending counts every ten seconds on visible pages, and its project
+links open "Awaiting collection". Collected mail leaves the count. The count is a
+queue indicator, not human read or unread tracking. "Message state" filters the
+history before pagination. Reading through a notification does not claim mail.
+Expanding a row shows its plain text. New message picks a source project and a
+recipient harness from the agents that already have sessions in visible
+projects. Sending needs write access to both projects and goes through the
+configured sanitizer and message admission policy. Browser sessions use the
+existing CSRF checks. A queued message has an Edit button. The message leaves the
+queue while you change its subject or text. Saving or discarding returns it to
+its original place. A message an agent already collected
+cannot be edited.
+
+A queued request does not launch an agent. The addressed harness collects it the
+next time it checks its inbox, and "Collected" records that claim, not that the
+task succeeded. Static MCP clients pass their harness in the `agent` argument of
+`memory_message_pop`. See [agent messaging](agent-messaging.md).
+
+The navigation and drilldowns follow the overview-to-detail approach in
+[Grafana](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/best-practices/)
+and the session grouping documented by
+[Langfuse](https://langfuse.com/docs/observability/features/sessions). They are
+interaction references. The built-in interface is still Cargo-built HTML and CSS
+with small vanilla JavaScript enhancements.

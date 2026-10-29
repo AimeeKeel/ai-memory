@@ -624,6 +624,17 @@ readable wiki pages; the next session starts with a handoff.
   and no user accounts (every fresh install), the browser asks for a username
   and password: any username, and the contents of
   `<data_dir>/auth-tokens/default` as the password.
+- Investigate Claude Code and Codex response-token usage in the project
+  dashboard, and pick a Light, Dark or System theme. See
+  [Investigate token usage](docs/usage.md#investigate-token-usage-in-the-dashboard)
+  for capture coverage, cache accounting and the investigation flags. You can
+  drill down from a project to an agent, its sessions and individual responses.
+  The web [agent inbox](docs/agent-messaging.md#in-the-web-ui) lets an operator
+  queue requests for registered agents and read the received and sent history.
+  Token filters run on the full authorized ledger, with native turn and tool
+  context when reported. Pages show their sources, declared contradictions and
+  recall explanations, and the [feature guide](docs/features.md) shows the
+  effective installation states in the web UI.
 - Back up host-side harness configuration with
   `ai-memory backup-agents -o agent-assets.tar.gz`; inspect a restore with
   `ai-memory restore-agents -i agent-assets.tar.gz`, then add `--apply` only
@@ -723,6 +734,7 @@ diagram, crate breakdown, schema notes, and invariants.
 
 | File | What it is |
 |---|---|
+| [`docs/testing-dashboard.md`](docs/testing-dashboard.md) | Dashboard behavior tests, real-browser CI and mutation probes that prove regression guards fail. |
 | [`docs/cookbook.md`](docs/cookbook.md) | **Task-oriented cheat sheet.** "I want to do X" → how: recall prior work, keep a project rule, import an existing knowledge base, get two agents/repos working together. Start here. |
 | [`docs/install.md`](docs/install.md) | **Installation cookbook.** Every agent CLI, every alternative (curl, source build, no-docker, no-auth), and the server-on-a-different-machine walkthrough. |
 | [`docs/usage.md`](docs/usage.md) | Handoffs, proactive memory queries, slim routing snippet + managed Agent Skills, web UI, raw-wiki inspection, and the rules, memory and profile precedence. |
@@ -778,6 +790,11 @@ Written by users; not maintained here, so check them against the version you run
 
 - [Installing and configuring ai-memory on Linux](https://www.linuxpro.com.br/2026/09/ai-memory-instalar-configurar-agentes-linux/) (pt-BR, LinuxPro, covers v2.6.3)
 - [ai-memory from v2.4 to v2.6.3](https://www.linuxpro.com.br/2026/10/ai-memory-a-evolucao-da-2-4-a-2-6-3/) (pt-BR, LinuxPro)
+
+The built-in web UI also has Documentation at `/web/docs` and a Changelog at
+`/web/docs/changelog`. The [feature activation guide](docs/features.md) covers
+prerequisites and verification. Agents can read the same bundled guides through
+authenticated `/api/v1/docs` JSON or each guide's Markdown link.
 
 ## License
 

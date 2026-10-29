@@ -233,6 +233,145 @@ version in [`docs/changelog/`](docs/changelog/):
   are all commented examples, and keys with a built-in default show that
   default. `AGENTS.md` now requires a new config key to land in both files.
 
+### Added
+
+- Added editing for queued messages in the web inbox. Edit takes a message that
+  is still waiting out of the queue, so no agent can collect it, and opens an
+  inline editor. Saving puts the new text back at the message's original place
+  in the queue, after the usual sanitizer, size caps and `message_send`
+  admission. Discarding returns it unchanged. A held message shows as Editing,
+  with a count above the list and a way back into the editor. Editing needs
+  write access to the mailbox project and to the project the message came from,
+  and a message an agent already collected cannot be edited. Held messages use a
+  new `editing` state (migration V95) that no claim path selects (#1832).
+
+- Added server-side response investigation to the project dashboard. Responses
+  can be filtered by UTC period, exact model, harness, session, turn and tool,
+  with complete pagination, filtered token totals and bounded native turn and
+  tool provenance. The context lives in extra `token_calls` columns and a
+  `token_call_tools` table (migration V94). A response from an older hook keeps
+  its provenance unknown instead of guessed. Filters apply after project
+  authorization and the session-owner check and before counting, ranking and
+  pagination (#1830).
+
+- Added version-specific knowledge evidence to the page and project views:
+  readable source links, declared contradictions, expiration context and an
+  on-page recall recomputation that reuses the original search filters (#1830).
+
+- Added caller-aware installation states and next steps to feature guides and
+  the authenticated `/api/v1/docs/features/status` reference. They
+  separate effective settings from client facts the server cannot know, and
+  administrative settings are masked for callers without admin rights (#1830).
+
+- Replaced the static Inbox label with live, access-filtered pending counts and
+  project links throughout the web navigation. Counts are grouped by workspace
+  and project, hide restricted projects, never consume mail, and link to the
+  pending-only mailbox of the project that has mail. Received inboxes open on
+  pending messages, with older queued requests behind collected history, and the
+  composer shows the current project explicitly (#1830).
+
+- Added bundled product documentation to the web UI and the API. The guides and
+  release notes are compiled into the binary and served at `/web/docs`,
+  `/web/docs/changelog` and `/web/docs/{id}` (a `.md` suffix returns the
+  Markdown). They include searchable feature activation guides, per-release
+  changelogs, and authenticated `/api/v1/docs` JSON and Markdown references for
+  agents. No network access or LLM is needed, and the pages describe shipped
+  capabilities without exposing the running server's configuration or
+  credentials. The source-built Docker image now copies `CHANGELOG.md` for this
+  (#1829).
+
+- Organized project pages into accessible tabs showing one section at a time: Overview,
+  Agents, Token usage, Sessions and Knowledge. The selected tab is kept in the
+  URL (`?tab=agents`), which keeps reload, shared links and browser history in
+  sync, and the tabs support Left, Right, Home and End. Existing
+  `#agents`-style section bookmarks still open the matching tab (#1829).
+
+- Updated the browser inbox composer to default To project to the source
+  project and list only harnesses with captured sessions in the destination
+  workspace and project. It resets a stale recipient when a project changes,
+  and it disables sending, with an explanation, for a project that has no
+  registered agent (#1829).
+
+- Redesigned the responsive web dashboard. It has persistent workspace
+  navigation, searchable project cards, per-agent consumption and coverage, and
+  session drilldowns that show the token totals recorded for each agent (#1828).
+
+- Added a browser inbox at `/web/inbox`. It lists received and sent mail
+  without consuming it. A caller with write access to both the source and the
+  destination project can also queue a message for a registered harness of that
+  project. The text goes through the configured sanitizer and admission before
+  the single writer, and the browser never claims mail or starts an agent.
+  Messages can now be addressed to one harness (`to_agent`, migration V93).
+  `memory_message_pop` and `ai-memory message pop` take an optional `agent`,
+  and only that harness can claim the message, even by id. Existing shared mail
+  (`to_agent = NULL`) behaves as before. A claim from a session-aware client
+  whose routing metadata arrives before its session start was persisted is no
+  longer refused. A browser session opened with the legacy read-only login can
+  send with an explicit write token supplied for that one request and cleared
+  right after, with no browser persistence (#1828).
+
+- Added live, deduplicated response token accounting for Claude Code and Codex.
+  Updated native hooks to send measured response usage on `post-tool-use`,
+  `stop`, `pre-compact` and `session-end`, keeping open-session totals current
+  rather than waiting for session end. Each response is stored once by its
+  native identity in a new `token_calls` ledger (V92). A partial or replayed
+  delivery raises the stored counters column by column and never adds the same
+  response twice. Live extraction reads a bounded 4 MiB transcript tail and
+  reports at most 256 responses per event. Fresh input excludes cache reads, so
+  Codex, whose reports included cached input, is normalized once during the
+  upgrade. The project page has a Token usage panel listing the fifty largest
+  captured responses. It flags contexts of at least 100,000 tokens, outputs of
+  at least 20,000 tokens and responses above three times the project average.
+  Only counters, response identities and model names are kept, and project
+  authorization and session-owner filters apply before ranking or aggregation
+  (#1811).
+
+- Added Light, Dark and System theme controls to the web UI. The choice is
+  stored in the browser and System follows the operating system. Tailwind's
+  dark variant now uses the `dark` class instead of the media query, so a
+  manual choice overrides the system setting (#1811).
+
+- Added a memory dashboard to the read-only web home, using sanitized data:
+  projects, sessions, sanitized capture events, compiled pages, open-session
+  continuity signals and last activity. Project cards separate captured work
+  from compiled pages, so an active hook no longer looks empty just because
+  its sessions have not ended (#1803).
+
+- Added dashboard hook-health counters for accepted, policy-dropped,
+  capacity-shed and rate-limited events. They count events since the process
+  started, and prompt, command, path and payload data is neither persisted nor
+  rendered (#1803).
+
+- Added agent CLI attribution to the project overview to show which harnesses
+  produced a project's memory. The stats card has an "Agents" badge row with session counts per
+  harness, and each Recent Activity entry shows the harness whose session last
+  contributed evidence to that page version. Both are best effort: a page or
+  project with no session evidence shows no badge (#1803).
+
+- Added per-session token accounting. At `session-end` the native hook (Claude Code
+  and Codex) reads the harness's own transcript and reports cumulative input,
+  output, cache-write and cache-read totals. It scans Claude Code's JSONL in
+  full and reads only the tail of Codex's rollout file, since both can reach
+  hundreds of MB. The server stores the totals with a `MAX(existing, reported)`
+  upsert, so a replayed or out-of-order delivery never lowers a total. The
+  project overview page shows a "Tokens" total in the stats card and a Sessions
+  table (agent, start, duration, events, tokens) with the 20 most recent
+  sessions. A session whose harness never reported usage, an unsupported
+  harness or an older client shows no number, never a zero (#1803).
+
+- Added recovery of usage and closure for sessions missing a graceful
+  `session-end`, which previously stayed open without tokens. This usually
+  happens when a paid quota runs out mid-task and the operator switches agents. When a new session
+  starts in the same scope and finds one quiet for at least 15 minutes, the
+  client looks for the old session's own transcript (Claude Code and Codex),
+  reports its usage and closes it with a normal synthetic `session-end`. That
+  is safe if the old session turns out to be live, because a later real
+  `session-end` with more work runs the full end path again. A second, more
+  conservative scheduled sweep closes sessions nobody continues anywhere,
+  after 48 hours without activity in any scope, so `open_session_count` stops
+  growing. It attaches no usage and starts no consolidation, because the
+  server cannot read a client's transcript outside a live hook request (#1803).
+
 ### Fixed
 
 - Updated `libz-sys` to 1.1.31 so its build probe no longer records the build
@@ -372,6 +511,37 @@ version in [`docs/changelog/`](docs/changelog/):
 - Honored `base_path` from `config.toml` when mounting the HTTP server, so
   thin clients and the web UI use the same prefix. Explicit flag and environment
   overrides, including an empty value to serve at the root, kept their precedence (#1837).
+- Fixed live response capture after transcript gaps. Bounded batches now resume
+  from durable enqueue checkpoints, including across hook processes and
+  transcript read windows (#1830).
+
+- Fixed response search, signal filtering and recent ordering so they query all
+  authorized calls before pagination. Response pages are independent, and
+  session detail pages refresh usage live (#1830).
+
+- Updated scoped session reads to treat substantive work after an old end as a
+  resumed session, matching the activity feed while preserving persisted
+  lifecycle watermarks. Completed-only listings exclude those resumed sessions (#1830).
+
+- Moved token model label sanitization before truncation to prevent the size
+  limit from exposing a prefix of private text (#1830).
+
+- Updated release selection on the changelog page to load notes immediately
+  and keep the URL, outline and Markdown reference in sync. The form still submits
+  without JavaScript (#1830).
+
+- Added a read-only recovery snapshot at agent startup when the previous
+  substantive session in the project ended without a `SessionEnd` (quota
+  exhaustion, a killed process, a machine restart). The snapshot is built on
+  demand from at most 64 sanitized observations and capped at 6,000
+  characters, so no rolling copy of the transcript exists. It is scoped to the
+  project and owner, leaves out the receiving session, keeps the
+  untrusted-memory boundary, and never closes or claims the source, which may
+  be a legitimate parallel agent. It skips work a handoff already covers and
+  never mixes another live session's transcript into a delivered handoff.
+  Normal single-use handoffs and managed workstream packets are unchanged
+  (#1803).
+
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
