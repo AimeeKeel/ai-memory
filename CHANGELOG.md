@@ -422,6 +422,39 @@ version in [`docs/changelog/`](docs/changelog/):
   Normal single-use handoffs and managed workstream packets are unchanged
   (#1803).
 
+- Serialized mutating wikisync runs per destination across their full
+  read/plan/write lifecycle, so overlapping exports no longer race on the
+  shared state temporary file or apply plans from the same baseline (#1847).
+
+- Bounded the wiki append-versus-commit concurrency regression so filesystem
+  scheduling cannot turn its background writers into an unbounded fsync
+  workload on macOS, while every round still contends with a commit (#1850).
+
+- Fixed false command timeouts in the macOS menu app when CLI output or
+  diagnostics exceeded a pipe buffer (#1845).
+
+- Fixed the macOS menu app's LaunchAgent installation and restart checks for
+  app and home-directory paths containing XML characters such as `&` (#1844).
+
+- OpenCode 1.x `task` subagents no longer claim the pending handoff or leave
+  one behind. OpenCode runs each subagent in a child session, which the
+  generated plugin took for a top-level one: the subagent's first model call
+  claimed the newest open handoff in the checkout, and the end the plugin
+  posts for it when OpenCode exits carried no subagent marker, so the user's
+  next session got the subagent's handoff instead of the top-level session's.
+  The plugin now records a child session's parent from OpenCode's session
+  events, skips the claim for it and marks its end on every close path, a
+  subagent the task tool resumes by `task_id` included (#1842).
+
+- Preserved `title:` and `body:` filters inside parenthesized CJK searches,
+  so grouped queries no longer include matches from other columns (#1846).
+
+- Made `auth login --timeout-secs` stop device-authorization polling requests
+  and waits at the deadline for OpenAI OAuth, GitHub Copilot and OIDC device
+  login. Late polling results no longer reach credential storage; provider
+  intervals and `slow_down` backoff are preserved. OpenAI's subsequent exchange
+  of an authorized code keeps its own HTTP request timeout (#1848).
+
 ## [3.2.10] - 2026-10-29
 
 ### Changed

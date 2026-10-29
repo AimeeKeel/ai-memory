@@ -6,6 +6,7 @@
 //! so a new file must be declared here (`scripts/check-test-suites.*` enforces it).
 
 mod auth_default_e2e;
+mod auth_device_timeout;
 mod autoscope_env;
 mod backfill_dry_run;
 mod backfill_e2e;
