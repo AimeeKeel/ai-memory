@@ -1072,9 +1072,10 @@ What happens:
    there are uncommitted changes.
 4. Server reads either the exact markdown blob for that project/page from git
    at `--from`, or the retained SQLite version identified by `--page-id` after
-   verifying that it now belongs to the requested project and path. It writes
-   that content to the live wiki tree and upserts a new latest page row so
-   search, links, and `/web` agree with disk.
+   verifying that it now belongs to the requested project and path. It shares
+   the same-path lock with writes and watcher reindexing, including the read of
+   current frontmatter used to preserve `generated.at`, then writes the content
+   and upserts a new latest page row so search, links, and `/web` agree with disk.
 5. Server writes a post-restore checkpoint (`restore-page ...`) when the live
    tree changed.
 
@@ -1088,6 +1089,10 @@ Failure modes:
 - **Page version is absent or belongs to another project/path** → 404.
 - **Historical markdown is malformed or non-UTF-8** → 500, live file is not
   replaced.
+- **SQLite rejects the restored version** (for example, the historical path
+  collides with a current page under case folding) → 500, the previous file is
+  restored or a newly created file is removed. If that rollback also fails,
+  the error explicitly reports an inconsistent state requiring repair.
 
 What it does not recover:
 
@@ -1267,7 +1272,9 @@ Order of operations:
 
 1. Check the data dir is empty (or the user passed `--force`).
 2. Extract the tarball into a staging directory beside the live data
-   (`<data_dir>/.restore-staging-<stamp>/`), validating every entry.
+   (`<data_dir>/.restore-staging-<stamp>/`), validating every entry and
+   reading the gzip stream through its checksum and size trailer. A missing
+   or invalid trailer fails here even when every tar entry was readable.
 3. Require an existing `db/memory.sqlite` snapshot with applied ai-memory
    migration history, then open the staged store so pending migrations run
    and the SQLite snapshot is checked, still without touching the live data.
@@ -1277,7 +1284,8 @@ Order of operations:
    the original pepper is configured and `--accept-legacy-api-key-pepper` was passed. When
    the live config is being kept (step 4) and the database holds API keys, the
    configured pepper must match the one the keys were hashed with, or the
-   restore stops here too.
+   restore stops here too. This also applies when the archive has no
+   `config.toml`, even with `--with-config`.
 4. Swap: rename the live `wiki/` and `db/` aside, rename the staged copies
    into place, then delete the previous data. Each move is a same-filesystem
    rename; if one fails, the moves already made are reversed. The archive's
@@ -1313,10 +1321,11 @@ Failure modes:
   although a later one was applied. The staged store is refused, just as at
   normal startup. Keep the backup and report the history for review;
   `--force` does not bypass this check or repair the missing migration.
-- **The live config's pepper does not match the backup's API keys** (live
-  config kept) → rerun with `--with-config` to restore the backup's config, or
-  set the live `[auth].token_pepper` to the original. The live data is left as
-  it was.
+- **The live config's pepper is missing or does not match the backup's API
+  keys** (live config kept) → set the live `[auth].token_pepper` to the
+  original. If the backup contains `config.toml`, restoring it with
+  `--with-config` is another option. Without that file in the archive, carry
+  the original config separately. The live data is left as it was.
 - **Legacy backup has API keys but no pepper verifier** → restore the original
   `[auth].token_pepper` through the current config/environment and rerun with
   `--accept-legacy-api-key-pepper`. This flag confirms provenance; it cannot

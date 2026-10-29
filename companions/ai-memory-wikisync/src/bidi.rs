@@ -809,13 +809,13 @@ async fn apply_plan(
         );
     }
     for delete in &plan.server_deletes {
-        let result = match &delete.expected_page_id {
-            Some(expected) => mcp.delete_page(&scope, &delete.path, expected).await,
-            None => Err(anyhow::anyhow!(mcp::server_too_old())),
-        };
-        match result {
-            Ok(()) => {
+        match delete_server_page(mcp, &scope, dest_root, delete).await {
+            Ok(true) => {
                 new_state.pages.remove(&delete.path);
+            }
+            Ok(false) => {
+                report_local_change(&delete.path);
+                applied.raced.push(delete.path.clone());
             }
             Err(error) if error.is::<PreconditionFailed>() => {
                 report_race(&delete.path, &error);
@@ -865,6 +865,32 @@ fn report_race(path: &str, error: &anyhow::Error) {
         "  {:<9} {path} — {error}; left for the next sync",
         "CHANGED"
     );
+}
+
+/// A planned server deletion depends on the repository file still being
+/// absent. Recheck immediately before the request, without reading a recreated
+/// file's content; the server separately guards its own version.
+async fn delete_server_page(
+    mcp: &McpClient,
+    scope: &Scope<'_>,
+    dest_root: &Path,
+    delete: &ServerDelete,
+) -> Result<bool> {
+    let target = paths::secure_join(dest_root, &delete.path)?;
+    match fs::symlink_metadata(&target) {
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(anyhow::Error::new(error))
+                .context(format!("cannot inspect {}", target.display()));
+        }
+    }
+    let expected = delete
+        .expected_page_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!(mcp::server_too_old()))?;
+    mcp.delete_page(scope, &delete.path, expected).await?;
+    Ok(true)
 }
 
 /// Delete one repository file through the same confinement as every write:

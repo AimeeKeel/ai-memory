@@ -199,9 +199,12 @@ Safety rules:
   the whole run. A pinned server page is never deleted unless `--prefer repo`
   is given. A file is deleted only through the same path checks as a write
   (no symlinked file or directory, nothing outside `--dest`) and only if it
-  still holds the bytes the plan classified. The tool never runs git: it
-  prints the `git rm` to stage the deletes. Apply order is imports, exports,
-  server deletes, file deletes.
+  still holds the bytes the plan classified. Before deleting a server page,
+  the tool rechecks that its repository file is still absent. A file restored
+  during planning keeps the server page and baseline, even with `--prefer repo`;
+  the run reports the change and exits non-zero so the next sync can reconsider
+  it. The tool never runs git: it prints the `git rm` to stage the deletes.
+  Apply order is imports, exports, server deletes, file deletes.
 
 ## CI and post-merge
 

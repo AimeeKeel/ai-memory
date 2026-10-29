@@ -321,8 +321,10 @@ with `[briefing]` or `[profile]` keys. Use it for projects whose automatic
 handoffs are mostly noise, such as a bot fleet driven by routines and webhooks.
 
 `[recall] default_global` applies to an agent's unscoped `memory_query` and
-`memory_recent` calls. A `memory_query` with `as_of` is not broadened: it
-reads the current project as it stood at that instant, and an explicit
+`memory_recent` calls. On `memory_query`, an explicit `global: false` keeps
+the resolved project, even when the marker enables global recall. Explicit
+`workspace` + `project` or `scopes` also override the marker. A query with
+`as_of` reads the current project as it stood at that instant, and an explicit
 `global=true` with `as_of` is refused. The `ai-memory search` and
 `ai-memory recent` terminal commands do not read it: those commands stay
 scoped to the current project and cover every project only when you pass
@@ -459,7 +461,8 @@ Re-running `ai-memory server add` for an existing profile keeps its roots when
 `--root` is omitted, so rotating a token cannot lift the restriction. Changing
 a profile's `--url` without a new token discards the old token first: a token
 belongs to the server it was issued for, so the profile refuses events until
-you add one for the new URL.
+you add one for the new URL. Both `[servers.<name>]` tables and an inline
+`servers = { ... }` table can be read and updated by these commands.
 
 Check the decision for a directory without sending anything:
 

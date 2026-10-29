@@ -215,8 +215,163 @@ version in [`docs/changelog/`](docs/changelog/):
   could blame the primary for a timeout another candidate caused. Response
   bodies are never logged (#1628).
 
+### Changed
+
+- Documented the settings that `config.default.toml` had left out, and added
+  `docs/config-properties.md`, a reference table of every key `config.toml`
+  accepts with its default, environment variable and purpose. The template now
+  describes the `llm_*` keys (including `llm_compat_strict` and
+  `[[llm_fallbacks]]`), the embedding endpoint and prefix keys,
+  `tcp_keepalive_secs`, `base_path`, `release_base_url`, `cors_allow_origins`,
+  `consolidate_on_session_end`, `backfill_on_start`, `run_autowire`,
+  `claude_true_yolo`, the `contradiction_band_*` keys, and the `[run]`,
+  `[hook_spool]`, `[handoff]`, `[maintenance]`, `[dream]`, `[retrieval]`,
+  `[search.fts]`, `[profile]` and `[[admission_webhooks]]` sections. It also
+  lists the remaining keys of `[decay]` (including `[decay.half_life_days]`),
+  `[consolidation]`, `[auto_improve]`, `[auto_scope]` and `[auth]`, and the
+  `[auto_improve.scheduler.experience_entropy_filter]` table. The new entries
+  are all commented examples, and keys with a built-in default show that
+  default. `AGENTS.md` now requires a new config key to land in both files.
+
 ### Fixed
 
+- Updated `libz-sys` to 1.1.31 so its build probe no longer records the build
+  environment, including possible secrets, in Cargo target artifacts
+  (RUSTSEC-2026-0418).
+- Imported every Claude transcript left behind by `/clear`, oldest first,
+  before finalizing the managed run on the newest session. Pre-clear turns now
+  retain their native-session provenance instead of disappearing from the
+  workstream ledger (#1797).
+- Kept purge-session tombstones out of automatic hollow-project cleanup, so
+  an old otherwise-empty project cannot lose replay protection immediately
+  after its session is purged (GHSA-pphw-hm98-3wh4).
+- Made Crush transcript cursors revision-aware within their one-second native
+  timestamp bucket. Same-second inserts and edits are now imported exactly
+  once, while captured recovery endpoints still exclude later revisions
+  (#1813).
+- Made TypeScript SDK capability initialization client-owned with independently
+  cancellable waits, so one caller cannot abort another caller's shared probe
+  and a later caller observes its own cancellation promptly (#1815).
+- Initialized MCP sessions in the document and agentmemory importer routes,
+  retaining validated session IDs and sending `notifications/initialized`, so
+  conditional imports work with both stateless and `--http-stateful` servers
+  (#1836).
+- Explicit `ai-memory run --fresh claude` launches now expose the previously
+  linked Claude session through `AI_MEMORY_PREVIOUS_SESSION_HISTORY`, including
+  when the two sessions live under different Claude config homes (#1789).
+- Replaced the misleading hook-refresh-only warning after a linked Codex run
+  fails to acknowledge context with a `/new`-specific ownership warning. The
+  wrapper does not adopt the unlinked thread because Codex supplies no trusted
+  parent relationship (#1788).
+
+- Sorted recent page lists by timestamp rather than RFC3339 text, so updates
+  with different fractional-second precision appear in chronological order
+  in the legacy recent API, project activity, folder previews and namespace
+  listings. Kept title-sort and equal-timestamp path tie-breaks (#1247).
+
+- Fixed `restore` replacing live data when a backup without `config.toml`
+  contains API keys that the configured pepper cannot verify. It now refuses
+  before the swap, preserving the live wiki, database and config, and names
+  the original configuration as the remedy (#1495).
+
+- Preserved explicit DOCX/PPTX line breaks and DOCX tabs in document imports
+  when XML uses paired tags, including formatted PowerPoint breaks in slides
+  and speaker notes. DOCX carriage returns now also keep adjacent text runs
+  on separate lines instead of joining their words. Paragraph tab-stop
+  definitions no longer insert spurious tabs into the extracted text (#1786).
+
+- Kept a wiki-sync server page when its repository file was recreated after
+  the sync planned a deletion. `sync --propagate-deletes --apply` now rechecks
+  local absence before sending the delete, preserves the page's baseline and
+  reports the changed file for the next sync, including with `--prefer repo`
+  (#1787).
+- Transcript imports (`backfill`, the `run` ledger, `recover`) now drop Codex
+  memory-writing agent runs by the same signals the live hook uses: the
+  checkout cwd, an event's recorded cwd, or a Codex user prompt that opens
+  with `## Memory Writing Agent`. A custom `CODEX_HOME` whose last path
+  component is not `.codex` previously reimported those sessions (#1790).
+- Admission webhook HTTP requests now follow redirects only within the
+  configured `scheme://host:port` origin (up to 10 hops) and fail on
+  cross-origin redirects without forwarding page payloads or applying foreign
+  response mutations, surfacing the redirect refusal cause in logs and
+  `reject`-policy errors (#1794).
+- `ai-memory project access` and `ai-memory project grants` now refuse empty
+  or whitespace-only `--workspace`, `--project`, and (for access) `--mode`
+  values before sending any request to the server. These commands take
+  required names and never call `resolve_scope`, so the #1774 choke point
+  did not cover them (#1791).
+- `ai-memory user grant` and `ai-memory user revoke` now refuse empty or
+  whitespace-only `--user`, `--workspace`, `--project`, and (for grant)
+  `--level` values before sending any request to the server. These commands
+  take required names and never call `resolve_scope`, so the #1774 choke
+  point did not cover them (#1792).
+- Stopped the lifecycle relay from treating an oversized HTTP response as a
+  transport failure and immediately resending its batch. A response beyond the
+  64 KiB acknowledgement cap now retains its HTTP status, stops the flush, and
+  keeps unacknowledged events pending, including on HTTP 429 backpressure (#1799).
+- Decoded WebVTT cue character references before document-import sanitization,
+  preserving literal escaped tags and applying the existing text-size limit
+  to the decoded text. SRT extraction is unchanged (#1800).
+- Preserved native OIDC hook-spool entries when the POSIX or PowerShell script
+  bundle drained the shared queue. Scripts now leave those entries for native
+  credential resolution instead of posting them anonymously and retiring them
+  on a 2xx or 401 response; static, anonymous and legacy entries still drain
+  normally (#1801).
+- Refused backup restores with a missing or invalid gzip trailer before
+  replacing live data, even when all tar entries were readable (#1805).
+- Kept separate pre-migration archives when installations share a backup
+  destination and start in the same second, instead of overwriting an
+  existing installation's snapshot (#1806).
+- Restored the previous wiki file when `restore-page` could not commit its
+  SQLite update, including a rejected case-colliding historical path. Restores
+  now share the page writer's lock through conformance, file replacement and
+  indexing so a concurrent write to that same path cannot leave disk and
+  SQLite disagreeing (#1807).
+- Kept concurrent page edits current during opt-in cold-cluster dedup and dream
+  merges. Each write batch now skips if a selected source version changed,
+  preserving the newer body, tier and pin along with unchanged peers (#1808).
+- Dropping the final store writer handle now finishes when its command queue
+  is full. Accepted writes still drain before the writer thread exits, including
+  when callers have cancelled their waits (#1809).
+
+- Scheduled empty-project cleanup now preserves projects that have sent or
+  received agent messages, including claimed/cancelled history, so it cannot
+  silently delete their inbox/outbox through a project cascade (#1810).
+
+- Fixed `server add` rejecting valid inline tables in `servers.toml`, including
+  token rotations and URL changes. Updates now accept the same table forms as
+  reads and removal, preserving registered roots and other profiles (#1812).
+- Kept OpenCode V1 failed tool results in the managed workstream ledger,
+  including their visible error text and error status, instead of importing
+  only the call and silently dropping the failure reason (#1814).
+- Initialized the TypeScript SDK's MCP session before the first `callTool`,
+  fixing HTTP 422 responses with `--http-stateful`. Raw calls still skip
+  schema checks, and later wrapped calls reuse the session (#1816).
+- Preserved literal reasoning tags and their contents inside structured JSON
+  strings when parsing OpenAI-compatible tolerant replies and Anthropic text
+  replies. Reasoning blocks outside the JSON are still removed, including
+  when a strict OpenAI-compatible request falls back to tolerant parsing (#1817).
+- Disabled HTTP redirect following on the native hook client (`build_client`)
+  so 3xx responses from SSO gateways, captive portals, or proxies fail closed
+  instead of following to a 200 OK login page, which dropped spooled hook events
+  and injected login HTML into agent handoff context (#1818).
+- Supported singular units (`day`, `week`, `month`) and weeks in
+  `parse_since_to_epoch` for git commit filtering during consolidation
+  bootstrapping, trimmed surrounding whitespace, rejected negative intervals,
+  and used checked arithmetic to prevent integer overflow panics (#1820).
+- Kept OpenCode 2 failed tool results in the managed workstream ledger,
+  including their visible error text and error status, instead of importing
+  only the call and recording a status-error loss (#1823).
+- Imported OpenCode 2 compaction session messages into the managed workstream
+  ledger (`summary`, or `error.message` on a failed compaction) instead of
+  dropping them with no event and no loss (#1824).
+- `memory_query(global=false)` now overrides a project's
+  `[recall] default_global` marker and uses the resolved project's normal
+  search. Previously the explicit opt-out still returned cross-project
+  `global_hits` and disabled project-only query options (#1835).
+- Honored `base_path` from `config.toml` when mounting the HTTP server, so
+  thin clients and the web UI use the same prefix. Explicit flag and environment
+  overrides, including an empty value to serve at the root, kept their precedence (#1837).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
@@ -233,6 +388,10 @@ version in [`docs/changelog/`](docs/changelog/):
   `agent_id`, which the router treats like an OpenCode child session.
   `drop_subagent_captures` now covers OMP subagents too, and an advisor's tool
   calls stay with the session they advise (#1779).
+- The openai-compat strict path now treats an engine 501 structured-output
+  rejection as a capability gap and falls back to the tolerant parser. It used
+  to return the 501 as a transient failure, so the bootstrap chunk retry loop
+  repeated a call that failed the same way each time.
 
 ## [3.2.9] - 2026-10-27
 
