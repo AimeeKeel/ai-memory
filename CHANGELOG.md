@@ -38,7 +38,7 @@ version in [`docs/changelog/`](docs/changelog/):
   sessions held in Portuguese could still produce English `gotchas/`,
   `decisions/` and `concepts/` pages and English lint findings. Code,
   identifiers, paths, patch anchors, evidence quotes, JSON keys and enum
-  values stay verbatim.
+  values stay verbatim (#1839).
 - Updated `libz-sys` to 1.1.31 so its build probe no longer records the build
   environment, including possible secrets, in Cargo target artifacts
   (RUSTSEC-2026-0418).
