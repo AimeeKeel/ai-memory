@@ -643,6 +643,11 @@ pub struct HookState {
     /// subagent exclusion so a marked event still seeds its tail tracking.
     /// Empty by default.
     pub ingest_drop_list: crate::drop_list::IngestDropList,
+    /// `[ingest] record_tool_names` (default `false`): name each closed-tool
+    /// call in its observation (`tool non-file: Bash`, plus the skill or
+    /// subagent it ran) instead of only its family. Never its arguments.
+    /// Held here because the hooks crate makes no config reads.
+    pub record_tool_names: bool,
     /// Benchmark escape hatch (`AI_MEMORY_EVAL_SKIP_WIKI_CHECKPOINTS=1`, set
     /// only by the retrieval-benchmark harness in `evals/`): skip the
     /// SessionEnd auto-commits of the wiki git tree. The LongMemEval replay
@@ -832,10 +837,14 @@ async fn admit_hook(
         HookProcessingOutcome::DroppedInvalid.record(&state.ingest_metrics);
         return (StatusCode::ACCEPTED, "invalid marker aliases");
     }
-    let Some(env) = inspect_capture_envelope(env) else {
+    let Some(mut env) = inspect_capture_envelope(env) else {
         HookProcessingOutcome::DroppedPolicy.record(&state.ingest_metrics);
         return (StatusCode::ACCEPTED, "capture policy dropped");
     };
+    // After the capture policy: a call it reduced to metadata has no name left.
+    if state.record_tool_names {
+        env.record_tool_name();
+    }
     if is_cursor_draft_placeholder(&env) {
         HookProcessingOutcome::DroppedInvalid.record(&state.ingest_metrics);
         return (StatusCode::ACCEPTED, "cursor draft placeholder dropped");
@@ -1105,7 +1114,7 @@ async fn handle_hook_batch(
             accepted_indices.push(idx);
             continue;
         }
-        let Some(env) = inspect_capture_envelope(env) else {
+        let Some(mut env) = inspect_capture_envelope(env) else {
             // A protocol-directed drop is committed from the spool's point of
             // view, but intentionally spends neither ingress capacity nor a
             // source-rate token.
@@ -1117,6 +1126,9 @@ async fn handle_hook_batch(
             accepted_indices.push(idx);
             continue;
         };
+        if state.record_tool_names {
+            env.record_tool_name();
+        }
         if is_cursor_draft_placeholder(&env) {
             HookProcessingOutcome::DroppedInvalid.record(&state.ingest_metrics);
             results.push(HookBatchResult {
@@ -1377,6 +1389,9 @@ fn metadata_only_protocol_envelope(
         object.get("tool_call_id"),
         "unknown",
     );
+    // The client already replaced the tool name with the family; nothing a
+    // metadata-only event carries may be recorded as a tool name.
+    env.recorded_tool = None;
     env.raw = serde_json::Value::Object(raw);
     Some(env)
 }
@@ -1476,6 +1491,7 @@ fn metadata_envelope(
         raw.get("tool_call_id"),
         outcome.as_str(),
     );
+    env.recorded_tool = None;
     env.raw = raw;
     env
 }
@@ -7853,6 +7869,7 @@ pub(crate) mod tests {
             mid_session_routing: MidSessionRouting::default(),
             profile: ai_memory_core::profile::ProfileSettings::default(),
             ingest_drop_list: crate::drop_list::IngestDropList::default(),
+            record_tool_names: false,
             skip_wiki_checkpoints: false,
         }
     }
@@ -24237,6 +24254,124 @@ pub(crate) mod tests {
         );
     }
 
+    /// Post one session's tool events through the batch route and return the
+    /// stored tool observations as `(title, body)`.
+    async fn stored_tool_events(
+        state: Arc<HookState>,
+        session: &str,
+        events: Vec<serde_json::Value>,
+    ) -> Vec<(String, String)> {
+        let mut items = vec![HookBatchItem {
+            url: "http://h/hook?event=session-start&agent=claude-code".into(),
+            body: serde_json::json!({ "session_id": session }),
+        }];
+        items.extend(events.into_iter().map(|body| HookBatchItem {
+            url: "http://h/hook?event=post-tool-use&agent=claude-code".into(),
+            body,
+        }));
+        let response = handle_hook_batch(
+            State(state.clone()),
+            None,
+            None,
+            None,
+            HeaderMap::new(),
+            Json(items),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let sid = resolve_session_id(&HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "session-start".into(),
+                ..Default::default()
+            },
+            serde_json::json!({ "session_id": session }),
+        ))
+        .unwrap();
+        state
+            .reader
+            .observations_for_session(sid)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|o| o.kind == ObservationKind::PostToolUse)
+            .map(|o| (o.title, o.body))
+            .collect()
+    }
+
+    /// `[ingest] record_tool_names` names a kept call, and never a call a
+    /// capture policy reduced to metadata: not one the client stripped, and
+    /// not a shell call the server strips itself because its marker is
+    /// invalid, although that payload still carries the real `Bash` name.
+    /// No call keeps its arguments.
+    #[tokio::test]
+    async fn record_tool_names_names_kept_calls_and_never_metadata_only_ones() {
+        let tmp = TempDir::new().unwrap();
+        let mut state = make_state(&tmp).await;
+        state.record_tool_names = true;
+        let stored = stored_tool_events(
+            Arc::new(state),
+            "named-tools",
+            vec![
+                serde_json::json!({
+                    "session_id": "named-tools", "tool_name": "Bash", "tool_use_id": "toolu_k",
+                    "tool_input": { "command": "echo SENTINEL_SECRET" },
+                    "tool_response": { "stdout": "done" },
+                }),
+                serde_json::json!({
+                    "session_id": "named-tools", "tool_family": "file", "tool_name": "file",
+                    "_ai_memory_capture": capture_protocol("metadata-only", "active", "file", 1, "extracted"),
+                }),
+                serde_json::json!({
+                    "session_id": "named-tools", "tool_name": "Bash", "tool_use_id": "toolu_m",
+                    "tool_input": { "command": "cat .env # SENTINEL_SECRET" },
+                    "tool_response": { "stdout": "SENTINEL_SECRET" },
+                    "_ai_memory_capture": "not a protocol",
+                }),
+            ],
+        )
+        .await;
+        let titles: Vec<&str> = stored.iter().map(|(title, _)| title.as_str()).collect();
+        assert_eq!(titles, ["tool non-file: Bash", "file", "non-file"]);
+        assert!(
+            stored[0].1.contains("\ntool_name: Bash\n"),
+            "{}",
+            stored[0].1
+        );
+        for (title, body) in &stored[1..] {
+            assert!(
+                !body.contains("tool_name") && !body.contains("Bash"),
+                "{title}: {body}"
+            );
+        }
+        assert!(
+            stored
+                .iter()
+                .all(|(_, body)| !body.contains("SENTINEL_SECRET"))
+        );
+    }
+
+    /// Control: with `[ingest] record_tool_names` off (the default), the same
+    /// call keeps today's family-only title and body.
+    #[tokio::test]
+    async fn tool_calls_stay_unnamed_when_record_tool_names_is_off() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        assert!(!state.record_tool_names);
+        let stored = stored_tool_events(
+            Arc::new(state),
+            "unnamed-tools",
+            vec![serde_json::json!({
+                "session_id": "unnamed-tools", "tool_name": "Bash", "tool_use_id": "toolu_k",
+                "tool_input": { "command": "ls" }, "tool_response": { "stdout": "done" },
+            })],
+        )
+        .await;
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].0, "tool non-file");
+        assert!(!stored[0].1.contains("tool_name"), "{}", stored[0].1);
+    }
+
     #[tokio::test]
     async fn parsed_impossible_drop_is_acked_without_ingest_capacity() {
         let tmp = TempDir::new().unwrap();
@@ -24552,6 +24687,53 @@ pub(crate) mod tests {
             handoff.next_steps.iter().any(|s| s == "Tools used: Edit"),
             "a real tool name must still be listed; got: {:?}",
             handoff.next_steps
+        );
+    }
+
+    /// `[ingest] record_tool_names` titles (`tool <family>: <name>`) list by
+    /// their name in `Tools used:`, while the family they still carry keeps
+    /// the file-activity heuristic firing.
+    #[test]
+    fn auto_handoff_lists_recorded_tool_names_and_keeps_the_file_heuristic() {
+        use ai_memory_core::{ProjectId, WorkspaceId};
+        let observations = vec![
+            mk_obs(ObservationKind::UserPrompt, "fix bug", "fix the bug"),
+            mk_obs(
+                ObservationKind::PostToolUse,
+                "tool non-file: Bash",
+                "tool_family: non-file\ntool_name: Bash\noutcome: unknown",
+            ),
+            mk_obs(
+                ObservationKind::PostToolUse,
+                "tool file: Edit",
+                "tool_family: file\ntool_name: Edit\noutcome: unknown",
+            ),
+        ];
+        let handoff = build_auto_handoff(
+            WorkspaceId::new(),
+            ProjectId::new(),
+            AgentKind::ClaudeCode,
+            SessionId::new(),
+            None,
+            &observations,
+            None,
+            false,
+        );
+        assert!(
+            handoff
+                .next_steps
+                .iter()
+                .any(|s| s == "Tools used: Bash, Edit"),
+            "recorded names must be listed by name; got: {:?}",
+            handoff.next_steps
+        );
+        assert!(
+            handoff
+                .open_questions
+                .iter()
+                .any(|q| q.contains("while working with files")),
+            "a named file tool must still drive the file heuristic; got: {:?}",
+            handoff.open_questions
         );
     }
 

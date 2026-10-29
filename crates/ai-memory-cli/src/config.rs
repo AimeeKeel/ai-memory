@@ -1359,6 +1359,12 @@ pub struct IngestSettings {
     /// (`AI_MEMORY_INGEST__DROP_EVENTS=pre-tool-use`).
     #[serde(default, deserialize_with = "deserialize_string_or_vec")]
     pub drop_events: Vec<String>,
+    /// Name each tool call in its observation: `tool non-file: Bash` instead
+    /// of `tool non-file`, plus the skill (`Skill`) or subagent type
+    /// (`Agent`) a Claude Code call ran. Only identifiers are kept, never a
+    /// tool's arguments, and a call a capture policy reduced to metadata stays
+    /// unnamed. Off by default (`AI_MEMORY_INGEST__RECORD_TOOL_NAMES`).
+    pub record_tool_names: bool,
     /// The validated list the hook router checks. Set by [`Config::load`];
     /// never read from or written to a config file. Kept off the `Config`
     /// stack frame because that value is constructed in short-stack CLI
@@ -5426,6 +5432,57 @@ input_token_safety_margin = {margin}
     /// `[ingest]` is read once into the validated drop list the hook router
     /// checks, and an out-of-bounds entry fails startup instead of being
     /// silently ignored (#1241).
+    /// `[ingest] record_tool_names` is off unless the file turns it on.
+    #[test]
+    fn ingest_record_tool_names_defaults_off_and_loads_from_file() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let config = Config::load(Some(&config_path), Some(tmp.path().to_path_buf())).unwrap();
+        assert!(!config.ingest.record_tool_names);
+
+        std::fs::write(&config_path, "[ingest]\nrecord_tool_names = true\n").unwrap();
+        let config = Config::load(Some(&config_path), Some(tmp.path().to_path_buf())).unwrap();
+        assert!(config.ingest.record_tool_names);
+    }
+
+    /// The env form of `[ingest] record_tool_names`. Same child-process marker
+    /// pattern as `ingest_drop_events_env_overrides_default`.
+    #[test]
+    fn ingest_record_tool_names_env_turns_it_on() {
+        const CHILD_MARKER: &str = "AI_MEMORY_TEST_RECORD_TOOL_NAMES_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let tmp = TempDir::new().unwrap();
+            let config_path = tmp.path().join("config.toml");
+            std::fs::write(&config_path, "[ingest]\n").unwrap();
+            let config = Config::load(Some(&config_path), Some(tmp.path().to_path_buf())).unwrap();
+            assert!(config.ingest.record_tool_names);
+            println!("record-tool-names-env-applied");
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("config::tests::ingest_record_tool_names_env_turns_it_on")
+            .arg("--test-threads=1")
+            .arg("--nocapture")
+            .env(CHILD_MARKER, "1")
+            .env("AI_MEMORY_INGEST__RECORD_TOOL_NAMES", "true")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child test failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("record-tool-names-env-applied"),
+            "child stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
     #[test]
     fn ingest_drop_lists_load_into_the_router_list_and_reject_bad_entries() {
         let tmp = TempDir::new().unwrap();
