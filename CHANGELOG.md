@@ -391,6 +391,10 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Retried an OpenCode version probe briefly when the executable is temporarily
+  busy, covering both an updater replacing the binary and a just-written
+  launcher under parallel load instead of failing the managed launch.
+
 - Fixed live response capture after transcript gaps. Bounded batches now resume
   from durable enqueue checkpoints, including across hook processes and
   transcript read windows (#1830).
