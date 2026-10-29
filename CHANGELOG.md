@@ -15,7 +15,7 @@ version in [`docs/changelog/`](docs/changelog/):
 
 - Redesigned the responsive web dashboard. It has persistent workspace
   navigation, searchable project cards, per-agent consumption and coverage, and
-  session drilldowns that show the token totals recorded for each agent (#NNN).
+  session drilldowns that show the token totals recorded for each agent (#1828).
 
 - Added a browser inbox at `/web/inbox`. It lists received and sent mail
   without consuming it. A caller with write access to both the source and the
@@ -29,7 +29,7 @@ version in [`docs/changelog/`](docs/changelog/):
   whose routing metadata arrives before its session start was persisted is no
   longer refused. A browser session opened with the legacy read-only login can
   send with an explicit write token supplied for that one request and cleared
-  right after, with no browser persistence (#NNN).
+  right after, with no browser persistence (#1828).
 
 - Added live, deduplicated response token accounting for Claude Code and Codex.
   Updated native hooks to send measured response usage on `post-tool-use`,
