@@ -13100,6 +13100,22 @@ model = "gpt-5"
             branch("session.deleted").contains("typeof info.parentID === \"string\""),
             "a root session has no parentID and must stay unmarked"
         );
+        // When OpenCode exits, `dispose` ends every started session, children
+        // included, through `endSession` alone. Their marker comes from the
+        // parent the plugin recorded, so it reaches every close path.
+        let dispose = &plugin[plugin.find("dispose: async () =>").expect("dispose hook")..];
+        let dispose = &dispose[..dispose.find("event: async (input)").expect("event hook")];
+        assert!(dispose.contains("endSession(id, directory);"), "{dispose}");
+        let end_session = &plugin[plugin.find("function endSession(").expect("endSession")..];
+        let end_session = &end_session[..end_session.find("\n}\n").expect("endSession body")];
+        assert!(
+            end_session.contains("const parent = sessionParents.get(id);"),
+            "{end_session}"
+        );
+        assert!(
+            end_session.contains("...(parent ? { agent_id: parent } : {}), ...extra"),
+            "endSession must mark a recorded subagent's end: {end_session}"
+        );
         // Controls: `session.created` already forwards the marker (so the
         // branch slicer resolves real branches) and `session.idle` carries no
         // marker (so the slicer is not silently returning the whole plugin).
