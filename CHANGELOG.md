@@ -31,6 +31,9 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Updated `libz-sys` to 1.1.31 so its build probe no longer records the build
+  environment, including possible secrets, in Cargo target artifacts
+  (RUSTSEC-2026-0418).
 - Imported every Claude transcript left behind by `/clear`, oldest first,
   before finalizing the managed run on the newest session. Pre-clear turns now
   retain their native-session provenance instead of disappearing from the
