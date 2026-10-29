@@ -765,7 +765,7 @@ Each crate has a single responsibility and exposes a typed API. No
 circular deps. Inter-crate boundaries enforce the cross-cutting
 invariants below.
 
-## MCP tool surface (24 tools)
+## MCP tool surface (25 tools)
 
 Every registered tool carries explicit MCP annotations for its human-readable
 title and read-only, destructive, idempotent, and open-world behavior. These
@@ -836,14 +836,16 @@ page or a raw hit (one session, in scope, paged and body-capped) so an agent
 can audit what the hooks actually captured, `memory_auto_improve` exposes a
 safe default-on learning review through the same approval/write path as
 pending writes, and `memory_delete_page` is the exact-path destructive pair
-needed by admission-aware mirrors. `memory_handoff_cancel` is the safety valve
+needed by admission-aware mirrors. `memory_patch_page` provides bounded,
+preconditioned edits without making agents re-emit an entire page.
+`memory_handoff_cancel` is the safety valve
 for mistaken handoff creation. `memory_feedback` implements the
 "finer-grained reinforcement beyond access counts" P2 item from
 `prior-art-implementation-findings.md`: it cannot ride on a read tool
 without conflating read and write semantics, and the access counter it
 supplements cannot tell "this page answered the question" from "this page
 wasted a read". The narrow-surface discipline still holds (every new tool
-has to justify its slot), but the count is now 23, not 10.
+has to justify its slot), but the count is now 25, not 10.
 
 The managed Agent Skills are a narrow prompt-packaging exception to the
 otherwise wiki-centered architecture. They are static `SKILL.md` files that
