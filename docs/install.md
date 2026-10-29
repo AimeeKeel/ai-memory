@@ -2165,6 +2165,12 @@ docker run --rm akitaonrails/ai-memory:latest \
     --auth-token "$TOKEN"
 ```
 
+OpenCode 1.x runs each `task` subagent in a child session, and the task tool can
+resume an earlier one by its `task_id`. The plugin recognizes a child session from
+the parent OpenCode reports for it: a subagent never claims the pending handoff, and
+its end, including the one the plugin posts when OpenCode exits, leaves no handoff
+behind.
+
 Restart OpenCode after installing or changing the plugin; plugins are
 loaded at startup. The generic `opencode` client/agent spelling runs the installed
 `opencode --version` directly, accepts only major 1 or 2, and selects the matching
