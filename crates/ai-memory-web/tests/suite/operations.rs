@@ -1655,6 +1655,8 @@ async fn operations_edit_needs_write_access_to_the_sender_project_too() {
             to_agent: Some(AgentKind::Codex),
             subject: Some("from the source project".into()),
             body: "do the thing".into(),
+            nature: ai_memory_core::MessageNature::Unknown,
+            evidence: None,
         })
         .await
         .unwrap()
