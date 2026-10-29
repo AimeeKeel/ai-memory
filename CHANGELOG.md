@@ -100,6 +100,10 @@ version in [`docs/changelog/`](docs/changelog/):
   strings when parsing OpenAI-compatible tolerant replies and Anthropic text
   replies. Reasoning blocks outside the JSON are still removed, including
   when a strict OpenAI-compatible request falls back to tolerant parsing (#1817).
+- Disabled HTTP redirect following on the native hook client (`build_client`)
+  so 3xx responses from SSO gateways, captive portals, or proxies fail closed
+  instead of following to a 200 OK login page, which dropped spooled hook events
+  and injected login HTML into agent handoff context (#1818).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
