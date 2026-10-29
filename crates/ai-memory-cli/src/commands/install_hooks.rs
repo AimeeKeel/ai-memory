@@ -5202,8 +5202,12 @@ function startSession(id: string | undefined, cwd: string, extra: Record<string,
 function endSession(id: string | undefined, directory: string, cwd?: string, extra: Record<string, unknown> = {{}}): void {{
   if (!id || !startedSessions.delete(id)) return;
   const resolvedCwd = cwd || cwdFor(id, directory);
-  postHook("session-end", {{ sessionID: id, cwd: resolvedCwd, ...extra }});
+  // Every close path marks a subagent's end, the dispose at exit included:
+  // an unmarked end leaves the next session a sub-task baton (#755).
+  const parent = sessionParents.get(id);
+  postHook("session-end", {{ sessionID: id, cwd: resolvedCwd, ...(parent ? {{ agent_id: parent }} : {{}}), ...extra }});
   sessionCwds.delete(id);
+  sessionParents.delete(id);
   handoffFetches.delete(id);
   recapFetches.delete(id);
   preCompactLast.delete(id);
