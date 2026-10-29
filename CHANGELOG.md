@@ -31,6 +31,10 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Pinned `zip` 8.6 to upstream's official security-backport commit for
+  GHSA-m665-v7pm-7grj. Candle still requires the yanked 8.x line, so the
+  immutable backport keeps fresh builds resolvable while adding the header
+  consistency hardening shipped in `zip` 9.0.5.
 - Updated `libz-sys` to 1.1.31 so its build probe no longer records the build
   environment, including possible secrets, in Cargo target artifacts
   (RUSTSEC-2026-0418).

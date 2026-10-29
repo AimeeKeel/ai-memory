@@ -200,11 +200,12 @@ tempfile = "3"
 rstest = "0.26"
 
 # Candle 0.11 requires `zip ^8.6`, but crates.io yanked every compatible 8.x
-# release after publishing zip 9. Pin the upstream v8.6.0 release commit so a
-# fresh `cargo install --path` can still resolve the graph. Remove this patch
-# when Candle publishes a release compatible with zip 9.
+# release after publishing zip 9. Pin upstream's official 8.x security
+# backport for GHSA-m665-v7pm-7grj so fresh source resolution stays possible
+# without retaining the vulnerable v8.6.0 release. Remove this patch when
+# Candle publishes a release compatible with zip 9.
 [patch.crates-io]
-zip = { git = "https://github.com/zip-rs/zip2", rev = "771dfc534d2614158af5497ea3dff4d4208d7db1" }
+zip = { git = "https://github.com/zip-rs/zip2", rev = "507c5c76ddd4cde767e64832fc6f848c51a99e44" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

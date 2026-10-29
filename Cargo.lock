@@ -5367,7 +5367,7 @@ dependencies = [
 [[package]]
 name = "zip"
 version = "8.6.0"
-source = "git+https://github.com/zip-rs/zip2?rev=771dfc534d2614158af5497ea3dff4d4208d7db1#771dfc534d2614158af5497ea3dff4d4208d7db1"
+source = "git+https://github.com/zip-rs/zip2?rev=507c5c76ddd4cde767e64832fc6f848c51a99e44#507c5c76ddd4cde767e64832fc6f848c51a99e44"
 dependencies = [
  "crc32fast",
  "flate2",
