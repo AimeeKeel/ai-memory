@@ -332,10 +332,9 @@ pub struct Config {
     /// CLI commands prepend it to every `/admin/*` request so deployments
     /// hosted behind a reverse proxy under a subpath don't 404. Settable via
     /// `AI_MEMORY_BASE_PATH`. Empty for root-mounted deployments (the
-    /// default). The `serve` subcommand reads the same env var via clap and
-    /// nests its router accordingly; this field is what the thin-client
-    /// path needs to discover the same prefix without a second
-    /// `std::env::var` call (invariant: one config-read path).
+    /// default). The `serve` subcommand uses this value unless an explicit
+    /// flag or env override wins, so it mounts the same prefix thin clients
+    /// resolve without another environment read (invariant: one config-read path).
     #[serde(default)]
     pub base_path: String,
     /// Operator home directory, captured once here (the single config-read
