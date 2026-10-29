@@ -157,6 +157,20 @@ struct SqlCursor {
     id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CrushCursor {
+    updated: i64,
+    id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    boundary: Vec<CrushRevision>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CrushRevision {
+    id: String,
+    digest: String,
+}
+
 /// Export unseen visible transcript records for one native session.
 pub async fn export_transcript(
     harness: ManagedHarness,
@@ -339,9 +353,22 @@ fn validate_cursor_range(
     source_cursor: Option<&str>,
     final_cursor: &str,
 ) -> Result<()> {
-    if matches!(
+    if harness == ManagedHarness::Crush {
+        let start = source_cursor
+            .map(serde_json::from_str::<CrushCursor>)
+            .transpose()
+            .context("invalid native transcript Crush cursor")?
+            .unwrap_or_default();
+        let end: CrushCursor = serde_json::from_str(final_cursor)
+            .context("invalid native transcript final Crush cursor")?;
+        if (end.updated, end.id.as_str()) < (start.updated, start.id.as_str()) {
+            return Err(anyhow!(
+                "native transcript final cursor precedes its start cursor"
+            ));
+        }
+    } else if matches!(
         harness,
-        ManagedHarness::OpenCode | ManagedHarness::OpenCode2 | ManagedHarness::Crush
+        ManagedHarness::OpenCode | ManagedHarness::OpenCode2
     ) {
         let start = source_cursor
             .map(serde_json::from_str::<SqlCursor>)
@@ -377,9 +404,14 @@ fn validate_transcript_cursor(
     native_session_id: &str,
     source_cursor: &str,
 ) -> Result<()> {
+    if harness == ManagedHarness::Crush {
+        serde_json::from_str::<CrushCursor>(source_cursor)
+            .context("invalid native transcript Crush cursor")?;
+        return Ok(());
+    }
     if matches!(
         harness,
-        ManagedHarness::OpenCode | ManagedHarness::OpenCode2 | ManagedHarness::Crush
+        ManagedHarness::OpenCode | ManagedHarness::OpenCode2
     ) {
         serde_json::from_str::<SqlCursor>(source_cursor)
             .context("invalid native transcript SQL cursor")?;
@@ -525,10 +557,14 @@ fn transcript_baseline_blocking(
             opencode_db(home, session_dir),
             "SELECT time_updated, id FROM session_message WHERE session_id = ?1 ORDER BY time_updated DESC, id DESC LIMIT 1",
         ),
-        ManagedHarness::Crush => sql_cursor(
-            crush_db(home, cwd, session_dir),
-            "SELECT updated_at, id FROM messages WHERE session_id = ?1 ORDER BY updated_at DESC, id DESC LIMIT 1",
-        ),
+        ManagedHarness::Crush => crush_cursor(
+            &Connection::open_with_flags(
+                crush_db(home, cwd, session_dir),
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?,
+            native_session_id,
+        )
+        .and_then(|cursor| serde_json::to_string(&cursor).map_err(Into::into)),
         ManagedHarness::Antigravity => Err(anyhow!(
             "{} does not expose a reliable transcript cursor",
             harness.as_str()
@@ -3254,6 +3290,70 @@ fn export_crush(
     export_crush_range(home, cwd, session_dir, session, source_cursor, None)
 }
 
+fn crush_revision(id: &str, role: &str, parts: &str, is_summary: i64) -> CrushRevision {
+    let seed = format!("{id}\0{role}\0{is_summary}\0{parts}");
+    CrushRevision {
+        id: id.to_owned(),
+        digest: format!("{:x}", Sha256::digest(seed.as_bytes())),
+    }
+}
+
+fn crush_cursor(connection: &Connection, session: &str) -> Result<CrushCursor> {
+    let newest = connection
+        .query_row(
+            "SELECT updated_at, id FROM messages WHERE session_id = ?1 \
+             ORDER BY updated_at DESC, id DESC LIMIT 1",
+            [session],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((updated, id)) = newest else {
+        return Ok(CrushCursor::default());
+    };
+    let mut statement = connection.prepare(
+        "SELECT id, role, parts, is_summary_message FROM messages \
+         WHERE session_id = ?1 AND updated_at = ?2 ORDER BY id LIMIT ?3",
+    )?;
+    let revisions = statement
+        .query_map(
+            params![session, updated, (MAX_SOURCE_RECORDS + 1) as i64],
+            |row| {
+                let id = row.get::<_, String>(0)?;
+                let role = row.get::<_, String>(1)?;
+                let parts = row.get::<_, String>(2)?;
+                let summary = row.get::<_, i64>(3)?;
+                Ok(crush_revision(&id, &role, &parts, summary))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    if revisions.len() > MAX_SOURCE_RECORDS {
+        return Err(anyhow!(
+            "Crush cursor boundary exceeds the {MAX_SOURCE_RECORDS} source-record limit"
+        ));
+    }
+    Ok(CrushCursor {
+        updated,
+        id,
+        boundary: revisions,
+    })
+}
+
+fn crush_revision_is_known(cursor: &CrushCursor, revision: &CrushRevision) -> bool {
+    if cursor.boundary.is_empty() {
+        revision.id <= cursor.id
+    } else {
+        cursor.boundary.iter().any(|known| known == revision)
+    }
+}
+
+fn crush_revision_is_within(cursor: &CrushCursor, revision: &CrushRevision) -> bool {
+    if cursor.boundary.is_empty() {
+        revision.id <= cursor.id
+    } else {
+        cursor.boundary.iter().any(|known| known == revision)
+    }
+}
+
 fn export_crush_range(
     home: &Path,
     cwd: &Path,
@@ -3269,35 +3369,40 @@ fn export_crush_range(
     )
     .with_context(|| format!("opening Crush session database {} read-only", db.display()))?;
     let cursor = source_cursor
-        .and_then(|raw| serde_json::from_str::<SqlCursor>(raw).ok())
+        .and_then(|raw| serde_json::from_str::<CrushCursor>(raw).ok())
         .unwrap_or_default();
     let upper = final_cursor
-        .map(serde_json::from_str::<SqlCursor>)
+        .map(serde_json::from_str::<CrushCursor>)
         .transpose()
-        .context("invalid native transcript final SQL cursor")?
-        .unwrap_or(SqlCursor {
+        .context("invalid native transcript final Crush cursor")?
+        .unwrap_or(CrushCursor {
             updated: i64::MAX,
             id: "\u{10ffff}".to_string(),
+            boundary: Vec::new(),
         });
+    let revisit_boundary = i64::from(!cursor.boundary.is_empty());
+    let query_limit = MAX_SOURCE_RECORDS
+        .checked_add(cursor.boundary.len())
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| anyhow!("Crush transcript query limit overflow"))?;
     let mut statement = connection.prepare(
         "SELECT id, role, length(parts), parts, updated_at, is_summary_message \
          FROM messages \
          WHERE session_id = ?1 \
-           AND (updated_at > ?2 OR (updated_at = ?2 AND id > ?3)) \
-           AND (updated_at < ?4 OR (updated_at = ?4 AND id <= ?5)) \
+           AND (updated_at > ?2 OR (updated_at = ?2 AND (?3 = 1 OR id > ?4))) \
+           AND updated_at <= ?5 \
          ORDER BY updated_at, id LIMIT ?6",
     )?;
     let mut rows = statement.query(params![
         session,
         cursor.updated,
+        revisit_boundary,
         cursor.id,
         upper.updated,
-        upper.id,
-        (MAX_SOURCE_RECORDS + 1) as i64
+        query_limit as i64
     ])?;
     let mut events = Vec::new();
     let mut losses = Vec::new();
-    let mut next_cursor = cursor;
     let mut source_bytes = 0_usize;
     let mut checked_events = 0_usize;
     let mut event_bytes = 0_usize;
@@ -3322,10 +3427,13 @@ fn export_crush_range(
         let parts_raw = row.get::<_, String>(3)?;
         let updated = row.get::<_, i64>(4)?;
         let is_summary = row.get::<_, i64>(5)?;
-        next_cursor = SqlCursor {
-            updated,
-            id: id.clone(),
-        };
+        let revision = crush_revision(&id, &role, &parts_raw, is_summary);
+        if updated == cursor.updated && crush_revision_is_known(&cursor, &revision) {
+            continue;
+        }
+        if updated == upper.updated && !crush_revision_is_within(&upper, &revision) {
+            continue;
+        }
         let Ok(parts) = serde_json::from_str::<Value>(&parts_raw) else {
             losses.push(format!("malformed Crush message parts for {id}"));
             continue;
@@ -3351,6 +3459,11 @@ fn export_crush_range(
             0,
         )?;
     }
+    let next_cursor = if final_cursor.is_some() {
+        upper
+    } else {
+        crush_cursor(&connection, session)?
+    };
     Ok(ExportedTranscript {
         native_session_id: session.to_string(),
         source_cursor: Some(serde_json::to_string(&next_cursor)?),
@@ -7518,6 +7631,75 @@ mod tests {
         assert_eq!(second.events.len(), 1);
         assert_eq!(second.events[0].kind, WorkstreamEventKind::ToolResult);
         assert_eq!(second.events[0].content, "ok");
+    }
+
+    #[test]
+    fn crush_cursor_keeps_same_second_inserts_updates_and_exact_ranges() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("repo");
+        let data = cwd.join(".crush");
+        fs::create_dir_all(&data).unwrap();
+        let db = data.join("crush.db");
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE messages(\
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL,\
+                    parts TEXT NOT NULL, updated_at INTEGER NOT NULL,\
+                    is_summary_message INTEGER NOT NULL DEFAULT 0);",
+            )
+            .unwrap();
+        let text = |value: &str| json!([{"type":"text","data":{"text":value}}]).to_string();
+        connection
+            .execute(
+                "INSERT INTO messages VALUES ('f000', 's', 'assistant', ?1, 100, 0)",
+                [text("first")],
+            )
+            .unwrap();
+        let first = export_crush(temp.path(), &cwd, None, "s", None).unwrap();
+        let exact_end = first.source_cursor.clone().unwrap();
+
+        connection
+            .execute(
+                "INSERT INTO messages VALUES ('1000', 's', 'user', ?1, 100, 0)",
+                [text("same-second insert")],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE messages SET parts = ?1 WHERE id = 'f000'",
+                [text("same-second update")],
+            )
+            .unwrap();
+        let second =
+            export_crush(temp.path(), &cwd, None, "s", first.source_cursor.as_deref()).unwrap();
+        assert_eq!(
+            second
+                .events
+                .iter()
+                .map(|event| event.content.as_str())
+                .collect::<Vec<_>>(),
+            ["same-second insert", "same-second update"]
+        );
+        assert!(
+            export_crush(
+                temp.path(),
+                &cwd,
+                None,
+                "s",
+                second.source_cursor.as_deref()
+            )
+            .unwrap()
+            .events
+            .is_empty()
+        );
+
+        let exact =
+            export_crush_range(temp.path(), &cwd, None, "s", None, Some(&exact_end)).unwrap();
+        assert!(
+            exact.events.is_empty(),
+            "rows and revisions added after the captured endpoint stay outside the interval"
+        );
     }
 
     /// Claude Code writes `cwd` on every record and Codex in each
