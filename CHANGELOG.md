@@ -13,7 +13,7 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
-- Fixed the macOS menu app’s LaunchAgent installation and restart checks for app and home-directory paths containing XML characters such as `&`. (#PR)
+- Fixed the macOS menu app’s LaunchAgent installation and restart checks for app and home-directory paths containing XML characters such as `&`. ([#1844](https://github.com/akitaonrails/ai-memory/pull/1844))
 
 ## [3.2.10] - 2026-10-29
 
