@@ -378,6 +378,15 @@ ledger_retention_months = 0        # 0 = never delete hook event ledgers
 # default (nothing dropped).
 # Env equivalent: AI_MEMORY_INGEST__DROP_EVENTS=pre-tool-use
 # drop_events = ["pre-tool-use"]
+#
+# Name each tool call in its observation instead of only its family: the title
+# `tool non-file` becomes `tool non-file: Bash`, and a Claude Code `Skill` or
+# `Agent` call also keeps the skill or subagent type it ran. Session pages and
+# handoffs then count calls by name. Only identifiers are kept, never a tool's
+# arguments (a shell command, a prompt, a path), and a call a capture policy
+# reduced to metadata stays unnamed. Off by default.
+# Env equivalent: AI_MEMORY_INGEST__RECORD_TOOL_NAMES=true
+# record_tool_names = true
 
 # Privacy strip.
 #

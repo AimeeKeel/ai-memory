@@ -1687,6 +1687,7 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                 mid_session_routing: config.routing.mid_session,
                 profile: config.profile.clone(),
                 ingest_drop_list: (*config.ingest.drop_list).clone(),
+                record_tool_names: config.ingest.record_tool_names,
                 // Benchmark-only escape (docs/benchmarks/README.md), read once
                 // here so the hooks crate keeps making no environment reads.
                 skip_wiki_checkpoints: benchmark_skip_wiki_checkpoints(),

@@ -13,6 +13,15 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added `[ingest] record_tool_names` (`AI_MEMORY_INGEST__RECORD_TOOL_NAMES`),
+  off by default. When it is on, each tool call keeps its own name, so a
+  Claude Code shell call is stored as `tool non-file: Bash` instead of
+  `tool non-file`. A `Skill` call also keeps the skill it ran, and an `Agent`
+  call keeps its subagent type. Session pages count calls by name and
+  handoffs list them by name. Only short identifiers are kept, never a tool's
+  arguments, and a call that a capture policy reduced to metadata stays
+  unnamed (#1851).
+
 - `global_scope_hits` now include their workspace, project, and global scope,
   and `memory_read_page` accepts `scope: "global"`. Supplemental global search
   results can therefore be read directly without risking a same-path lookup in

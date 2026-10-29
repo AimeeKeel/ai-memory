@@ -1520,6 +1520,14 @@ drop_events = []                  # whole hook event kinds to drop (e.g. ["pre-t
                                   # each pairs 1:1 with a post-tool-use that carries the
                                   # content. Empty by default. Env:
                                   # AI_MEMORY_INGEST__DROP_EVENTS=pre-tool-use
+record_tool_names = false         # name each closed-tool call: title `tool non-file: Bash`,
+                                  # body `tool_name:` plus `skill:` / `subagent_type:` for a
+                                  # Claude Code Skill / Agent call. Identifiers only (a name of
+                                  # at most 64 [A-Za-z0-9_-], a descriptor of at most 128
+                                  # [A-Za-z0-9_.:-]); never arguments. Applied after the capture
+                                  # policy, so a metadata-only call stays unnamed. Session pages
+                                  # and handoffs then count and list calls by name. Env:
+                                  # AI_MEMORY_INGEST__RECORD_TOOL_NAMES=true
 ```
 
 The privacy and fidelity tradeoff behind `[consolidation].verbatim_residue`,
