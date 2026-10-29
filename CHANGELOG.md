@@ -79,6 +79,10 @@ version in [`docs/changelog/`](docs/changelog/):
 - Kept concurrent page edits current during opt-in cold-cluster dedup and dream
   merges. Each write batch now skips if a selected source version changed,
   preserving the newer body, tier and pin along with unchanged peers (#1808).
+- Dropping the final store writer handle now finishes when its command queue
+  is full. Accepted writes still drain before the writer thread exits, including
+  when callers have cancelled their waits (#1809).
+
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and

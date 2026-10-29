@@ -1032,7 +1032,9 @@ that touch the relevant area.
    code that must read process or harness environment takes an injectable
    lookup so tests can stub it. (agentmemory #456 / #469.)
 2. **Single-writer SQLite actor.** All writes go through one `mpsc`
-   channel to one dedicated OS thread. (cognee #2717.)
+   channel to one dedicated OS thread. Dropping the final writer handle
+   drains accepted commands and joins that thread, even when the bounded
+   queue is full or callers have cancelled their reply waits. (cognee #2717.)
 3. **Indexes commit in the same transaction as the data.** No
    background-task-indexing-after-return. (basic-memory #763 / #578.)
 4. **Typed 3-tuple identity** (`workspace_id`, `project_id`, path)
