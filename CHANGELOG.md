@@ -83,6 +83,10 @@ version in [`docs/changelog/`](docs/changelog/):
   is full. Accepted writes still drain before the writer thread exits, including
   when callers have cancelled their waits (#1809).
 
+- Scheduled empty-project cleanup now preserves projects that have sent or
+  received agent messages, including claimed/cancelled history, so it cannot
+  silently delete their inbox/outbox through a project cascade (#1810).
+
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and

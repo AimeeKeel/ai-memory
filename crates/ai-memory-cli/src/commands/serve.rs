@@ -2273,7 +2273,8 @@ async fn start_maintenance_scheduler(
     }
 
     // Hollow-project sweep: deletes project rows with no pages, sessions,
-    // observations, handoffs, managed workstreams, or auto-improvement data
+    // observations, handoffs, managed workstreams, agent messages (sent or
+    // received, in any state), or auto-improvement data
     // once they are older than HOLLOW_PROJECT_MIN_AGE_DAYS. Safe by
     // construction — nothing exists to lose — which is why it runs
     // unconditionally under the maintenance flag with no extra config. Runs
