@@ -41,6 +41,7 @@ version in [`docs/changelog/`](docs/changelog/):
   `restore-page --page-id <uuid>` restores either retained history even after
   the source identity is removed. Open sessions and live managed runs refuse
   the merge (#1645).
+
 - `audit-contamination` now reports projects in one workspace whose names
   collide after Unicode compatibility decomposition, case folding, and
   removal of non-spacing marks. Findings distinguish case from accent
@@ -181,75 +182,6 @@ version in [`docs/changelog/`](docs/changelog/):
   side is upgraded, and nothing showed it. When they differ in major version,
   the text report adds a warning to upgrade the older side (#1644).
 
-### Changed
-
-- `memory_lint` now reports embedding-band pairs as
-  `similarity_candidate` instead of `contradiction`, and no longer infers that
-  a newer page supersedes an older one from timestamps alone. Explicit
-  `contradicts` edges remain `contradiction` findings (#1685).
-
-- `move-project` now refuses the **copy+purge merge** — the path taken when the
-  destination workspace already holds a project of the same name — unless
-  `--allow-lossy-merge` is passed as well as `--confirm`. That path keeps only
-  the source's latest pages and deletes the project with its sessions,
-  observations, handoffs and older page versions, which `--confirm` written for
-  "move this project" did not say; the refusal answers `409` with the counts it
-  would discard. A true-move (fresh destination, everything preserved) is
-  unchanged, and `merge-workspace`, whose command already says merge, keeps
-  working without the extra flag (#1713).
-
-- `memory_install_self_routing(compact: true)` and `ai-memory
-  install-instructions --compact` now return a block that is actually compact:
-  2.1 KB instead of 5.9 KB, close to the 7.9 KB full block it was supposed to
-  replace. It keeps the rules a session needs without reading anything else
-  (scope selection for session-aware and static clients, managed-run resume,
-  capture, the untrusted-memory trust rule, and where rules belong) and points
-  at the installed `ai-memory-*` Agent Skills for the rest, which it already
-  required to be installed (#1672).
-
-- When the native session linked to a workstream is missing from its store,
-  an interactive `ai-memory run <harness>` now also names the newest session
-  this checkout still holds for that harness and the native selector that
-  resumes it, such as `resume <id>` for Codex. The launch still starts fresh
-  as before; running the same command again with that selector right after
-  the harness name links that session instead (#1654).
-
-- Managed-workstream startup packets now render completed tool calls and
-  results as compact provenance stubs instead of spending the 30,000-character
-  resume budget on raw command output or generated file content. Conversation,
-  checkpoints, compactions, and annotations remain inline; the complete
-  sanitized tool evidence stays searchable in the ledger (#1607).
-
-- The LLM fallback chain now logs its own events. A transient candidate
-  failure logs a warning with that candidate's provider, model, chain
-  position, error class, HTTP status and cooldown, and an info line records
-  each change of the answering candidate. Before, the chain logged nothing,
-  and callers such as the reranker named only the first candidate, so a log
-  could blame the primary for a timeout another candidate caused. Response
-  bodies are never logged (#1628).
-
-## [3.2.10] - 2026-10-29
-
-### Changed
-
-- Documented the settings that `config.default.toml` had left out, and added
-  `docs/config-properties.md`, a reference table of every key `config.toml`
-  accepts with its default, environment variable and purpose. The template now
-  describes the `llm_*` keys (including `llm_compat_strict` and
-  `[[llm_fallbacks]]`), the embedding endpoint and prefix keys,
-  `tcp_keepalive_secs`, `base_path`, `release_base_url`, `cors_allow_origins`,
-  `consolidate_on_session_end`, `backfill_on_start`, `run_autowire`,
-  `claude_true_yolo`, the `contradiction_band_*` keys, and the `[run]`,
-  `[hook_spool]`, `[handoff]`, `[maintenance]`, `[dream]`, `[retrieval]`,
-  `[search.fts]`, `[profile]` and `[[admission_webhooks]]` sections. It also
-  lists the remaining keys of `[decay]` (including `[decay.half_life_days]`),
-  `[consolidation]`, `[auto_improve]`, `[auto_scope]` and `[auth]`, and the
-  `[auto_improve.scheduler.experience_entropy_filter]` table. The new entries
-  are all commented examples, and keys with a built-in default show that
-  default. `AGENTS.md` now requires a new config key to land in both files.
-
-### Added
-
 - Added editing for queued messages in the web inbox. Edit takes a message that
   is still waiting out of the queue, so no agent can collect it, and opens an
   inline editor. Saving puts the new text back at the message's original place
@@ -387,8 +319,6 @@ version in [`docs/changelog/`](docs/changelog/):
   growing. It attaches no usage and starts no consolidation, because the
   server cannot read a client's transcript outside a live hook request (#1803).
 
-### Added
-
 - Added optional `max_chars` to `memory_read_page` (default 12000,
   minimum 500, maximum 64000). It caps the returned body with the same visible
   truncation marker as `memory_read_session_observations`. The response always
@@ -397,6 +327,51 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Changed
 
+- `memory_lint` now reports embedding-band pairs as
+  `similarity_candidate` instead of `contradiction`, and no longer infers that
+  a newer page supersedes an older one from timestamps alone. Explicit
+  `contradicts` edges remain `contradiction` findings (#1685).
+
+- `move-project` now refuses the **copy+purge merge** — the path taken when the
+  destination workspace already holds a project of the same name — unless
+  `--allow-lossy-merge` is passed as well as `--confirm`. That path keeps only
+  the source's latest pages and deletes the project with its sessions,
+  observations, handoffs and older page versions, which `--confirm` written for
+  "move this project" did not say; the refusal answers `409` with the counts it
+  would discard. A true-move (fresh destination, everything preserved) is
+  unchanged, and `merge-workspace`, whose command already says merge, keeps
+  working without the extra flag (#1713).
+
+- `memory_install_self_routing(compact: true)` and `ai-memory
+  install-instructions --compact` now return a block that is actually compact:
+  2.1 KB instead of 5.9 KB, close to the 7.9 KB full block it was supposed to
+  replace. It keeps the rules a session needs without reading anything else
+  (scope selection for session-aware and static clients, managed-run resume,
+  capture, the untrusted-memory trust rule, and where rules belong) and points
+  at the installed `ai-memory-*` Agent Skills for the rest, which it already
+  required to be installed (#1672).
+
+- When the native session linked to a workstream is missing from its store,
+  an interactive `ai-memory run <harness>` now also names the newest session
+  this checkout still holds for that harness and the native selector that
+  resumes it, such as `resume <id>` for Codex. The launch still starts fresh
+  as before; running the same command again with that selector right after
+  the harness name links that session instead (#1654).
+
+- Managed-workstream startup packets now render completed tool calls and
+  results as compact provenance stubs instead of spending the 30,000-character
+  resume budget on raw command output or generated file content. Conversation,
+  checkpoints, compactions, and annotations remain inline; the complete
+  sanitized tool evidence stays searchable in the ledger (#1607).
+
+- The LLM fallback chain now logs its own events. A transient candidate
+  failure logs a warning with that candidate's provider, model, chain
+  position, error class, HTTP status and cooldown, and an info line records
+  each change of the answering candidate. Before, the chain logged nothing,
+  and callers such as the reranker named only the first candidate, so a log
+  could blame the primary for a timeout another candidate caused. Response
+  bodies are never logged (#1628).
+
 - Reduced the default output of `memory_read_session_observations`: `limit`
   from 50 to 20 and `body_max_chars` from 4000 to 1000. Callers can still raise
   them to the unchanged ceilings of 200 and 16384. The smaller response reduces
@@ -404,6 +379,59 @@ version in [`docs/changelog/`](docs/changelog/):
   retrieval skill with an `order="desc"` recipe using a narrow `kinds` filter
   and small `limit` and `body_max_chars` values to avoid reading the whole
   session (#1827).
+
+### Fixed
+
+- Fixed live response capture after transcript gaps. Bounded batches now resume
+  from durable enqueue checkpoints, including across hook processes and
+  transcript read windows (#1830).
+
+- Fixed response search, signal filtering and recent ordering so they query all
+  authorized calls before pagination. Response pages are independent, and
+  session detail pages refresh usage live (#1830).
+
+- Updated scoped session reads to treat substantive work after an old end as a
+  resumed session, matching the activity feed while preserving persisted
+  lifecycle watermarks. Completed-only listings exclude those resumed sessions (#1830).
+
+- Moved token model label sanitization before truncation to prevent the size
+  limit from exposing a prefix of private text (#1830).
+
+- Updated release selection on the changelog page to load notes immediately
+  and keep the URL, outline and Markdown reference in sync. The form still submits
+  without JavaScript (#1830).
+
+- Added a read-only recovery snapshot at agent startup when the previous
+  substantive session in the project ended without a `SessionEnd` (quota
+  exhaustion, a killed process, a machine restart). The snapshot is built on
+  demand from at most 64 sanitized observations and capped at 6,000
+  characters, so no rolling copy of the transcript exists. It is scoped to the
+  project and owner, leaves out the receiving session, keeps the
+  untrusted-memory boundary, and never closes or claims the source, which may
+  be a legitimate parallel agent. It skips work a handoff already covers and
+  never mixes another live session's transcript into a delivered handoff.
+  Normal single-use handoffs and managed workstream packets are unchanged
+  (#1803).
+
+## [3.2.10] - 2026-10-29
+
+### Changed
+
+- Documented the settings that `config.default.toml` had left out, and added
+  `docs/config-properties.md`, a reference table of every key `config.toml`
+  accepts with its default, environment variable and purpose. The template now
+  describes the `llm_*` keys (including `llm_compat_strict` and
+  `[[llm_fallbacks]]`), the embedding endpoint and prefix keys,
+  `tcp_keepalive_secs`, `base_path`, `release_base_url`, `cors_allow_origins`,
+  `consolidate_on_session_end`, `backfill_on_start`, `run_autowire`,
+  `claude_true_yolo`, the `contradiction_band_*` keys, and the `[run]`,
+  `[hook_spool]`, `[handoff]`, `[maintenance]`, `[dream]`, `[retrieval]`,
+  `[search.fts]`, `[profile]` and `[[admission_webhooks]]` sections. It also
+  lists the remaining keys of `[decay]` (including `[decay.half_life_days]`),
+  `[consolidation]`, `[auto_improve]`, `[auto_scope]` and `[auth]`, and the
+  `[auto_improve.scheduler.experience_entropy_filter]` table. The new entries
+  are all commented examples, and keys with a built-in default show that
+  default. `AGENTS.md` now requires a new config key to land in both files.
 
 ### Fixed
 
@@ -556,37 +584,6 @@ version in [`docs/changelog/`](docs/changelog/):
 - Honored `base_path` from `config.toml` when mounting the HTTP server, so
   thin clients and the web UI use the same prefix. Explicit flag and environment
   overrides, including an empty value to serve at the root, kept their precedence (#1837).
-- Fixed live response capture after transcript gaps. Bounded batches now resume
-  from durable enqueue checkpoints, including across hook processes and
-  transcript read windows (#1830).
-
-- Fixed response search, signal filtering and recent ordering so they query all
-  authorized calls before pagination. Response pages are independent, and
-  session detail pages refresh usage live (#1830).
-
-- Updated scoped session reads to treat substantive work after an old end as a
-  resumed session, matching the activity feed while preserving persisted
-  lifecycle watermarks. Completed-only listings exclude those resumed sessions (#1830).
-
-- Moved token model label sanitization before truncation to prevent the size
-  limit from exposing a prefix of private text (#1830).
-
-- Updated release selection on the changelog page to load notes immediately
-  and keep the URL, outline and Markdown reference in sync. The form still submits
-  without JavaScript (#1830).
-
-- Added a read-only recovery snapshot at agent startup when the previous
-  substantive session in the project ended without a `SessionEnd` (quota
-  exhaustion, a killed process, a machine restart). The snapshot is built on
-  demand from at most 64 sanitized observations and capped at 6,000
-  characters, so no rolling copy of the transcript exists. It is scoped to the
-  project and owner, leaves out the receiving session, keeps the
-  untrusted-memory boundary, and never closes or claims the source, which may
-  be a legitimate parallel agent. It skips work a handoff already covers and
-  never mixes another live session's transcript into a delivered handoff.
-  Normal single-use handoffs and managed workstream packets are unchanged
-  (#1803).
-
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
