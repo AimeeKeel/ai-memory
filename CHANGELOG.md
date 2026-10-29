@@ -31,6 +31,28 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Kept purge-session tombstones out of automatic hollow-project cleanup, so
+  an old otherwise-empty project cannot lose replay protection immediately
+  after its session is purged (GHSA-pphw-hm98-3wh4).
+- Made Crush transcript cursors revision-aware within their one-second native
+  timestamp bucket. Same-second inserts and edits are now imported exactly
+  once, while captured recovery endpoints still exclude later revisions
+  (#1813).
+- Made TypeScript SDK capability initialization client-owned with independently
+  cancellable waits, so one caller cannot abort another caller's shared probe
+  and a later caller observes its own cancellation promptly (#1815).
+- Initialized MCP sessions in the document and agentmemory importer routes,
+  retaining validated session IDs and sending `notifications/initialized`, so
+  conditional imports work with both stateless and `--http-stateful` servers
+  (#1836).
+- Explicit `ai-memory run --fresh claude` launches now expose the previously
+  linked Claude session through `AI_MEMORY_PREVIOUS_SESSION_HISTORY`, including
+  when the two sessions live under different Claude config homes (#1789).
+- Replaced the misleading hook-refresh-only warning after a linked Codex run
+  fails to acknowledge context with a `/new`-specific ownership warning. The
+  wrapper does not adopt the unlinked thread because Codex supplies no trusted
+  parent relationship (#1788).
+
 - Sorted recent page lists by timestamp rather than RFC3339 text, so updates
   with different fractional-second precision appear in chronological order
   in the legacy recent API, project activity, folder previews and namespace

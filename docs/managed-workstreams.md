@@ -464,7 +464,17 @@ it. The compressed copy counts as the linked session, so the launch resumes it
 and the transcript import reads it like the plain file. Use
 `ai-memory run --fresh <harness>` to deliberately skip the linked
 session and the adoption chooser. `--fresh` cannot be combined with a native
-resume, continue, session, or fork selector.
+resume, continue, session, or fork selector. A fresh interactive launch still
+exports the linked session as `AI_MEMORY_PREVIOUS_SESSION_HISTORY` when it is
+available locally. This matters when Claude's new session uses a different
+configuration home: the harness can read the bounded, checkout-validated old
+session without ai-memory copying it into the server.
+
+Codex's in-session `/new` command does not expose a trustworthy parent-thread
+relationship. ai-memory therefore never guesses that the new thread owns the
+managed workstream. If the linked thread exits without acknowledging its
+context after `/new`, the wrapper explains that the intended thread must be
+selected explicitly on the next managed run.
 
 ## What happens on each run
 
@@ -573,6 +583,12 @@ keep their ordinary `state.content` text parts.
 OpenCode 2 compaction messages import their `summary` as a compaction event
 (and, when a failed compaction has no summary, `error.message`). The V1 adapter
 already imported compaction parts the same way.
+
+Crush cursors fingerprint every message revision in the newest one-second
+timestamp bucket. This preserves inserts whose UUID sorts below the prior
+cursor and edits whose native timestamp did not advance. Exact recovery ranges
+also retain the captured endpoint fingerprints, so a revision written later in
+that second is not pulled backward into an earlier interval.
 
 Search and tail also return optional `source_record_id` and `metadata` fields.
 The text CLI prints the source record and correlation metadata as escaped JSON;
