@@ -13,7 +13,7 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
-- Fixed false command timeouts in the macOS menu app when CLI output or diagnostics exceeded a pipe buffer. (#PR)
+- Fixed false command timeouts in the macOS menu app when CLI output or diagnostics exceeded a pipe buffer. ([#1845](https://github.com/akitaonrails/ai-memory/pull/1845))
 
 ## [3.2.10] - 2026-10-29
 
