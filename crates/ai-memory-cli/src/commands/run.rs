@@ -1123,7 +1123,14 @@ async fn run_once_with_wiring(
         plan.args = vec![OsString::from("attach"), OsString::from(attach_id)];
     }
 
-    let previous_history = match prepared.previous_native_session.as_ref() {
+    let previous_session = previous_session_for_history(
+        prepared.previous_native_session.as_ref(),
+        prepared.native_session_id.as_deref(),
+        force_fresh,
+        plan.mode,
+        harness,
+    );
+    let previous_history = match previous_session.as_ref() {
         Some(previous) => match prepare_previous_session_history(
             config,
             &endpoint,
@@ -1442,7 +1449,8 @@ async fn run_once_with_wiring(
         && attached_background.is_none()
     {
         eprintln!(
-            "ai-memory: this harness did not acknowledge its managed context packet; refresh its ai-memory hooks before the next run"
+            "{}",
+            missing_context_warning(harness, resumes_linked_session)
         );
     }
     eprintln!(
@@ -3291,6 +3299,33 @@ fn blank_home_overrides(
             value.is_some() && ai_memory_workstream::env_dir_override(value).is_none()
         })
         .collect()
+}
+
+fn previous_session_for_history(
+    previous: Option<&ManagedNativeSessionReference>,
+    linked_session_id: Option<&str>,
+    force_fresh: bool,
+    launch_mode: LaunchMode,
+    harness: ManagedHarness,
+) -> Option<ManagedNativeSessionReference> {
+    previous.cloned().or_else(|| {
+        (force_fresh && launch_mode == LaunchMode::Session)
+            .then(|| {
+                linked_session_id.map(|native_session_id| ManagedNativeSessionReference {
+                    agent: harness.agent_kind(),
+                    native_session_id: native_session_id.to_owned(),
+                })
+            })
+            .flatten()
+    })
+}
+
+fn missing_context_warning(harness: ManagedHarness, resumes_linked_session: bool) -> &'static str {
+    if harness == ManagedHarness::Codex && resumes_linked_session {
+        "ai-memory: Codex did not acknowledge the managed context in the linked thread; if you used `/new`, that new thread was not adopted because Codex exposes no trustworthy parent link. Resume the intended thread explicitly on the next managed run; otherwise refresh the ai-memory hooks"
+    } else {
+        "ai-memory: this harness did not acknowledge its managed context packet; refresh its ai-memory hooks before the next run"
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8531,6 +8566,59 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("--fresh cannot be combined"));
+    }
+
+    #[test]
+    fn fresh_session_uses_the_linked_session_as_local_history_fallback() {
+        let linked = previous_session_for_history(
+            None,
+            Some("linked-claude-session"),
+            true,
+            LaunchMode::Session,
+            ManagedHarness::Claude,
+        )
+        .unwrap();
+        assert_eq!(linked.agent, AgentKind::ClaudeCode);
+        assert_eq!(linked.native_session_id, "linked-claude-session");
+
+        assert!(
+            previous_session_for_history(
+                None,
+                Some("linked-claude-session"),
+                true,
+                LaunchMode::Passthrough,
+                ManagedHarness::Claude,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn cross_harness_history_precedes_the_fresh_session_fallback() {
+        let previous = ManagedNativeSessionReference {
+            agent: AgentKind::OpenCode,
+            native_session_id: "previous-opencode-session".into(),
+        };
+        assert_eq!(
+            previous_session_for_history(
+                Some(&previous),
+                Some("linked-claude-session"),
+                true,
+                LaunchMode::Session,
+                ManagedHarness::Claude,
+            ),
+            Some(previous)
+        );
+    }
+
+    #[test]
+    fn linked_codex_context_warning_explains_unowned_new_threads() {
+        let warning = missing_context_warning(ManagedHarness::Codex, true);
+        assert!(warning.contains("if you used `/new`"));
+        assert!(warning.contains("no trustworthy parent link"));
+
+        assert!(!missing_context_warning(ManagedHarness::Codex, false).contains("`/new`"));
+        assert!(!missing_context_warning(ManagedHarness::Claude, true).contains("`/new`"));
     }
 
     #[tokio::test]
