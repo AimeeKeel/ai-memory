@@ -406,13 +406,15 @@ fn is_parse_shape_error(err: &LlmError) -> bool {
 }
 
 /// True only when a compatibility endpoint rejected structured-output syntax
-/// before generation. Generic 4xx errors are deliberately excluded so auth,
-/// quota, model, and malformed-request failures retain their original cause.
+/// before generation. 400/422 are the usual rejection; 501 Not Implemented is
+/// an engine declaring the capability missing (`structured output is
+/// unavailable`). Generic errors are deliberately excluded so auth, quota,
+/// model, and malformed-request failures retain their original cause.
 fn is_response_format_rejection(err: &LlmError) -> bool {
     let LlmError::Provider { status, body, .. } = err else {
         return false;
     };
-    if !matches!(status, 400 | 422) {
+    if !matches!(status, 400 | 422 | 501) {
         return false;
     }
     let body = body.to_ascii_lowercase();
@@ -686,6 +688,17 @@ mod tests {
         assert!(is_response_format_rejection(&LlmError::Provider {
             status: 422,
             body: "json_schema is not supported".into(),
+            retry_after: None,
+        }));
+        // Production shape: an engine without structured output answers 501.
+        assert!(is_response_format_rejection(&LlmError::Provider {
+            status: 501,
+            body: r#"{"error":{"message":"structured output is unavailable","type":"api_error","param":null,"code":null}}"#.into(),
+            retry_after: None,
+        }));
+        assert!(!is_response_format_rejection(&LlmError::Provider {
+            status: 501,
+            body: "not implemented".into(),
             retry_after: None,
         }));
         assert!(!is_response_format_rejection(&LlmError::Provider {

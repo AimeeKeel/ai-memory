@@ -395,9 +395,10 @@ pub struct Config {
     /// OpenCode asks callers for `x-opencode-session` plus a specific
     /// `User-Agent` and reports traffic carrying neither as an unknown
     /// client. Set with
-    /// `AI_MEMORY_LLM_HEADERS=x-opencode-session=…,user-agent=…` (comma
-    /// separated, so a header *value* cannot contain a comma — use
-    /// `llm_headers` in `config.toml` for those) or `llm_headers = [...]`.
+    /// `AI_MEMORY_LLM_HEADERS='["x-opencode-session=…","user-agent=…"]'` (a
+    /// JSON array of `Name: Value` / `Name=Value` strings; a bare comma
+    /// separated string is rejected at config load) or
+    /// `llm_headers = [...]` in `config.toml`.
     ///
     /// Headers ai-memory sets itself (`authorization`, `content-type`,
     /// `x-api-key`, …) are refused at startup: `reqwest` appends rather than
