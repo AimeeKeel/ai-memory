@@ -162,7 +162,10 @@ from hook paths.
    explicit pending-writes approval. If `[auto_improve.eval] enabled = true`,
    targeted proposals (default `_rules/` and `procedures/`) must pass the
    configured executable JSON contract before they are staged; failures become
-   rejected candidates/rejection-buffer entries rather than wiki writes.
+   rejected candidates/rejection-buffer entries rather than wiki writes. Like
+   the consolidation prompts, the per-session reviewer, the cross-session
+   experience pass, the dream merge and the lint contradiction pass write
+   prose in the dominant natural language of their input.
    Every LLM prompt treats repository text, observations, wiki pages, and prior
    proposals as untrusted data rather than instructions. The same explicit
    trust boundary and delimiters precede automatically injected handoffs,

@@ -31,6 +31,14 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Made the per-session auto-improve reviewer, the cross-session experience
+  pass, the dream merge and the lint contradiction pass write their prose in
+  the dominant natural language of their input, as the consolidation prompts
+  already did. Their English-only system prompts gave no language rule, so
+  sessions held in Portuguese could still produce English `gotchas/`,
+  `decisions/` and `concepts/` pages and English lint findings. Code,
+  identifiers, paths, patch anchors, evidence quotes, JSON keys and enum
+  values stay verbatim (#1839).
 - Pinned `zip` 8.6 to upstream's official security-backport commit for
   GHSA-m665-v7pm-7grj. Candle still requires the yanked 8.x line, so the
   immutable backport keeps fresh builds resolvable while adding the header
