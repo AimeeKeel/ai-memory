@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Excluded Claude Code's synthetic cross-session messages and plugin-submitted
+  prompts from cross-project profile harvesting, and removed a leading
+  side-agent quote while retaining the user's words after it. Generated text
+  can no longer become a standing preference attributed to the user (#1855).
+
 - Serialized mutating wikisync runs per destination across their full
   read/plan/write lifecycle, so overlapping exports no longer race on the
   shared state temporary file or apply plans from the same baseline (#1847).
