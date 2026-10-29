@@ -13,6 +13,9 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Fixed the macOS menu app's LaunchAgent installation and restart checks for
+  app and home-directory paths containing XML characters such as `&` (#1844).
+
 - OpenCode 1.x `task` subagents no longer claim the pending handoff or leave
   one behind. OpenCode runs each subagent in a child session, which the
   generated plugin took for a top-level one: the subagent's first model call
