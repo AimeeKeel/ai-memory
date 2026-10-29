@@ -31,6 +31,14 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Made the per-session auto-improve reviewer, the cross-session experience
+  pass, the dream merge and the lint contradiction pass write their prose in
+  the dominant natural language of their input, as the consolidation prompts
+  already did. Their English-only system prompts gave no language rule, so
+  sessions held in Portuguese could still produce English `gotchas/`,
+  `decisions/` and `concepts/` pages and English lint findings. Code,
+  identifiers, paths, patch anchors, evidence quotes, JSON keys and enum
+  values stay verbatim.
 - Updated `libz-sys` to 1.1.31 so its build probe no longer records the build
   environment, including possible secrets, in Cargo target artifacts
   (RUSTSEC-2026-0418).
