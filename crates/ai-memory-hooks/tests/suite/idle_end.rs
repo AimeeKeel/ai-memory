@@ -534,6 +534,7 @@ async fn idle_tick_excludes_active_managed_run_sessions() {
     let run = store
         .writer
         .prepare_workstream_run(ai_memory_store::PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: ws,
             project_id: proj,
             repo_fingerprint: "repo".into(),
@@ -622,6 +623,7 @@ async fn idle_tick_excluded_backlog_cannot_starve_the_batch() {
         let run = store
             .writer
             .prepare_workstream_run(ai_memory_store::PrepareWorkstreamRun {
+                scope_by_id: false,
                 workspace_id: ws,
                 project_id: proj,
                 repo_fingerprint: format!("repo-{i}"),

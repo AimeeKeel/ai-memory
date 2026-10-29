@@ -118,7 +118,7 @@ pub use scope::{
     create_explicit_scope, create_explicit_scope_guarded, create_global_scope,
     create_profile_scope, lookup_existing_scope, lookup_existing_scope_guarded,
     lookup_existing_workspace, lookup_global_scope, lookup_profile_scope,
-    resolve_many_existing_scopes, resolve_many_existing_scopes_guarded,
+    lookup_project_id_guarded, resolve_many_existing_scopes, resolve_many_existing_scopes_guarded,
 };
 pub use session_consolidation::{
     SESSION_CONSOLIDATION_MAX_ATTEMPTS, SessionConsolidationJob, enqueue_in_tx,
@@ -127,10 +127,10 @@ pub use users::{LoginUser, TOKEN_HASH_LEN, TOKEN_RAW_LEN, TokenPepper, hash_toke
 pub use web_sessions::{LiveWebSession, WebSession, hash_session_secret};
 pub use workstream::{
     FinishWorkstreamRun, FinishedWorkstreamRun, LinkManagedRunSessionInScope,
-    LinkOrAdoptManagedRunSession, ManagedRunAuthority, ManagedRunContext, ManagedRunSessionLink,
-    OperationalWorkstreamSummary, PrepareWorkstreamRun, PreparedWorkstreamRun, RenameWorkstream,
-    RenamedWorkstream, StoredManagedRunStatus, StoredWorkstreamSummary,
-    WorkstreamOperationalStatus, WorkstreamSelection, WorkstreamSelector,
+    LinkOrAdoptManagedRunSession, ManagedRunAuthority, ManagedRunContext, ManagedRunHookIdentity,
+    ManagedRunSessionLink, OperationalWorkstreamSummary, PrepareWorkstreamRun,
+    PreparedWorkstreamRun, RenameWorkstream, RenamedWorkstream, StoredManagedRunStatus,
+    StoredWorkstreamSummary, WorkstreamOperationalStatus, WorkstreamSelection, WorkstreamSelector,
 };
 pub use writer::{StartupContextAcceptance, WriterHandle};
 
@@ -5686,6 +5686,7 @@ mod tests {
             .await
             .unwrap();
         let prepare = PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: ws,
             project_id: project,
             repo_fingerprint: "repo".into(),
@@ -5863,6 +5864,7 @@ mod tests {
             .await
             .unwrap();
         let prepare = PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: ws,
             project_id: project,
             repo_fingerprint: "repo".into(),
@@ -6126,6 +6128,7 @@ mod tests {
             .await
             .unwrap();
         let prepare = PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: workspace,
             project_id: project,
             repo_fingerprint: "repo".into(),
@@ -6182,6 +6185,7 @@ mod tests {
             .await
             .unwrap();
         let prepare = |agent, owner: &str| PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: workspace,
             project_id: project,
             repo_fingerprint: "repo".into(),
@@ -6349,6 +6353,7 @@ mod tests {
             .await
             .unwrap();
         let base = |agent, owner: &str| PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: workspace,
             project_id: project,
             repo_fingerprint: "repo".into(),
@@ -6426,6 +6431,7 @@ mod tests {
             let run = store
                 .writer
                 .prepare_workstream_run(PrepareWorkstreamRun {
+                    scope_by_id: false,
                     workspace_id: workspace,
                     project_id: project,
                     repo_fingerprint: "same-repository".into(),
@@ -6508,6 +6514,7 @@ mod tests {
         owner: &str,
     ) -> PrepareWorkstreamRun {
         PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: ws,
             project_id: proj,
             repo_fingerprint: "repo".into(),
@@ -7597,6 +7604,7 @@ mod tests {
         let store = Store::open(tmp.path()).unwrap();
         let (ws, proj) = open_managed_scope(&store, "managed-selection").await;
         let prepare = |selection| PrepareWorkstreamRun {
+            scope_by_id: false,
             selection,
             ..managed_prepare_input(ws, proj, "test:1")
         };
@@ -7656,6 +7664,7 @@ mod tests {
         let store = Store::open(tmp.path()).unwrap();
         let (ws, proj) = open_managed_scope(&store, "managed-list").await;
         let prepare = |name: &str, agent| PrepareWorkstreamRun {
+            scope_by_id: false,
             agent,
             selection: WorkstreamSelection::New(name.into()),
             ..managed_prepare_input(ws, proj, name)
@@ -7697,6 +7706,7 @@ mod tests {
         let claude = store
             .writer
             .prepare_workstream_run(PrepareWorkstreamRun {
+                scope_by_id: false,
                 agent: AgentKind::ClaudeCode,
                 selection: WorkstreamSelection::Named("current".into()),
                 ..managed_prepare_input(ws, proj, "claude")
@@ -7755,6 +7765,7 @@ mod tests {
         let hidden = store
             .writer
             .prepare_workstream_run(PrepareWorkstreamRun {
+                scope_by_id: false,
                 repo_fingerprint: "other-repo".into(),
                 worktree_fingerprint: "other-worktree".into(),
                 selection: WorkstreamSelection::New("hidden".into()),
@@ -7839,6 +7850,7 @@ mod tests {
             store
                 .writer
                 .prepare_workstream_run(PrepareWorkstreamRun {
+                    scope_by_id: false,
                     selection: WorkstreamSelection::New(name.into()),
                     ..managed_prepare_input(ws, proj, name)
                 })
@@ -7877,6 +7889,7 @@ mod tests {
             let prepared = store
                 .writer
                 .prepare_workstream_run(PrepareWorkstreamRun {
+                    scope_by_id: false,
                     selection: WorkstreamSelection::New((*name).into()),
                     ..managed_prepare_input(ws, proj, name)
                 })
@@ -7952,6 +7965,7 @@ mod tests {
             store
                 .writer
                 .prepare_workstream_run(PrepareWorkstreamRun {
+                    scope_by_id: false,
                     selection: WorkstreamSelection::Named(name.into()),
                     ..managed_prepare_input(ws, proj, name)
                 })

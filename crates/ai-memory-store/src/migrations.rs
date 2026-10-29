@@ -316,6 +316,67 @@ mod tests {
         assert_eq!(dangling, 0);
     }
 
+    #[test]
+    fn project_id_pinning_upgrade_preserves_runs_and_failed_prepare_rolls_back() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_to(&mut conn, 95).unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let ws = crate::ops::get_or_create_workspace(&mut conn, "default").unwrap();
+        let project = crate::ops::get_or_create_project(&mut conn, &ws, "project", None).unwrap();
+        let workstream = ai_memory_core::WorkstreamId::new();
+        let run_id = ai_memory_core::ManagedRunId::new();
+        conn.execute("INSERT INTO workstreams \
+            (id, workspace_id, project_id, repo_fingerprint, worktree_fingerprint, name, cwd, created_at, selected_at, updated_at) \
+            VALUES (?1, ?2, ?3, 'repo', 'tree', 'default', '/repo', 1, 1, 1)",
+            params![workstream.as_bytes(), ws.as_bytes(), project.as_bytes()]).unwrap();
+        conn.execute("INSERT INTO managed_runs \
+            (id, workstream_id, agent_kind, lease_owner, state, sync_after, sync_through, context_delivered, lease_expires_at, started_at) \
+            VALUES (?1, ?2, 'codex', 'host:1', 'active', 3, 7, 1, ?3, 1)",
+            params![run_id.as_bytes(), workstream.as_bytes(), jiff::Timestamp::now().as_microsecond() + 60_000_000]).unwrap();
+        run(&mut conn).unwrap();
+        let snapshot = |conn: &Connection| {
+            conn.query_row(
+            "SELECT state, sync_after, sync_through, context_delivered, scope_by_id FROM managed_runs WHERE id = ?1",
+            params![run_id.as_bytes()], |row| Ok((row.get::<_,String>(0)?, row.get::<_,i64>(1)?, row.get::<_,i64>(2)?, row.get::<_,bool>(3)?, row.get::<_,bool>(4)?))).unwrap()
+        };
+        assert_eq!(snapshot(&conn), ("active".into(), 3, 7, true, false));
+        conn.execute_batch("CREATE TRIGGER reject_new_run BEFORE INSERT ON managed_runs BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").unwrap();
+        let input = crate::PrepareWorkstreamRun {
+            workspace_id: ws,
+            project_id: project,
+            scope_by_id: true,
+            repo_fingerprint: "repo".into(),
+            worktree_fingerprint: "tree".into(),
+            cwd: "/repo".into(),
+            agent: AgentKind::Codex,
+            automatic_harness: false,
+            available_agents: Vec::new(),
+            selection: crate::WorkstreamSelection::Named("default".into()),
+            lease_owner: "host:2".into(),
+        };
+        assert!(crate::workstream::prepare_run(&mut conn, &input, None, true).is_err());
+        assert_eq!(
+            snapshot(&conn),
+            ("active".into(), 3, 7, true, false),
+            "failed prepare must roll back forced expiry and preserve the legacy flag"
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM managed_runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        conn.execute_batch("DROP TRIGGER reject_new_run;").unwrap();
+        let prepared = crate::workstream::prepare_run(&mut conn, &input, None, true).unwrap();
+        let pinned: bool = conn
+            .query_row(
+                "SELECT scope_by_id FROM managed_runs WHERE id = ?1",
+                params![prepared.run_id.as_bytes()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(pinned);
+        assert_eq!(snapshot(&conn).0, "expired");
+    }
+
     /// A store migrated by a newer build (an applied version above anything
     /// this binary embeds) must fail to open with the actionable
     /// `DataSchemaAhead` error, not refinery's raw "missing from the

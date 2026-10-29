@@ -680,11 +680,25 @@ async fn run_once_with_wiring(
     }
     let may_adopt_native_session = args.new_workstream.is_none() && !force_fresh;
     let endpoint = ServerEndpoint::from_config_resolving_auth(config).await;
+    let project_id = if let Some(id) = args.project_id {
+        Some(id)
+    } else if args.project.is_none() {
+        super::project_registry::project_binding(
+            config,
+            &endpoint,
+            &workspace,
+            &project,
+            &repository.cwd,
+        )?
+        .map(|scope| scope.project_id)
+    } else {
+        None
+    };
     // Probe before any server work: a homelab down for maintenance must
     // downgrade (or, with --require-server, fail) in ~2s, not after a
     // TCP-level timeout on the prepare POST. Any HTTP answer counts as
     // reachable — including 404/405 from a server older than /healthz.
-    let require_server = args.require_server || config.run.require_server;
+    let require_server = args.require_server || config.run.require_server || project_id.is_some();
     if let ServerProbe::Unreachable(probe_error) = probe_server(&endpoint).await {
         if require_server {
             // Fail closed exactly like the prepare below would: same
@@ -723,9 +737,14 @@ async fn run_once_with_wiring(
         )
         .await;
     }
-    let prepare = PrepareManagedRunRequest {
+    let mut prepare = PrepareManagedRunRequest {
+        project_id,
         workspace: workspace.clone(),
-        project: project.clone(),
+        project: if project_id.is_some() {
+            String::new()
+        } else {
+            project.clone()
+        },
         cwd: repository.cwd.to_string_lossy().into_owned(),
         repo_fingerprint: repository.repo_fingerprint.clone(),
         worktree_fingerprint: repository.worktree_fingerprint.clone(),
@@ -736,13 +755,42 @@ async fn run_once_with_wiring(
         new_workstream: args.new_workstream,
         force_unlock,
         lease_owner: lease_owner(),
-        repository_identity: remote_identity_naming(&repository.cwd, &project, marker_project),
+        repository_identity: project_id
+            .is_none()
+            .then(|| remote_identity_naming(&repository.cwd, &project, marker_project))
+            .flatten(),
     };
     let interrupted_before_spawn = CancellationToken::new();
     let interrupt_task = tokio::spawn(capture_interrupts(interrupted_before_spawn.clone()));
-    let prepared = prepare_managed_run(&endpoint, &prepare, interactive, &interrupted_before_spawn)
-        .await
-        .context("opening managed workstream; the agent was not started");
+    let prepared = async {
+        match prepare_managed_run(&endpoint, &prepare, interactive, &interrupted_before_spawn).await
+        {
+            Err(error)
+                if (super::managed_project::is_ambiguous(&error)
+                    && prepare.project_id.is_none())
+                    || (args.project_id.is_none()
+                        && prepare.project_id.is_some()
+                        && super::managed_project::is_missing(&error)) =>
+            {
+                let scope = super::managed_project::choose(
+                    &endpoint,
+                    &workspace,
+                    &project,
+                    interactive,
+                    &interrupted_before_spawn,
+                )
+                .await?;
+                prepare.project_id = Some(scope.project_id);
+                prepare.project.clear();
+                prepare.repository_identity = None;
+                prepare_managed_run(&endpoint, &prepare, interactive, &interrupted_before_spawn)
+                    .await
+            }
+            result => result,
+        }
+    }
+    .await
+    .context("opening managed workstream; the agent was not started");
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -752,17 +800,6 @@ async fn run_once_with_wiring(
     };
     if let Some(warning) = prepared.manifest_warning.as_deref() {
         eprintln!("ai-memory: warning: {warning}");
-    }
-    if let Err(error) = super::project_registry::record_prepared_checkout(
-        config,
-        &endpoint,
-        &workspace,
-        &project,
-        &repository.cwd,
-    ) {
-        eprintln!(
-            "ai-memory: could not refresh the client-local project link ({error:#}); continuing the managed run"
-        );
     }
     let run_path = format!("/workstream/runs/{}", prepared.run_id);
     macro_rules! acquired_try {
@@ -781,6 +818,42 @@ async fn run_once_with_wiring(
         acquired_try!(Err(anyhow!(
             "managed run interrupted before the agent started"
         )));
+    }
+    acquired_try!(super::managed_project::validate_prepared_scope(
+        &prepare, &prepared
+    ));
+    if let Some(scope) = &prepared.resolved_project
+        && let Err(error) = super::project_registry::record_project_binding(
+            config,
+            &endpoint,
+            &project,
+            &repository.cwd,
+            scope,
+            &ai_memory_workstream::RepositoryFingerprints {
+                repo_fingerprint: prepare.repo_fingerprint.clone(),
+                worktree_fingerprint: prepare.worktree_fingerprint.clone(),
+            },
+        )
+    {
+        eprintln!(
+            "ai-memory: could not remember the project ID ({error:#}); use --project-id {} next time",
+            scope.project_id
+        );
+    }
+    let resolved_name = prepared
+        .resolved_project
+        .as_ref()
+        .map_or(project.as_str(), |scope| scope.project.as_str());
+    if let Err(error) = super::project_registry::record_prepared_checkout(
+        config,
+        &endpoint,
+        &workspace,
+        resolved_name,
+        &repository.cwd,
+    ) {
+        eprintln!(
+            "ai-memory: could not refresh the client-local project link ({error:#}); continuing the managed run"
+        );
     }
     let privacy = acquired_try!(Sanitizer::new(&config.sanitize).map_err(anyhow::Error::from));
     if let Some(id) = prepared.native_session_id.as_deref() {
@@ -934,6 +1007,7 @@ async fn run_once_with_wiring(
         && prepared.native_session_id.is_none()
         && prepared.may_adopt_existing_session
         && may_adopt_native_session
+        && prepare.project_id.is_none()
     {
         let candidate = acquired_try!(
             auto_candidates
@@ -960,6 +1034,7 @@ async fn run_once_with_wiring(
     } else if prepared.native_session_id.is_none()
         && prepared.may_adopt_existing_session
         && may_adopt_native_session
+        && prepare.project_id.is_none()
         && allows_native_session_adoption(harness, &native_args)
         && io::stdin().is_terminal()
         && io::stderr().is_terminal()
@@ -5640,6 +5715,7 @@ mod tests {
 
     fn run_args_for_after_run_test() -> RunArgs {
         RunArgs {
+            project_id: None,
             workspace: Some("work".into()),
             project: Some("repo".into()),
             workstream: None,
@@ -6520,6 +6596,7 @@ mod tests {
                             .into_response();
                     }
                     axum::Json(PrepareManagedRunResponse {
+                        resolved_project: None,
                         workstream_id: WorkstreamId::new(),
                         workstream_name: "default".into(),
                         run_id: ManagedRunId::new(),
@@ -6541,6 +6618,7 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let endpoint = ServerEndpoint::from_pair(Some(format!("http://{address}")), None);
         let request = PrepareManagedRunRequest {
+            project_id: None,
             workspace: "default".into(),
             project: "project".into(),
             cwd: "/tmp/project".into(),
@@ -6675,6 +6753,7 @@ mod tests {
                             .into_response();
                     }
                     axum::Json(PrepareManagedRunResponse {
+                        resolved_project: None,
                         workstream_id: WorkstreamId::new(),
                         workstream_name: "default".into(),
                         run_id: ManagedRunId::new(),
@@ -6794,6 +6873,7 @@ mod tests {
                             .into_response();
                     }
                     axum::Json(PrepareManagedRunResponse {
+                        resolved_project: None,
                         workstream_id: WorkstreamId::new(),
                         workstream_name: "default".into(),
                         run_id: ManagedRunId::new(),
@@ -6815,6 +6895,7 @@ mod tests {
 
     fn held_lease_request() -> PrepareManagedRunRequest {
         PrepareManagedRunRequest {
+            project_id: None,
             workspace: "default".into(),
             project: "project".into(),
             cwd: "/tmp/project".into(),
@@ -7776,6 +7857,7 @@ mod tests {
         let mut config = Config::load(None, Some(tmp.path().join("data"))).unwrap();
         config.server_url = "http://127.0.0.1:1".into();
         let args = RunArgs {
+            project_id: None,
             workspace: None,
             project: None,
             workstream: None,
@@ -8056,6 +8138,7 @@ mod tests {
                 "/workstream/runs",
                 post(|| async {
                     axum::Json(PrepareManagedRunResponse {
+                        resolved_project: None,
                         workstream_id: WorkstreamId::new(),
                         workstream_name: "default".into(),
                         run_id: ManagedRunId::new(),
@@ -8124,6 +8207,7 @@ mod tests {
         );
 
         let args = RunArgs {
+            project_id: None,
             workspace: Some("ws".into()),
             project: Some("proj".into()),
             workstream: None,
@@ -8232,6 +8316,7 @@ mod tests {
         config.run_autowire = false;
 
         let args = RunArgs {
+            project_id: None,
             workspace: Some("ws".into()),
             project: Some("proj".into()),
             workstream: None,
@@ -8580,6 +8665,7 @@ mod tests {
                 "/workstream/runs",
                 post(|| async {
                     axum::Json(PrepareManagedRunResponse {
+                        resolved_project: None,
                         workstream_id: WorkstreamId::new(),
                         workstream_name: "default".into(),
                         run_id: ManagedRunId::new(),
@@ -8661,6 +8747,7 @@ mod tests {
                 "/workstream/runs",
                 post(|| async {
                     axum::Json(PrepareManagedRunResponse {
+                        resolved_project: None,
                         workstream_id: WorkstreamId::new(),
                         workstream_name: "default".into(),
                         run_id: ManagedRunId::new(),
@@ -8726,6 +8813,7 @@ mod tests {
 
         let default_home = home.path().join(".claude");
         let args = RunArgs {
+            project_id: None,
             workspace: Some("ws".into()),
             project: Some("proj".into()),
             workstream: None,
@@ -9526,6 +9614,7 @@ mod tests {
                 "/workstream/runs",
                 post(|| async {
                     axum::Json(PrepareManagedRunResponse {
+                        resolved_project: None,
                         workstream_id: WorkstreamId::new(),
                         workstream_name: "default".into(),
                         run_id: ManagedRunId::new(),
@@ -9585,6 +9674,7 @@ mod tests {
             ..WireOverrides::default()
         };
         let args = RunArgs {
+            project_id: None,
             workspace: Some("ws".into()),
             project: Some("proj".into()),
             workstream: None,
@@ -9659,6 +9749,7 @@ mod tests {
                 "/workstream/runs",
                 post(|| async {
                     axum::Json(PrepareManagedRunResponse {
+                        resolved_project: None,
                         workstream_id: WorkstreamId::new(),
                         workstream_name: "default".into(),
                         run_id: ManagedRunId::new(),
@@ -9716,6 +9807,7 @@ mod tests {
             ..WireOverrides::default()
         };
         let args = || RunArgs {
+            project_id: None,
             workspace: Some("ws".into()),
             project: Some("proj".into()),
             workstream: None,
@@ -9809,6 +9901,7 @@ mod tests {
                 "/workstream/runs",
                 post(move || async move {
                     axum::Json(PrepareManagedRunResponse {
+                        resolved_project: None,
                         workstream_id: WorkstreamId::new(),
                         workstream_name: "default".into(),
                         run_id: ManagedRunId::new(),
@@ -9861,6 +9954,7 @@ mod tests {
                     "/workstream/runs",
                     post(|| async {
                         axum::Json(PrepareManagedRunResponse {
+                            resolved_project: None,
                             workstream_id: WorkstreamId::new(),
                             workstream_name: "default".into(),
                             run_id: ManagedRunId::new(),
@@ -9985,6 +10079,133 @@ mod tests {
         (script, captured)
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_project_id_launch_reuses_binding_honors_override_and_refuses_old_server() {
+        use ai_memory_core::ManagedProjectScope;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let scope = ManagedProjectScope {
+            workspace_id: ai_memory_core::WorkspaceId::new(),
+            project_id: ai_memory_core::ProjectId::new(),
+            workspace: "ws".into(),
+            project: "selected".into(),
+        };
+        let requests = Arc::new(std::sync::Mutex::new(Vec::<PrepareManagedRunRequest>::new()));
+        let confirms = Arc::new(AtomicBool::new(true));
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/workstream/runs",
+                post({
+                    let scope = scope.clone();
+                    let requests = requests.clone();
+                    let confirms = confirms.clone();
+                    move |axum::Json(request): axum::Json<PrepareManagedRunRequest>| {
+                        let mut scope = scope.clone();
+                        let requests = requests.clone();
+                        let confirms = confirms.clone();
+                        async move {
+                            if request.project_id.is_none() {
+                                scope.project = request.project.clone();
+                            }
+                            requests.lock().unwrap().push(request);
+                            axum::Json(PrepareManagedRunResponse {
+                                resolved_project: confirms.load(Ordering::SeqCst).then_some(scope),
+                                workstream_id: WorkstreamId::new(),
+                                workstream_name: "default".into(),
+                                run_id: ManagedRunId::new(),
+                                resolved_agent: None,
+                                native_session_id: None,
+                                source_cursor: None,
+                                previous_native_session: None,
+                                sync_after: 0,
+                                sync_through: 0,
+                                may_adopt_existing_session: false,
+                                manifest_warning: None,
+                            })
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/workstream/runs/{run_id}/finish",
+                post(|| async {
+                    axum::Json(FinishManagedRunResponse {
+                        imported_events: 0,
+                        latest_sequence: 0,
+                    })
+                }),
+            )
+            .route(
+                "/workstream/runs/{run_id}/cancel",
+                post({
+                    let cancelled = cancelled.clone();
+                    move || {
+                        let cancelled = cancelled.clone();
+                        async move {
+                            cancelled.fetch_add(1, Ordering::SeqCst);
+                            StatusCode::NO_CONTENT
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let (script, captured) = capture_env_script(repo.path(), "AI_MEMORY_RUN_ID");
+        let mut config = launch_config(home.path(), data.path(), address);
+        config.run_autowire = false;
+        let mut args = run_args(RunHarnessChoice::Claude, script, Vec::new(), &["--version"]);
+        args.project = None;
+        args.project_id = Some(scope.project_id);
+        args.no_autowire = true;
+        assert_eq!(
+            run_from(&config, args.clone(), repo.path()).await.unwrap(),
+            0
+        );
+        args.project_id = None;
+        assert_eq!(
+            run_from(&config, args.clone(), repo.path()).await.unwrap(),
+            0
+        );
+        args.project = Some("override".into());
+        assert_eq!(
+            run_from(&config, args.clone(), repo.path()).await.unwrap(),
+            0
+        );
+        let before = std::fs::read_to_string(&captured).unwrap();
+        confirms.store(false, Ordering::SeqCst);
+        args.project = None;
+        args.project_id = Some(scope.project_id);
+        let error = run_from(&config, args, repo.path()).await.unwrap_err();
+        assert!(
+            error.to_string().contains("did not confirm project-ID"),
+            "{error:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&captured).unwrap(),
+            before,
+            "old-server response must not start the child"
+        );
+        assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        for index in [0, 1, 3] {
+            assert_eq!(requests[index].project_id, Some(scope.project_id));
+            assert!(
+                requests[index].project.is_empty(),
+                "old servers must reject the selector before creation"
+            );
+            assert!(requests[index].repository_identity.is_none());
+        }
+        assert_eq!(requests[2].project, "override");
+        assert!(requests[2].project_id.is_none());
+        server.abort();
+    }
+
     fn launch_config(home: &Path, data: &Path, address: std::net::SocketAddr) -> Config {
         let mut config = Config::load(None, Some(home.to_path_buf())).unwrap();
         config.data_dir = data.to_path_buf();
@@ -10002,6 +10223,7 @@ mod tests {
         native_args: &[&str],
     ) -> RunArgs {
         RunArgs {
+            project_id: None,
             workspace: Some("ws".into()),
             project: Some("proj".into()),
             workstream: None,
@@ -11383,6 +11605,7 @@ mod tests {
                     "/workstream/runs",
                     post(|| async {
                         axum::Json(PrepareManagedRunResponse {
+                            resolved_project: None,
                             workstream_id: WorkstreamId::new(),
                             workstream_name: "default".into(),
                             run_id: ManagedRunId::new(),

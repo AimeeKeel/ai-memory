@@ -229,6 +229,7 @@ pub async fn run(config: &Config, args: ShowArgs) -> Result<i32> {
     crate::commands::run::run_from(
         config,
         RunArgs {
+            project_id: None,
             workspace: Some(workspace),
             project: Some(project),
             workstream: None,

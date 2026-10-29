@@ -414,8 +414,12 @@ pub struct RunArgs {
     #[arg(long)]
     pub workspace: Option<String>,
     /// Project override. Defaults to the current repository project.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "project_id")]
     pub project: Option<String>,
+    /// Select an existing project by ID and remember it for this checkout.
+    /// Requires a server supporting managed project-ID selection.
+    #[arg(long, conflicts_with = "project")]
+    pub project_id: Option<ai_memory_core::ProjectId>,
     /// Select an existing named workstream instead of the current one.
     #[arg(long, conflicts_with = "new_workstream")]
     pub workstream: Option<String>,
@@ -891,8 +895,11 @@ pub struct WorkstreamsArgs {
     #[arg(long)]
     pub workspace: Option<String>,
     /// Project override. Defaults to the current repository project.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "project_id")]
     pub project: Option<String>,
+    /// Select an existing project by ID instead of a name or cached binding.
+    #[arg(long, conflicts_with = "project")]
+    pub project_id: Option<ai_memory_core::ProjectId>,
     /// Maximum workstreams to return, current first then newest activity.
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u8).range(1..=100))]
     pub limit: u8,
@@ -5741,6 +5748,36 @@ mod tests {
     /// ambiguous request never reaches the server to be guessed at.
     #[test]
     fn project_id_flags_parse_and_conflict_with_their_name_flags() {
+        let managed_id = ai_memory_core::ProjectId::new();
+        let id_text = managed_id.to_string();
+        let cli =
+            Cli::try_parse_from(["ai-memory", "run", "--project-id", &id_text, "claude"]).unwrap();
+        let Command::Run(run) = cli.command else {
+            panic!("expected run");
+        };
+        assert_eq!(run.project_id, Some(managed_id));
+        let cli =
+            Cli::try_parse_from(["ai-memory", "workstreams", "--project-id", &id_text]).unwrap();
+        let Command::Workstreams(workstreams) = cli.command else {
+            panic!("expected workstreams");
+        };
+        assert_eq!(workstreams.project_id, Some(managed_id));
+        for command in ["run", "workstreams"] {
+            assert!(
+                Cli::try_parse_from([
+                    "ai-memory",
+                    command,
+                    "--project",
+                    "api",
+                    "--project-id",
+                    &id_text
+                ])
+                .is_err()
+            );
+            assert!(
+                Cli::try_parse_from(["ai-memory", command, "--project-id", "not-a-uuid"]).is_err()
+            );
+        }
         let id = "11111111-2222-3333-4444-555555555555";
 
         let cli = Cli::try_parse_from(["ai-memory", "purge-project", "--project-id", id]).unwrap();

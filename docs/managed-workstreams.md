@@ -295,6 +295,66 @@ Probably not at first. Hooks alone already carry most continuity.
 If you never switch harnesses mid-workstream, the default path is
 simpler and you lose nothing by staying on it.
 
+## Recovering an ambiguous project
+
+Older installations can contain two populated projects that answer to the
+same name, for example `widget` and `acme-widget` with legacy key `widget`.
+Name resolution deliberately refuses that collision. A unique checkout path
+does not make the server's name selector unambiguous.
+
+`run` can select an existing project by its stable ID inside a workspace:
+
+```sh
+ai-memory run --workspace default --project-id <project-uuid> claude
+ai-memory run --workspace default --project-id <project-uuid> codex
+ai-memory workstreams --workspace default --project-id <project-uuid> --json
+```
+
+With a terminal, an ambiguous `run` offers a numbered choice of matching
+projects the caller may write. Enter cancels without opening a run. Scripts
+receive an actionable error containing authorized IDs and must pass
+`--project-id`; they never select the first match automatically. The candidate
+query examines a bounded set of matches and reports when more exist. An
+explicit ID remains available when the intended project is not shown.
+
+After a successful prepare, the client remembers the resolved ID in
+`<data-dir>/client-projects.json`. An explicit authorized choice during
+workstream discovery is also remembered after the read succeeds. Bindings
+include the normalized server origin and mount, workspace, requested project,
+canonical checkout path, and repository/worktree fingerprints. Changed
+remotes, other checkouts, servers and scopes do not reuse the binding. The
+server checks workspace membership and current permissions on every request;
+the local record grants no access. An unreadable local registry is left unchanged
+and falls back to name resolution, which still refuses ambiguous names. `resume` uses the same binding when listing
+and launching a workstream. An explicit `--project` overrides a cached ID;
+`--project-id` replaces the checkout's choice after successful preparation.
+Neither operation moves, merges or deletes project history.
+
+An empty workstream selected by ID starts a fresh native session instead of
+automatically adopting an unlinked session found at the same path. A native
+session already captured under another project or operator is refused; native
+sessions already linked to the selected workstream remain resumable.
+
+ID-selected runs require a reachable server. Their SessionStart context and
+capture hooks use the run's pinned project after validating the launching
+operator, active lease, harness and native session. Startup and initial binding
+also require the original checkout. A stale, expired or foreign pinned run is
+refused rather than routed by the ambiguous name. Existing runs retain their
+original marker/name routing; the additive schema flag defaults to off.
+
+The wire requests for `/workstream/runs` and `/workstream/recent` accept an
+optional `project_id`, mutually exclusive with a non-empty `project`. Clients
+send an empty `project` for ID selection so older servers reject it before
+creating anything. Prepare responses include optional `resolved_project`
+coordinates; a client requesting an ID refuses to start the harness unless
+the server confirms that exact ID and workspace. Upgrade the server before
+using ID selection. Name-only clients continue to work.
+
+`POST /workstream/project-candidates` accepts `workspace` and `project` names
+and returns `candidates` plus `truncated`. It works without the web UI, uses the
+normal authentication middleware, includes only writable matches, and returns
+IDs and names without server filesystem paths.
+
 ## Project-first launcher
 
 `ai-memory show` reverses the usual `cd` then `run` flow: choose a local

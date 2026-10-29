@@ -3118,6 +3118,16 @@ impl ReaderPool {
         .await
     }
 
+    /// Validated scope of an explicitly ID-selected run, if it opted in.
+    /// Legacy runs return `None`; invalid pinned boundaries fail closed.
+    pub async fn managed_run_pinned_scope(
+        &self,
+        identity: crate::ManagedRunHookIdentity,
+    ) -> StoreResult<Option<(WorkspaceId, ProjectId)>> {
+        self.with_conn(move |conn| crate::workstream::pinned_hook_scope(conn, &identity))
+            .await
+    }
+
     /// The repository a workstream belongs to, or `None` when it does not
     /// exist. See [`Self::managed_run_scope`] for why the routes need it.
     ///
@@ -12976,6 +12986,25 @@ impl ReaderPool {
         self.with_conn(move |conn| {
             crate::project_coordinates::resolve(conn, workspace_id, &name)
                 .map(|matched| matched.map(|matched| matched.id))
+        })
+        .await
+    }
+
+    /// Bounded coordinate candidates for an explicitly authorized picker.
+    /// These are internal rows: callers must authorize each before disclosure.
+    pub async fn project_coordinate_candidates(
+        &self,
+        workspace_id: WorkspaceId,
+        name: String,
+    ) -> StoreResult<Vec<(ProjectId, String)>> {
+        self.with_conn(move |conn| {
+            crate::project_coordinates::matches_bounded(conn, workspace_id, &name, None, 101).map(
+                |rows| {
+                    rows.into_iter()
+                        .map(|row| (row.id, row.current_name))
+                        .collect()
+                },
+            )
         })
         .await
     }

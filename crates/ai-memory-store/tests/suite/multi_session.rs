@@ -1906,6 +1906,7 @@ async fn a_session_linked_by_one_managed_run_is_not_another_runs() {
     let store = Store::open(tmp.path()).unwrap();
     let (ws, proj) = scope(&store).await;
     let prepare = |name: &str| PrepareWorkstreamRun {
+        scope_by_id: false,
         workspace_id: ws,
         project_id: proj,
         repo_fingerprint: "repo".into(),
@@ -1980,6 +1981,7 @@ async fn stale_codex_run_recovery_cannot_cross_project_owner_or_session_boundari
     let alice = operator("alice");
     let bob = operator("bob");
     let prepare = |project_id, name: &str| PrepareWorkstreamRun {
+        scope_by_id: false,
         workspace_id: ws,
         project_id,
         repo_fingerprint: format!("repo-{project_id}"),
@@ -2086,6 +2088,7 @@ async fn force_unlock_replaces_only_the_same_operators_active_run() {
     let alice = operator("alice");
     let bob = operator("bob");
     let prepare = |lease_owner: &str| PrepareWorkstreamRun {
+        scope_by_id: false,
         workspace_id: ws,
         project_id: proj,
         repo_fingerprint: "repo".into(),
@@ -2145,6 +2148,7 @@ async fn force_unlock_replaces_only_the_same_operators_active_run() {
         .writer
         .prepare_workstream_run_owned(
             PrepareWorkstreamRun {
+                scope_by_id: false,
                 selection: WorkstreamSelection::New("solo".into()),
                 ..prepare("solo:1")
             },
@@ -2156,6 +2160,7 @@ async fn force_unlock_replaces_only_the_same_operators_active_run() {
         .writer
         .prepare_workstream_run_owned_with_unlock(
             PrepareWorkstreamRun {
+                scope_by_id: false,
                 selection: WorkstreamSelection::Named("solo".into()),
                 ..prepare("solo:2")
             },
@@ -2182,6 +2187,7 @@ async fn stale_codex_run_recovery_fails_closed_on_ambiguity_and_active_mismatch(
         .unwrap();
     let owner = operator("alice");
     let prepare = |project_id, name: &str| PrepareWorkstreamRun {
+        scope_by_id: false,
         workspace_id: ws,
         project_id,
         repo_fingerprint: format!("repo-{project_id}"),
@@ -2415,6 +2421,7 @@ impl FinishFixture {
             .writer
             .prepare_workstream_run_owned(
                 PrepareWorkstreamRun {
+                    scope_by_id: false,
                     workspace_id: self.ws,
                     project_id: self.project,
                     repo_fingerprint: "repo-finish".into(),
@@ -2848,6 +2855,7 @@ async fn owner_finish_store_raw_ids_use_the_actual_project_and_workspace() {
             .writer
             .prepare_workstream_run_owned(
                 PrepareWorkstreamRun {
+                    scope_by_id: false,
                     workspace_id: ws,
                     project_id: project,
                     repo_fingerprint: "foreign".into(),
@@ -2905,6 +2913,7 @@ async fn owner_finish_store_topology_reload_and_phase_controls() {
     let run = store
         .writer
         .prepare_workstream_run(PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: ws,
             project_id: project,
             repo_fingerprint: "reload".into(),
@@ -3030,6 +3039,7 @@ async fn owner_finish_store_topology_reload_and_phase_controls() {
         .writer
         .prepare_workstream_run_owned(
             PrepareWorkstreamRun {
+                scope_by_id: false,
                 workspace_id: ws,
                 project_id: project,
                 repo_fingerprint: "recoverable".into(),
@@ -3106,6 +3116,7 @@ async fn owner_finish_store_topology_reload_and_phase_controls() {
         let old = store
             .writer
             .prepare_workstream_run(PrepareWorkstreamRun {
+                scope_by_id: false,
                 workspace_id: ws,
                 project_id: project,
                 repo_fingerprint: "reload".into(),
@@ -3128,6 +3139,7 @@ async fn owner_finish_store_topology_reload_and_phase_controls() {
             let replacement = store
                 .writer
                 .prepare_workstream_run(PrepareWorkstreamRun {
+                    scope_by_id: false,
                     workspace_id: ws,
                     project_id: project,
                     repo_fingerprint: "reload".into(),

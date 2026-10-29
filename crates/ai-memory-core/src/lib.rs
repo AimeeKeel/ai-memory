@@ -112,6 +112,7 @@ pub use user::{
 pub use workstream::{
     FinishManagedRunRequest, FinishManagedRunResponse, LinkManagedRunRequest,
     ListManagedWorkstreamsRequest, MANAGED_WORKSTREAM_PACKET_MARKER, ManagedNativeSessionReference,
+    ManagedProjectCandidatesRequest, ManagedProjectCandidatesResponse, ManagedProjectScope,
     ManagedRunContextResponse, ManagedRunStatus, ManagedWorkstreamSummary, NativeSessionIdentity,
     NewWorkstreamEvent, PrepareManagedRunRequest, PrepareManagedRunResponse,
     RenameManagedWorkstreamRequest, RenamedManagedWorkstream, UNTRUSTED_MEMORY_NOTICE,
