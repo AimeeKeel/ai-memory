@@ -1073,7 +1073,8 @@ fn insert_project_with_identity(
 /// Delete "hollow" project rows: zero pages (any version), zero sessions,
 /// zero observations, zero handoffs, zero managed workstreams, zero sent or
 /// received agent messages (including claimed/cancelled history), zero
-/// auto-improve runs/proposals/rejections, and older than `min_age_days`.
+/// auto-improve runs/proposals/rejections, zero purge tombstones, and older
+/// than `min_age_days`.
 /// (The per-project scheduler-state row is bookkeeping created for every
 /// project and does not count as data.) These are pure bookkeeping noise left
 /// behind by probes, renames, and failed first events — nothing exists to lose,
@@ -1103,6 +1104,7 @@ pub fn sweep_hollow_projects(conn: &mut Connection, min_age_days: u32) -> StoreR
                AND NOT EXISTS (SELECT 1 FROM observations WHERE project_id = projects.id)
                AND NOT EXISTS (SELECT 1 FROM handoffs     WHERE project_id = projects.id)
                AND NOT EXISTS (SELECT 1 FROM workstreams  WHERE project_id = projects.id)
+               AND NOT EXISTS (SELECT 1 FROM purged_sessions WHERE project_id = projects.id)
                AND id NOT IN (
                    SELECT from_project_id FROM agent_messages
                    UNION SELECT to_project_id FROM agent_messages
@@ -1128,6 +1130,7 @@ pub fn sweep_hollow_projects(conn: &mut Connection, min_age_days: u32) -> StoreR
                AND NOT EXISTS (SELECT 1 FROM observations WHERE project_id = projects.id)
                AND NOT EXISTS (SELECT 1 FROM handoffs     WHERE project_id = projects.id)
                AND NOT EXISTS (SELECT 1 FROM workstreams  WHERE project_id = projects.id)
+               AND NOT EXISTS (SELECT 1 FROM purged_sessions WHERE project_id = projects.id)
                AND id NOT IN (
                    SELECT from_project_id FROM agent_messages
                    UNION SELECT to_project_id FROM agent_messages
@@ -16252,6 +16255,53 @@ pub(crate) mod tests {
 
         // Idempotent: a second pass deletes nothing.
         assert!(sweep_hollow_projects(&mut conn, 7).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sweep_hollow_projects_preserves_purged_session_tombstones() {
+        use ai_memory_core::{AgentKind, NewSession, SessionId};
+
+        let (_tmp, mut conn, workspace_id, _scratch) = fresh_db();
+        let project_id = get_or_create_project(&mut conn, &workspace_id, "purged", None).unwrap();
+        conn.execute(
+            "UPDATE projects SET created_at = created_at - ?1 WHERE id = ?2",
+            params![8 * 24 * 60 * 60 * 1_000_000_i64, project_id.as_bytes()],
+        )
+        .unwrap();
+        let session_id = SessionId::new();
+        begin_session(
+            &mut conn,
+            &NewSession {
+                occurred_at: None,
+                id: session_id,
+                workspace_id,
+                project_id,
+                agent_kind: AgentKind::Codex,
+                cwd: None,
+                actor_user: None,
+            },
+        )
+        .unwrap();
+        purge_session(
+            &mut conn,
+            workspace_id,
+            project_id,
+            session_id,
+            None,
+            Compaction::Skip,
+            PurgeMode::Commit,
+        )
+        .unwrap();
+
+        assert!(sweep_hollow_projects(&mut conn, 7).unwrap().is_empty());
+        let retained: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM purged_sessions WHERE session_id = ?1 AND project_id = ?2",
+                params![session_id.as_bytes(), project_id.as_bytes()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 1, "purge replay protection must outlive cleanup");
     }
 
     #[test]
