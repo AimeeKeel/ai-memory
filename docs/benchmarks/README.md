@@ -13,6 +13,8 @@ cargo run --release -p ai-memory-eval -- retrieval --fetch
 
 | date | dataset | mode | overall hit@5 | file |
 |---|---|---|---|---|
+| **2026-10-29** | LongMemEval-S (v1) | **zero-llm FTS + observation stream (3.3.0 release)** | **0.951** | [longmemeval-s-3.3.0-release.md](longmemeval-s-3.3.0-release.md) |
+| **2026-10-29** | LongMemEval-S (v1) | **local embeddings + observation stream (3.3.0 release)** | **0.945** | [longmemeval-s-3.3.0-release.md](longmemeval-s-3.3.0-release.md) |
 | **2026-10-26** | LongMemEval-S (v1) | **zero-llm FTS + observation stream (3.2.6 release)** | **0.951** | [longmemeval-s-3.2.6-release.md](longmemeval-s-3.2.6-release.md) |
 | **2026-10-26** | LongMemEval-S (v1) | **local embeddings + observation stream (3.2.6 release)** | **0.945** | [longmemeval-s-3.2.6-release.md](longmemeval-s-3.2.6-release.md) |
 | **2026-10-25** | LongMemEval-S (v1) | **zero-llm FTS + observation stream (3.2.4 release)** | **0.951** | [longmemeval-s-3.2.4-release.md](longmemeval-s-3.2.4-release.md) |
@@ -36,6 +38,13 @@ cargo run --release -p ai-memory-eval -- retrieval --fetch
 | 2026-09-01 | LongMemEval-S (v1) | local embeddings (2.0 default, prior) | 0.823 | [longmemeval-s-2026-09-01-local.md](longmemeval-s-2026-09-01-local.md) |
 | 2026-09-01 | LongMemEval-S (v1) | zero-llm, stopword-filtered FTS (prior) | 0.668 | [longmemeval-s-2026-09-01-fts.md](longmemeval-s-2026-09-01-fts.md) |
 | 2026-09-01 | LongMemEval-S (v1) | zero-llm (pre-2.0 FTS) | 0.617 | [longmemeval-s-2026-09-01.md](longmemeval-s-2026-09-01.md) |
+
+The 3.3.0 minor-release run found FTS identical to 3.2.6 at every accuracy
+and recall cutoff and kept local `hit@5` exact. Local `hit@10` and
+`recall@10` each moved by 0.007, slightly outside the documented overall
+noise band, and are tracked in #1854. See the
+[3.3.0 release report](longmemeval-s-3.3.0-release.md) for provenance, every
+slice, and the explicit threshold assessment.
 
 The 3.2.6 patch-release run found FTS identical to 3.2.4 at every accuracy
 and recall cutoff. Local embeddings kept the same `hit@5` and `hit@10`
