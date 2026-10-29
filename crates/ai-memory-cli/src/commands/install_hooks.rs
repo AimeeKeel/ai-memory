@@ -13104,6 +13104,34 @@ model = "gpt-5"
     }
 
     #[test]
+    fn opencode_plugin_skips_the_handoff_for_a_subagent_session() {
+        let plugin = build_opencode_plugin("http://127.0.0.1:49374", None, None, "denylist");
+        // OpenCode runs a `task` subagent in a child session and calls the
+        // system transform for it like for any other session. The plugin
+        // records the child from its `session.created`, and only from a real
+        // string parentID.
+        assert!(
+            opencode_event_branch(&plugin, "session.created")
+                .contains("rememberParent(id, info.parentID);")
+        );
+        assert!(plugin.contains(
+            r#"if (id && typeof parentID === "string" && parentID) sessionParents.set(id, parentID);"#
+        ));
+        let transform = &plugin[plugin
+            .find(r#""experimental.chat.system.transform": async"#)
+            .expect("system transform hook")..];
+        let guard = transform
+            .find("if (sessionParents.has(id)) return;")
+            .expect("the transform must skip a subagent session");
+        let claim = transform
+            .find("fetchHandoff(")
+            .expect("the transform still claims for a top-level session");
+        assert!(guard < claim, "a subagent must return before the claim");
+        // Capture is untouched: no other hook consults the parent map.
+        assert_eq!(plugin.matches("sessionParents.has(").count(), 1);
+    }
+
+    #[test]
     fn opencode2_plugin_binds_the_v2_api() {
         let plugin = build_opencode2_plugin(
             "http://127.0.0.1:49374",
