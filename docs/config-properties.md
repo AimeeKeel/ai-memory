@@ -275,6 +275,7 @@ Defined by `SanitizeConfig` in `ai-memory-core`. Built-in redaction patterns alw
 | `drop_tool_use_id_prefixes` | `[]` | `AI_MEMORY_INGEST__DROP_TOOL_USE_ID_PREFIXES` | Drop a tool event whose `tool_use_id` starts with one of these. |
 | `drop_tool_names` | `[]` | `AI_MEMORY_INGEST__DROP_TOOL_NAMES` | Drop a tool event whose tool name equals one of these exactly. |
 | `drop_events` | `[]` | `AI_MEMORY_INGEST__DROP_EVENTS` | Drop whole hook event kinds. `session-start` and `session-end` are rejected at load. |
+| `record_tool_names` | `false` | `AI_MEMORY_INGEST__RECORD_TOOL_NAMES` | Name each tool call in its observation (`tool non-file: Bash`, plus a Claude Code skill or subagent type) instead of only its family. Never a tool's arguments. |
 
 ## `[hook_spool]`
 

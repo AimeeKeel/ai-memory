@@ -170,6 +170,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "git2",
  "icu_normalizer",
  "jiff",
@@ -211,6 +212,7 @@ dependencies = [
  "tokenizers",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "wiremock",
 ]
@@ -240,6 +242,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2",
  "subtle",
  "tar",
  "tempfile",
@@ -261,6 +264,7 @@ dependencies = [
  "base64 0.22.1",
  "fs2",
  "getrandom 0.3.4",
+ "icu_normalizer",
  "jiff",
  "parking_lot",
  "refinery",
@@ -274,6 +278,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode_categories",
  "uuid",
 ]
 
