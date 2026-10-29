@@ -1198,8 +1198,14 @@ fn xml_text(xml: &str) -> Result<String> {
     loop {
         match reader.read_event().context("parse Office XML")? {
             Event::Start(_) if skipped_depth > 0 => skipped_depth += 1,
+            // These tab lists define paragraph layout, not tab characters:
+            // https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.tabs
+            // https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.drawing.tabstoplist
             Event::Start(tag)
-                if matches!(tag.local_name().as_ref(), "del" | "delText" | "instrText") =>
+                if matches!(
+                    tag.local_name().as_ref(),
+                    "del" | "delText" | "instrText" | "tabs" | "tabLst"
+                ) =>
             {
                 skipped_depth = 1;
             }
@@ -1217,11 +1223,18 @@ fn xml_text(xml: &str) -> Result<String> {
             Event::GeneralRef(reference) if text_depth > 0 => {
                 push_bounded(&mut output, &xml_reference(&reference)?)?;
             }
-            Event::Empty(tag) if skipped_depth == 0 => match tag.local_name().as_ref() {
-                "br" => push_bounded(&mut output, "\n")?,
-                "tab" => push_bounded(&mut output, "\t")?,
-                _ => {}
-            },
+            // DrawingML breaks can contain run properties; empty WordprocessingML
+            // breaks and tabs may also use paired start/end tags. A `w:cr` is a
+            // line break, like `w:br`, rather than a new paragraph.
+            // https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.drawing.break
+            // https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.carriagereturn
+            Event::Start(tag) | Event::Empty(tag) if skipped_depth == 0 => {
+                match tag.local_name().as_ref() {
+                    "br" | "cr" => push_bounded(&mut output, "\n")?,
+                    "tab" => push_bounded(&mut output, "\t")?,
+                    _ => {}
+                }
+            }
             Event::End(tag) if skipped_depth == 0 => match tag.local_name().as_ref() {
                 "p" | "tr" => push_bounded(&mut output, "\n")?,
                 "tc" => push_bounded(&mut output, "\t")?,
@@ -1582,6 +1595,30 @@ mod tests {
     }
 
     #[test]
+    fn docx_run_separators_are_preserved_and_sanitized() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.path().join("separators.docx");
+        for line_break in ["<w:br/>", "<w:br></w:br>", "<w:cr/>", "<w:cr></w:cr>"] {
+            for tab in ["<w:tab/>", "<w:tab></w:tab>"] {
+                let document = format!(
+                    r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>First line</w:t>{line_break}<w:t>Host</w:t>{tab}<w:t>8443 token=abcdefghijklmnop</w:t></w:r></w:p><w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="720"/><w:tab w:val="left" w:pos="1440"></w:tab></w:tabs></w:pPr><w:r><w:t>Kept</w:t></w:r><w:del><w:r><w:delText>DELETED_SENTINEL</w:delText>{line_break}{tab}</w:r></w:del><w:r><w:instrText>FIELD_SENTINEL</w:instrText><w:t> together</w:t></w:r></w:p></w:body></w:document>"#
+                );
+                write_zip(&file, &[("word/document.xml", &document)]);
+                let plan = plan_document(&file, "w", "p", DEFAULT_DEST_PREFIX, None).unwrap();
+                assert!(
+                    plan.body
+                        .contains("First line\nHost\t8443 token=[REDACTED]\nKept together"),
+                    "break {line_break}, tab {tab}: {}",
+                    plan.body
+                );
+                assert!(!plan.body.contains("abcdefghijklmnop"));
+                assert!(!plan.body.contains("DELETED_SENTINEL"));
+                assert!(!plan.body.contains("FIELD_SENTINEL"));
+            }
+        }
+    }
+
+    #[test]
     fn pdf_extracts_text_by_page() {
         let temp = TempDir::new().unwrap();
         let file = temp.path().join("brief.pdf");
@@ -1721,6 +1758,64 @@ mod tests {
         assert!(plan.body.contains("## Slide 2"));
         assert!(plan.body.contains("### Speaker notes"));
         assert!(plan.body.contains("Say this"));
+    }
+
+    #[test]
+    fn pptx_run_separators_are_preserved_and_sanitized() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.path().join("separators.pptx");
+        let tab_stops = r#"<a:tab pos="914400" algn="l"/><a:tab pos="1828800" algn="l"></a:tab>"#;
+        let list_style = format!(
+            "<a:lstStyle><a:defPPr><a:tabLst>{tab_stops}</a:tabLst></a:defPPr><a:lvl1pPr><a:tabLst>{tab_stops}</a:tabLst></a:lvl1pPr></a:lstStyle>"
+        );
+        // The first shape makes any injected tab in the next shape's paragraph
+        // properties visible instead of letting normalize_text trim it away.
+        let first_shape = "<p:sp><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Heading</a:t></a:r></a:p></p:txBody></p:sp>";
+        for line_break in [
+            "<a:br/>",
+            "<a:br></a:br>",
+            r#"<a:br><a:rPr lang="en-US"/></a:br>"#,
+        ] {
+            let slide = format!(
+                r#"<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>{first_shape}<p:sp><p:txBody><a:bodyPr/>{list_style}<a:p><a:pPr><a:tabLst>{tab_stops}</a:tabLst></a:pPr><a:r><a:t>Use</a:t></a:r>{line_break}<a:r><a:t>TLS token=abcdefghijklmnop</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"#
+            );
+            let notes = format!(
+                r#"<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>{first_shape}<p:sp><p:txBody><a:bodyPr/>{list_style}<a:p><a:pPr><a:tabLst>{tab_stops}</a:tabLst></a:pPr><a:r><a:t>Say</a:t></a:r>{line_break}<a:r><a:t>this token=abcdefghijklmnop</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#
+            );
+            write_zip(
+                &file,
+                &[
+                    (
+                        "ppt/presentation.xml",
+                        r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="1" r:id="rId1"/></p:sldIdLst></p:presentation>"#,
+                    ),
+                    (
+                        "ppt/_rels/presentation.xml.rels",
+                        r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>"#,
+                    ),
+                    ("ppt/slides/slide1.xml", &slide),
+                    (
+                        "ppt/slides/_rels/slide1.xml.rels",
+                        r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/></Relationships>"#,
+                    ),
+                    ("ppt/notesSlides/notesSlide1.xml", &notes),
+                ],
+            );
+            let plan = plan_document(&file, "w", "p", DEFAULT_DEST_PREFIX, None).unwrap();
+            assert!(
+                plan.body
+                    .contains("## Slide 1\n\nHeading\nUse\nTLS token=[REDACTED]"),
+                "break {line_break}: {}",
+                plan.body
+            );
+            assert!(
+                plan.body
+                    .contains("### Speaker notes\n\nHeading\nSay\nthis token=[REDACTED]"),
+                "break {line_break}: {}",
+                plan.body
+            );
+            assert!(!plan.body.contains("abcdefghijklmnop"));
+        }
     }
 
     #[test]
