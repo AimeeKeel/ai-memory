@@ -17,7 +17,7 @@ version in [`docs/changelog/`](docs/changelog/):
   minimum 500, maximum 64000). It caps the returned body with the same visible
   truncation marker as `memory_read_session_observations`. The response always
   includes `truncated` and `total_chars`, which report whether the body was cut
-  and its full size (#NNN).
+  and its full size (#1827).
 
 ### Changed
 
@@ -27,7 +27,7 @@ version in [`docs/changelog/`](docs/changelog/):
   token costs for routine "what did this session do" lookups. Updated the
   retrieval skill with an `order="desc"` recipe using a narrow `kinds` filter
   and small `limit` and `body_max_chars` values to avoid reading the whole
-  session (#NNN).
+  session (#1827).
 
 ### Fixed
 
