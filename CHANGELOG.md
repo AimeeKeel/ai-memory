@@ -11,6 +11,14 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ## [Unreleased]
 
+### Fixed
+
+- Made `auth login --timeout-secs` stop device-authorization polling requests
+  and waits at the deadline for OpenAI OAuth, GitHub Copilot and OIDC device
+  login. Late polling results no longer reach credential storage; provider
+  intervals and `slow_down` backoff are preserved. OpenAI's subsequent exchange
+  of an authorized code keeps its own HTTP request timeout (#PR).
+
 ## [3.2.10] - 2026-10-29
 
 ### Changed
