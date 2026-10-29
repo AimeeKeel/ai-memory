@@ -13144,6 +13144,15 @@ model = "gpt-5"
         assert!(plugin.contains(
             r#"if (id && typeof parentID === "string" && parentID) sessionParents.set(id, parentID);"#
         ));
+        // A child the task tool resumes by `task_id` in a later process is
+        // recognized from the `session.updated` its prompt publishes. An
+        // update never starts a session of its own.
+        let updated = opencode_event_branch(&plugin, "session.updated");
+        assert!(
+            updated.contains("rememberParent(properties.sessionID ?? info.id, info.parentID);"),
+            "{updated}"
+        );
+        assert!(!updated.contains("startSession("), "{updated}");
         let transform = &plugin[plugin
             .find(r#""experimental.chat.system.transform": async"#)
             .expect("system transform hook")..];
