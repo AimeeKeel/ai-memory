@@ -96,6 +96,10 @@ version in [`docs/changelog/`](docs/changelog/):
 - Initialized the TypeScript SDK's MCP session before the first `callTool`,
   fixing HTTP 422 responses with `--http-stateful`. Raw calls still skip
   schema checks, and later wrapped calls reuse the session (#1816).
+- Preserved literal reasoning tags and their contents inside structured JSON
+  strings when parsing OpenAI-compatible tolerant replies and Anthropic text
+  replies. Reasoning blocks outside the JSON are still removed, including
+  when a strict OpenAI-compatible request falls back to tolerant parsing (#1817).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
