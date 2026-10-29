@@ -68,6 +68,9 @@ version in [`docs/changelog/`](docs/changelog/):
   normally (#1801).
 - Refused backup restores with a missing or invalid gzip trailer before
   replacing live data, even when all tar entries were readable (#1805).
+- Kept separate pre-migration archives when installations share a backup
+  destination and start in the same second, instead of overwriting an
+  existing installation's snapshot (#1806).
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and
