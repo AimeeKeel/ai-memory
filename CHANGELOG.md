@@ -13,6 +13,10 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Bounded the wiki append-versus-commit concurrency regression so filesystem
+  scheduling cannot turn its background writers into an unbounded fsync
+  workload on macOS, while every round still contends with a commit (#1850).
+
 - Fixed false command timeouts in the macOS menu app when CLI output or
   diagnostics exceeded a pipe buffer (#1845).
 
