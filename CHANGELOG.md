@@ -18,6 +18,11 @@ version in [`docs/changelog/`](docs/changelog/):
   in the legacy recent API, project activity, folder previews and namespace
   listings. Kept title-sort and equal-timestamp path tie-breaks (#1247).
 
+- Fixed `restore` replacing live data when a backup without `config.toml`
+  contains API keys that the configured pepper cannot verify. It now refuses
+  before the swap, preserving the live wiki, database and config, and names
+  the original configuration as the remedy (#1495).
+
 - Refused empty and whitespace-only `--workspace` and `--project` flags at the
   shared CLI scope-resolution choke point (`resolve_scope`,
   `resolve_scope_noting_marker_project`, `resolve_scope_with_marker`, and

@@ -1231,7 +1231,8 @@ Order of operations:
    the original pepper is configured and `--accept-legacy-api-key-pepper` was passed. When
    the live config is being kept (step 4) and the database holds API keys, the
    configured pepper must match the one the keys were hashed with, or the
-   restore stops here too.
+   restore stops here too. This also applies when the archive has no
+   `config.toml`, even with `--with-config`.
 4. Swap: rename the live `wiki/` and `db/` aside, rename the staged copies
    into place, then delete the previous data. Each move is a same-filesystem
    rename; if one fails, the moves already made are reversed. The archive's
@@ -1267,10 +1268,11 @@ Failure modes:
   although a later one was applied. The staged store is refused, just as at
   normal startup. Keep the backup and report the history for review;
   `--force` does not bypass this check or repair the missing migration.
-- **The live config's pepper does not match the backup's API keys** (live
-  config kept) → rerun with `--with-config` to restore the backup's config, or
-  set the live `[auth].token_pepper` to the original. The live data is left as
-  it was.
+- **The live config's pepper is missing or does not match the backup's API
+  keys** (live config kept) → set the live `[auth].token_pepper` to the
+  original. If the backup contains `config.toml`, restoring it with
+  `--with-config` is another option. Without that file in the archive, carry
+  the original config separately. The live data is left as it was.
 - **Legacy backup has API keys but no pepper verifier** → restore the original
   `[auth].token_pepper` through the current config/environment and rerun with
   `--accept-legacy-api-key-pepper`. This flag confirms provenance; it cannot

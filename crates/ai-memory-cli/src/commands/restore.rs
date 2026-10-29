@@ -251,10 +251,9 @@ async fn stage_then_swap(
             bail!("the restored API-key pepper verifier could not be bound");
         }
     }
-    // Keeping the live config instead of the archived one must not leave a
-    // server that refuses to start: the pepper this command loaded has to be
-    // the one the restored API keys were hashed with.
-    if placement == ConfigPlacement::Divert && has_api_credentials {
+    // Keeping the live config must not leave a server that refuses to start:
+    // its loaded pepper must match the restored API keys.
+    if placement != ConfigPlacement::Install && has_api_credentials {
         let matches = match (
             token_pepper.filter(|value| !value.trim().is_empty()),
             store.reader.api_credential_pepper_verifier().await?,
@@ -267,6 +266,14 @@ async fn stage_then_swap(
             _ => false,
         };
         if !matches {
+            if placement == ConfigPlacement::Absent {
+                bail!(
+                    "the backup does not contain config.toml and the configured \
+                     [auth].token_pepper is missing or does not match its API keys; restore \
+                     the original config or token_pepper before retrying (the live data \
+                     was not changed)"
+                );
+            }
             bail!(
                 "the backup's API keys were hashed with a different [auth].token_pepper than \
                  the live config's; rerun with --with-config to restore the backup's \
@@ -1246,6 +1253,70 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn restoring_without_archived_config_checks_the_live_pepper_before_swap() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let db = api_key_sqlite_bytes(Some("archive-pepper")).await;
+        let from = write_tarball(
+            scratch.path(),
+            "keys-without-config.tar.gz",
+            &gz_tarball(&[
+                ("wiki/default/project/notes/new.md", b"new page"),
+                ("db/memory.sqlite", db.as_slice()),
+            ]),
+        );
+
+        // The flag cannot supply a config the archive does not contain.
+        for with_config in [false, true] {
+            for live_pepper in [Some("different-live-pepper"), None, Some(" \t")] {
+                let data = tempfile::TempDir::new().unwrap();
+                seed_live_data(data.path());
+                let err = restore_data_dir_with_legacy_pepper(
+                    data.path(),
+                    &from,
+                    true,
+                    with_config,
+                    live_pepper,
+                    false,
+                )
+                .await
+                .unwrap_err();
+                let message = err.to_string();
+                assert!(message.contains("does not contain config.toml"), "{err:#}");
+                assert!(message.contains("[auth].token_pepper"), "{err:#}");
+                assert!(!message.contains("--with-config"), "{err:#}");
+                assert_live_data_untouched(data.path());
+                assert!(!data.path().join(CONFIG_FROM_BACKUP_FILE).exists());
+            }
+
+            let data = tempfile::TempDir::new().unwrap();
+            seed_live_data(data.path());
+            let outcome = restore_data_dir_with_legacy_pepper(
+                data.path(),
+                &from,
+                true,
+                with_config,
+                Some("archive-pepper"),
+                false,
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, ConfigOutcome::NotInArchive);
+            assert_eq!(
+                std::fs::read(data.path().join("config.toml")).unwrap(),
+                b"# old config\n"
+            );
+            assert_eq!(
+                std::fs::read(data.path().join("wiki/default/project/notes/new.md")).unwrap(),
+                b"new page"
+            );
+            assert!(!data.path().join(CONFIG_FROM_BACKUP_FILE).exists());
+            assert!(restore_scratch_dirs(data.path()).is_empty());
+            let restored = Store::open(data.path()).unwrap();
+            assert!(restored.reader.api_credentials_exist().await.unwrap());
+        }
     }
 
     /// Keeping the live config must not leave a server that refuses to start
