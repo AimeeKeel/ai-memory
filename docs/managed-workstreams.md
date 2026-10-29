@@ -566,6 +566,10 @@ OpenCode V1 tool failures contribute their visible `state.error` text as a
 result, with `status: "error"` and `is_error: true` in the ledger metadata.
 Successful calls keep their ordinary `state.output` result.
 
+OpenCode 2 tool failures contribute their visible error text as a result, with
+`status: "error"` and `is_error: true` in the ledger metadata. Successful calls
+keep their ordinary `state.content` text parts.
+
 Search and tail also return optional `source_record_id` and `metadata` fields.
 The text CLI prints the source record and correlation metadata as escaped JSON;
 `--json` preserves these fields for consumers. Older server responses without
