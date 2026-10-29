@@ -152,7 +152,9 @@ Paragraph tab-stop definitions are formatting and do not insert text.
 
 VTT/SRT files accept LF, CRLF, or CR line endings and any number of blank lines
 between cues. WebVTT comments are omitted; identifiers such as `NOTE123` keep
-their cue text.
+their cue text. WebVTT character references such as `&amp;` and `&#233;` are
+decoded once before sanitization. Escaped tags remain literal text, and SRT
+character references retain their original spelling.
 
 ## Safety contract
 

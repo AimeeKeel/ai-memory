@@ -1061,7 +1061,7 @@ fn extract_transcript(bytes: &[u8], webvtt: bool) -> Result<String> {
             if line.is_empty() {
                 continue;
             }
-            push_bounded(&mut output, clean_transcript_markup(line).trim())?;
+            push_bounded(&mut output, clean_transcript_markup(line, webvtt).trim())?;
             push_bounded(&mut output, "\n")?;
         }
         if !output.is_empty() && !output.ends_with("\n\n") {
@@ -1086,14 +1086,25 @@ fn is_timing_line(line: &str) -> bool {
     looks_like_timestamp(start) && looks_like_timestamp(end)
 }
 
-fn clean_transcript_markup(line: &str) -> String {
+fn clean_transcript_markup(line: &str, webvtt: bool) -> String {
+    // WebVTT uses HTML character references in text (not attribute) context:
+    // https://www.w3.org/TR/webvtt1/#webvtt-cue-text-parsing-rules
+    // Decode original text segments once: escaped tags remain literal, and
+    // removing markup cannot join fragments into a new character reference.
+    let push_text = |output: &mut String, text: &str| {
+        if webvtt {
+            output.push_str(&htmlize::unescape(text));
+        } else {
+            output.push_str(text);
+        }
+    };
     let mut output = String::with_capacity(line.len());
     let mut rest = line;
     while let Some(start) = rest.find('<') {
-        output.push_str(&rest[..start]);
+        push_text(&mut output, &rest[..start]);
         let after_start = &rest[start + 1..];
         let Some(end) = after_start.find('>') else {
-            output.push_str(&rest[start..]);
+            push_text(&mut output, &rest[start..]);
             return output;
         };
         let candidate = &after_start[..end];
@@ -1104,7 +1115,7 @@ fn clean_transcript_markup(line: &str) -> String {
         }
         rest = &after_start[end + 1..];
     }
-    output.push_str(rest);
+    push_text(&mut output, rest);
     output
 }
 
@@ -1827,6 +1838,98 @@ mod tests {
         let srt = b"1\n00:00:01,000 --> 00:00:02,000\n12345\n\n2\n00:00:03,000 --> 00:00:04,000\nSecond line\n";
         let text = extract_transcript(srt, false).unwrap();
         assert_eq!(text.trim(), "12345\n\nSecond line");
+    }
+
+    #[test]
+    fn webvtt_decodes_character_references_in_cue_text() {
+        for (payload, expected) in [
+            (
+                "AT&amp;T: 1 &lt; 2 &gt; 0, a&nbsp;b &lrm;left &rlm;right",
+                "AT&T: 1 < 2 > 0, a\u{a0}b \u{200e}left \u{200f}right",
+            ),
+            (
+                "&#39;caf&#233;&#39; &#x1F642; &trade; &NotEqualTilde;",
+                "'café' 🙂 ™ ≂\u{338}",
+            ),
+            ("&notit; &copy 2026 &#65 &#x41 &#X41", "¬it; © 2026 A A A"),
+            (
+                "&#0; &#xD800; &#1114112; &#128; &#999999999999999999999;",
+                "� � � € �",
+            ),
+            (
+                "&unknown; &#; &#x; bare & ampersand &amp;",
+                "&unknown; &#; &#x; bare & ampersand &",
+            ),
+        ] {
+            let input = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{payload}\n");
+            assert_eq!(
+                extract_transcript(input.as_bytes(), true).unwrap().trim(),
+                expected,
+                "cue payload {payload:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn webvtt_decodes_once_without_reparsing_or_joining_markup() {
+        for (payload, expected) in [
+            (
+                "<v Alice><b>AT&amp;T</b> &lt;b&gt;literal&lt;/b&gt;</v>",
+                "AT&T <b>literal</b>",
+            ),
+            ("&amp;lt; &amp;amp;", "&lt; &amp;"),
+            ("&am<b></b>p; &#x<i></i>41;", "&amp; &#x41;"),
+            ("<unknown>&amp;</unknown>", "<unknown>&</unknown>"),
+            ("1 < 2 &amp;", "1 < 2 &"),
+            (
+                "<v Alice><b>First &amp;\nSecond &lt;third&gt;</b></v>",
+                "First &\nSecond <third>",
+            ),
+            ("&am\np;", "&am\np;"),
+        ] {
+            let input = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{payload}\n");
+            assert_eq!(
+                extract_transcript(input.as_bytes(), true).unwrap().trim(),
+                expected,
+                "cue payload {payload:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn srt_keeps_character_references_literal() {
+        let input =
+            b"1\n00:00:01,000 --> 00:00:02,000\n<b>AT&amp;T</b> &lt;b&gt;literal&lt;/b&gt; &#65;\n";
+        assert_eq!(
+            extract_transcript(input, false).unwrap().trim(),
+            "AT&amp;T &lt;b&gt;literal&lt;/b&gt; &#65;"
+        );
+    }
+
+    #[test]
+    fn webvtt_decoded_text_is_sanitized_before_the_document_plan() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.path().join("captions.vtt");
+        fs::write(
+            &file,
+            "WEBVTT\n\nNOTE annotation\nCOMMENT_SENTINEL\n\n00:00:01.000 --> 00:00:02.000\nKnown fact AT&amp;T token&#61;abcdefghijklmnop\nLiteral &lt;b&gt;sample&lt;/b&gt; &amp;lt;\n",
+        )
+        .unwrap();
+        let plan = plan_document(&file, "w", "p", DEFAULT_DEST_PREFIX, None).unwrap();
+        assert!(plan.body.contains("Known fact AT&T"));
+        assert!(plan.body.contains("token=[REDACTED]"));
+        assert!(plan.body.contains("Literal <b>sample</b> &lt;"));
+        assert!(!plan.body.contains("abcdefghijklmnop"));
+        assert!(!plan.body.contains("COMMENT_SENTINEL"));
+    }
+
+    #[test]
+    fn webvtt_entity_expansion_respects_the_working_text_limit() {
+        // &nGt; has five input bytes and expands to six UTF-8 bytes.
+        let payload = "&nGt;".repeat(MAX_WORKING_TEXT_BYTES / 6 + 1);
+        assert!(payload.len() < MAX_WORKING_TEXT_BYTES);
+        let input = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{payload}\n");
+        assert!(extract_transcript(input.as_bytes(), true).is_err());
     }
 
     #[test]
