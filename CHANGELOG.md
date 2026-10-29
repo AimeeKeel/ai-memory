@@ -17,7 +17,7 @@ version in [`docs/changelog/`](docs/changelog/):
   and waits at the deadline for OpenAI OAuth, GitHub Copilot and OIDC device
   login. Late polling results no longer reach credential storage; provider
   intervals and `slow_down` backoff are preserved. OpenAI's subsequent exchange
-  of an authorized code keeps its own HTTP request timeout (#PR).
+  of an authorized code keeps its own HTTP request timeout (#1848).
 
 ## [3.2.10] - 2026-10-29
 
