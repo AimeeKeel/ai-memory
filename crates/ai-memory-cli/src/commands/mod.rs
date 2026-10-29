@@ -68,6 +68,7 @@ pub mod install_skills;
 pub mod lint;
 pub mod list_projects;
 pub mod llm_test;
+mod managed_project;
 pub mod mcp_bridge;
 pub mod merge_project;
 pub mod message;

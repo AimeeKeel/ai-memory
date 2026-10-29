@@ -13,6 +13,14 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Added
 
+- Added `--project-id` to managed launches and checkout-local discovery to
+  recover populated legacy name collisions without moving or merging history.
+  An interactive launch offers authorized project choices and remembers the
+  selection for that server and checkout. Resumes reuse the binding, and
+  ID-selected runs keep startup context and hook capture in the selected scope
+  after checking current access, run ownership and native session identity.
+  Existing name selectors and legacy runs retain their behavior (#1833).
+
 - Added `ai-memory run --no-exit-prompt`, `[run] exit_prompt = false`, and
   `AI_MEMORY_RUN_EXIT_PROMPT=false` to skip the switch/rerun menu after a
   successful interactive session. The menu remains enabled by default (#1776).

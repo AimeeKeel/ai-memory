@@ -15157,6 +15157,7 @@ pub(crate) mod tests {
         let managed = crate::workstream::prepare_run(
             &mut conn,
             &crate::PrepareWorkstreamRun {
+                scope_by_id: false,
                 workspace_id: src_ws,
                 project_id: proj,
                 repo_fingerprint: "repo".into(),
@@ -17853,6 +17854,7 @@ pub(crate) mod tests {
         crate::workstream::prepare_run(
             conn,
             &crate::workstream::PrepareWorkstreamRun {
+                scope_by_id: false,
                 workspace_id: *ws,
                 project_id: *proj,
                 repo_fingerprint: "repo-fp".to_string(),

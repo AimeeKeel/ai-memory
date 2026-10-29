@@ -1776,7 +1776,8 @@ async fn fetch_and_accept_handoff_at(
     };
     // Authorized before the active-project pointer is published, so a refused
     // repository does not become the caller's default for later calls.
-    let (ws, proj) = resolve_authorized_startup_scope(state, &query, viewer).await?;
+    let (ws, proj) =
+        resolve_authorized_startup_scope(state, &query, actor.as_ref(), viewer).await?;
     // A managed run's ledger is additive, not a replacement. Resolve and
     // authorize the request's repository before interpreting the run id: a
     // shared Codex daemon may carry a terminal id from another checkout, and
@@ -2054,17 +2055,104 @@ async fn fetch_and_accept_handoff_at(
     ))
 }
 
-/// The repository a startup-context request names — by cwd, marker or
-/// explicit scope — once the caller is authorized to read it. What `/handoff`
-/// and `/brief` return is this repository's content (its handoff, its pinned,
-/// rules and slot pages), keyed only on a project the caller named or a
-/// directory they are in (#708), so both resolve it here: a subagent's brief
-/// always comes from the repository its session start reads.
+struct ManagedHookHint<'a> {
+    run: Option<&'a str>,
+    agent: AgentKind,
+    cwd: Option<&'a str>,
+    native_session: Option<&'a str>,
+    session_start: bool,
+}
+
+/// Only a run prepared through the ID selector may supply its stored scope.
+/// Ownership, native identity and current Write access precede the atomic
+/// binding; a refused pinned run never falls back to name-based capture.
+async fn pinned_managed_hook_scope(
+    state: &HookState,
+    hint: ManagedHookHint<'_>,
+    actor: Option<&IdentityKey>,
+    viewer: Option<ai_memory_core::UserId>,
+) -> anyhow::Result<Option<(WorkspaceId, ProjectId)>> {
+    let Some(run_id) = hint.run.and_then(|raw| ManagedRunId::from_str(raw).ok()) else {
+        return Ok(None);
+    };
+    let owner_user = crate::workstream::managed_run_owner_stamp(
+        &state.reader,
+        actor,
+        state.trusted_proxy_identity,
+    )
+    .await?;
+    let scope = state
+        .reader
+        .managed_run_pinned_scope(ai_memory_store::ManagedRunHookIdentity {
+            run_id,
+            agent: hint.agent,
+            cwd: hint.cwd.map(str::to_owned),
+            native_session_id: hint.native_session.unwrap_or_default().to_owned(),
+            owner_user: owner_user.clone(),
+            session_start: hint.session_start,
+        })
+        .await?;
+    let Some((workspace_id, project_id)) = scope else {
+        return Ok(None);
+    };
+    let native = ai_memory_core::NativeSessionIdentity::parse(
+        hint.native_session.unwrap_or_default(),
+        &state.sanitizer,
+    )?;
+    ai_memory_store::authorize_scope_for(
+        &state.reader,
+        None,
+        ai_memory_store::ResolvedScope {
+            workspace_id,
+            project_id,
+        },
+        viewer,
+        ai_memory_store::ProjectAccess::Write,
+    )
+    .await?;
+    let linked = state
+        .writer
+        .link_managed_run_session_in_scope(ai_memory_store::LinkManagedRunSessionInScope {
+            run_id,
+            workspace_id,
+            project_id,
+            agent: hint.agent,
+            native_session_id: native.into_string(),
+            owner_user,
+        })
+        .await?;
+    if linked != ai_memory_store::ManagedRunSessionLink::Exact(run_id) {
+        return Err(anyhow::anyhow!(
+            "ID-selected managed run no longer admits this native session"
+        ));
+    }
+    Ok(Some((workspace_id, project_id)))
+}
+
+/// Resolve startup scope from a validated pinned run or the normal marker/name
+/// route, then apply the corresponding current project authorization.
 async fn resolve_authorized_startup_scope(
     state: &HookState,
     query: &HandoffQuery,
+    actor: Option<&IdentityKey>,
     viewer: Option<ai_memory_core::UserId>,
 ) -> anyhow::Result<(WorkspaceId, ProjectId)> {
+    if let Some(scope) = pinned_managed_hook_scope(
+        state,
+        ManagedHookHint {
+            run: query.managed_run.as_deref(),
+            agent: query.agent.as_deref().map_or(AgentKind::Other, parse_agent),
+            cwd: query.cwd.as_deref(),
+            native_session: query.session_id.as_deref(),
+            session_start: true,
+        },
+        actor,
+        viewer,
+    )
+    .await?
+    {
+        return Ok(scope);
+    }
     let repository = query.repository_identity();
     let aliases = crate::payload::marker_aliases_from_wire(
         query.project.as_deref(),
@@ -2130,7 +2218,7 @@ async fn fetch_brief(
     actor: Option<&IdentityKey>,
     viewer: Option<ai_memory_core::UserId>,
 ) -> anyhow::Result<Option<String>> {
-    let (ws, proj) = resolve_authorized_startup_scope(state, query, viewer).await?;
+    let (ws, proj) = resolve_authorized_startup_scope(state, query, actor, viewer).await?;
     let agent = query.agent.as_deref().map_or(AgentKind::Other, parse_agent);
     // An `additionalContext` over that agent's limit is swapped for a file
     // path and a short preview, which would cut the brief's closing fence;
@@ -4258,6 +4346,19 @@ async fn process_authorized(
         user: actor.as_ref().map(IdentityKey::storage_key),
         session_id: env.session_id.clone(),
     };
+    let pinned_scope = pinned_managed_hook_scope(
+        state,
+        ManagedHookHint {
+            run: env.managed_run.as_deref(),
+            agent: env.agent,
+            cwd: env.cwd.as_deref(),
+            native_session: env.session_id.as_deref(),
+            session_start: env.event == HookEvent::SessionStart,
+        },
+        actor.as_ref(),
+        viewer,
+    )
+    .await?;
     // Session-sticky attribution: for an event whose session already
     // exists, the session's own scope is the source of truth (the same
     // rationale as the V19 repair). Per-event cwd derivation only decides
@@ -4316,25 +4417,30 @@ async fn process_authorized(
         }
         _ => None,
     };
-    let publishable_scope = sticky_scope.is_some()
+    let publishable_scope = pinned_scope.is_some()
+        || sticky_scope.is_some()
         || has_publishable_scope_hint(env.cwd.as_deref(), env.project_override.as_deref());
-    let (mut ws, mut proj) = match sticky_scope {
-        Some((session_ws, session_proj, _)) => (session_ws, session_proj),
-        None => {
-            resolve_project_ids_inner(
-                state,
-                env.cwd.as_deref(),
-                env.workspace_override.as_deref(),
-                env.project_override.as_deref(),
-                env.project_strategy,
-                env.identity.as_ref(),
-                env.identity_style,
-                &env.aliases,
-                env.project_source,
-                true,
-                viewer,
-            )
-            .await?
+    let (mut ws, mut proj) = if let Some(scope) = pinned_scope {
+        scope
+    } else {
+        match sticky_scope {
+            Some((session_ws, session_proj, _)) => (session_ws, session_proj),
+            None => {
+                resolve_project_ids_inner(
+                    state,
+                    env.cwd.as_deref(),
+                    env.workspace_override.as_deref(),
+                    env.project_override.as_deref(),
+                    env.project_strategy,
+                    env.identity.as_ref(),
+                    env.identity_style,
+                    &env.aliases,
+                    env.project_source,
+                    true,
+                    viewer,
+                )
+                .await?
+            }
         }
     };
 
@@ -4475,7 +4581,11 @@ async fn process_authorized(
             .await;
         match result {
             Ok(admission) => break (admission, log_title, ingest_guard),
-            Err(error) if attempts == 0 && error.is_stale_session_scope_reference() => {
+            Err(error)
+                if pinned_scope.is_none()
+                    && attempts == 0
+                    && error.is_stale_session_scope_reference() =>
+            {
                 // Do not hold an old-project gate while resolving and acquiring
                 // the refreshed scope's gate; that would permit nested gates.
                 drop(ingest_guard);
@@ -4590,7 +4700,8 @@ async fn process_authorized(
     }
     ws = admitted.workspace_id();
     proj = admitted.project_id();
-    if let Some(run_id) = managed_run
+    if pinned_scope.is_none()
+        && let Some(run_id) = managed_run
         && let Some(native_session_id) = env.session_id.as_deref().and_then(|value| {
             ai_memory_core::NativeSessionIdentity::parse(value, &state.sanitizer).ok()
         })
@@ -13562,6 +13673,7 @@ pub(crate) mod tests {
             .writer
             .prepare_workstream_run_owned(
                 PrepareWorkstreamRun {
+                    scope_by_id: false,
                     workspace_id: state.workspace_id,
                     project_id: state.project_id,
                     repo_fingerprint: "link-repo".into(),
@@ -13637,6 +13749,284 @@ pub(crate) mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn managed_project_id_pins_startup_and_capture_without_accepting_foreign_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let mut state = make_state(&tmp).await;
+        state.trusted_proxy_identity = true;
+        let alice = IdentityKey::User("alice".into());
+        let (selected, _) = state
+            .writer
+            .resolve_project_by_identity(
+                state.workspace_id,
+                ai_memory_core::repository_identity::RepositoryIdentity {
+                    identity: "github.com/acme/scratch".into(),
+                    source: ai_memory_core::repository_identity::IdentitySource::GitRemote,
+                },
+                ai_memory_core::repository_identity::IdentityStyle::Path,
+                "remote",
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_ne!(selected, state.project_id);
+        let run = state
+            .writer
+            .prepare_workstream_run_owned(
+                PrepareWorkstreamRun {
+                    scope_by_id: true,
+                    workspace_id: state.workspace_id,
+                    project_id: selected,
+                    repo_fingerprint: "pinned-repo".into(),
+                    worktree_fingerprint: "pinned-tree".into(),
+                    cwd: "/tmp/scratch".into(),
+                    agent: AgentKind::ClaudeCode,
+                    automatic_harness: false,
+                    available_agents: Vec::new(),
+                    selection: WorkstreamSelection::Current,
+                    lease_owner: "pinned-test".into(),
+                },
+                Some(alice.storage_key()),
+            )
+            .await
+            .unwrap();
+        let event = |native: &str| {
+            let mut event = session_envelope("user-prompt-submit", native, "/tmp/scratch");
+            event.managed_run = Some(run.run_id.to_string());
+            event
+        };
+        let mut previous =
+            session_envelope("user-prompt-submit", "foreign-scope-native", "/tmp/foreign");
+        previous.project_override = Some("foreign-project".into());
+        let previous_id = resolve_session_id(&previous).unwrap();
+        process(&state, previous, Some(alice.clone()), Vec::new())
+            .await
+            .unwrap();
+        let previous_scope = state.reader.find_session_scope(previous_id).await.unwrap();
+        let previous_count = state
+            .reader
+            .observations_for_session(previous_id)
+            .await
+            .unwrap()
+            .len();
+        assert!(
+            process_authorized(
+                &state,
+                event("foreign-scope-native"),
+                Some(alice.clone()),
+                ai_memory_core::AuthLevel::User,
+                Vec::new(),
+                None
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            state.reader.find_session_scope(previous_id).await.unwrap(),
+            previous_scope
+        );
+        assert_eq!(
+            state
+                .reader
+                .observations_for_session(previous_id)
+                .await
+                .unwrap()
+                .len(),
+            previous_count
+        );
+        assert_eq!(
+            run_native_session(&state, run.run_id).await,
+            None,
+            "a foreign native session must not be linked before capture admission"
+        );
+        for (case, owner) in [
+            ("owner", IdentityKey::User("bob".into())),
+            ("cwd", alice.clone()),
+            ("agent", alice.clone()),
+        ] {
+            let mut rejected = event(case);
+            if case == "cwd" {
+                rejected.cwd = Some("/tmp/foreign".into());
+            }
+            if case == "agent" {
+                rejected.agent = AgentKind::Codex;
+            }
+            let session = resolve_session_id(&rejected).unwrap();
+            assert!(
+                process_authorized(
+                    &state,
+                    rejected,
+                    Some(owner),
+                    ai_memory_core::AuthLevel::User,
+                    Vec::new(),
+                    None
+                )
+                .await
+                .is_err(),
+                "{case}"
+            );
+            assert!(
+                state
+                    .reader
+                    .find_session_scope(session)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{case} captured data before refusal"
+            );
+        }
+        let query = HandoffQuery {
+            managed_run: Some(run.run_id.to_string()),
+            session_id: Some("pinned-native".into()),
+            agent: Some("claude-code".into()),
+            cwd: Some("/tmp/scratch".into()),
+            workspace: Some("default".into()),
+            project: Some("scratch".into()),
+            ..Default::default()
+        };
+        let user = state
+            .writer
+            .create_human_user(
+                ai_memory_core::NewUser {
+                    username: "alice".into(),
+                    name: None,
+                    email: None,
+                },
+                ai_memory_core::UserRole::User,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        state
+            .writer
+            .set_access_mode(selected, ai_memory_store::AccessMode::Restricted)
+            .await
+            .unwrap();
+        state
+            .writer
+            .grant_memory(user, selected, ai_memory_store::GrantLevel::Read, None)
+            .await
+            .unwrap();
+        assert!(
+            resolve_authorized_startup_scope(&state, &query, Some(&alice), Some(user))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            run_native_session(&state, run.run_id).await,
+            None,
+            "a read-only caller must not bind the run"
+        );
+        state
+            .writer
+            .grant_memory(user, selected, ai_memory_store::GrantLevel::Write, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            resolve_authorized_startup_scope(&state, &query, Some(&alice), Some(user))
+                .await
+                .unwrap(),
+            (state.workspace_id, selected)
+        );
+        let legitimate = event("pinned-native");
+        let session = resolve_session_id(&legitimate).unwrap();
+        process_authorized(
+            &state,
+            legitimate,
+            Some(alice.clone()),
+            ai_memory_core::AuthLevel::User,
+            Vec::new(),
+            Some(user),
+        )
+        .await
+        .unwrap();
+        let (_, captured, _) = state
+            .reader
+            .find_session_scope(session)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            captured, selected,
+            "capture must use the same project ID as startup"
+        );
+        assert!(
+            !state
+                .reader
+                .observations_for_session(session)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            process_authorized(
+                &state,
+                event("wrong-native"),
+                Some(alice.clone()),
+                ai_memory_core::AuthLevel::User,
+                Vec::new(),
+                None
+            )
+            .await
+            .is_err()
+        );
+        state
+            .writer
+            .grant_memory(user, selected, ai_memory_store::GrantLevel::Read, None)
+            .await
+            .unwrap();
+        let count = state
+            .reader
+            .observations_for_session(session)
+            .await
+            .unwrap()
+            .len();
+        assert!(
+            process_authorized(
+                &state,
+                event("pinned-native"),
+                Some(alice.clone()),
+                ai_memory_core::AuthLevel::User,
+                Vec::new(),
+                Some(user)
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            state
+                .reader
+                .observations_for_session(session)
+                .await
+                .unwrap()
+                .len(),
+            count,
+            "revoked write access must be rechecked on every capture"
+        );
+        state.writer.cancel_managed_run(run.run_id).await.unwrap();
+        assert!(
+            resolve_authorized_startup_scope(&state, &query, Some(&alice), None)
+                .await
+                .is_err()
+        );
+        assert!(
+            process_authorized(
+                &state,
+                event("pinned-native"),
+                Some(alice),
+                ai_memory_core::AuthLevel::User,
+                Vec::new(),
+                None
+            )
+            .await
+            .is_err(),
+            "expired pinned runs must not fall back to name routing"
+        );
+    }
+
     /// #1082: an event admitted to a different project than the run's never
     /// links, even from the run's own operator.
     #[tokio::test]
@@ -13697,6 +14087,7 @@ pub(crate) mod tests {
         let run = state
             .writer
             .prepare_workstream_run(PrepareWorkstreamRun {
+                scope_by_id: false,
                 workspace_id: state.workspace_id,
                 project_id: state.project_id,
                 repo_fingerprint: "collision-repo".into(),
@@ -19043,6 +19434,7 @@ pub(crate) mod tests {
         let cwd = tmp.path().to_string_lossy().into_owned();
 
         let prepare = PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: state.workspace_id,
             project_id: state.project_id,
             repo_fingerprint: "repo".into(),
@@ -19855,6 +20247,7 @@ pub(crate) mod tests {
         let first = state
             .writer
             .prepare_workstream_run(PrepareWorkstreamRun {
+                scope_by_id: false,
                 workspace_id: state.workspace_id,
                 project_id: state.project_id,
                 repo_fingerprint: "repo".into(),
@@ -19905,6 +20298,7 @@ pub(crate) mod tests {
         let kimi = state
             .writer
             .prepare_workstream_run(PrepareWorkstreamRun {
+                scope_by_id: false,
                 workspace_id: state.workspace_id,
                 project_id: state.project_id,
                 repo_fingerprint: "repo".into(),
@@ -23922,6 +24316,7 @@ pub(crate) mod tests {
             let run = state
                 .writer
                 .prepare_workstream_run(ai_memory_store::PrepareWorkstreamRun {
+                    scope_by_id: false,
                     workspace_id: state.workspace_id,
                     project_id: state.project_id,
                     repo_fingerprint: "repo".into(),

@@ -217,6 +217,7 @@ async fn move_project_true_move_into_fresh_dest() {
     let managed = store
         .writer
         .prepare_workstream_run(PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: src_ws,
             project_id: src_proj,
             repo_fingerprint: "repo".into(),
@@ -1193,6 +1194,7 @@ async fn copy_purge_force_never_deletes_a_live_managed_workstream() {
     let prepared = store
         .writer
         .prepare_workstream_run(PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: src_ws,
             project_id: src_proj,
             repo_fingerprint: "repo".into(),
@@ -2128,6 +2130,7 @@ async fn delete_workspace_force_removes_everything() {
     let prepared = store
         .writer
         .prepare_workstream_run(PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id,
             project_id,
             repo_fingerprint: "repo".into(),
@@ -2322,6 +2325,7 @@ async fn delete_workspace_dry_run_reports_the_same_counts_the_confirmed_delete_w
     let prepared = store
         .writer
         .prepare_workstream_run(PrepareWorkstreamRun {
+            scope_by_id: false,
             workspace_id: ws,
             project_id: proj,
             repo_fingerprint: "repo".into(),
