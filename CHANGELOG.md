@@ -17,6 +17,10 @@ version in [`docs/changelog/`](docs/changelog/):
   contain dots, underscores, spaces, or non-ASCII characters, so an abandoned
   session's token usage is retained when its synthetic `session-end` is
   captured (#1858).
+- Kept the trailing `#` of `memory_patch_page` headings such as `## C#`
+  unless a space or tab comes before it, as CommonMark does. They were
+  listed and matched without it, so naming one as written failed, `## C`
+  and `## C#` collided, and `add_section` wrote `## F` for `## F#` (#1859).
 
 ## [3.3.0] - 2026-10-29
 
