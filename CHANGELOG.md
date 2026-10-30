@@ -21,6 +21,10 @@ version in [`docs/changelog/`](docs/changelog/):
   unless a space or tab comes before it, as CommonMark does. They were
   listed and matched without it, so naming one as written failed, `## C`
   and `## C#` collided, and `add_section` wrote `## F` for `## F#` (#1859).
+- Documented four keys added in 3.3.0 that the shipped `config.default.toml`
+  and `docs/config-properties.md` left out: `rerank_timeout_secs`,
+  `[run] exit_prompt`, `[query_answer] max_context_tokens` and
+  `[auto_improve.eval] builtin` (#1861).
 
 ## [3.3.0] - 2026-10-29
 
