@@ -13,6 +13,11 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Excluded Codex's generated approval-review transcripts and background
+  suggestion prompts from transcript backfill and profile harvesting, and
+  kept a hand-reworded profile page attached to its ledger topic even when a
+  public page write drops the harvester metadata, preventing `-2` duplicates
+  (#1863).
 - Matched Claude Code's UTF-16 project-folder encoding for astral characters
   and its hashed 200-character limit, so transcript discovery and token-usage
   backfill find sessions from emoji and very long checkout paths (#1864).
