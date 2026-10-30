@@ -52,6 +52,22 @@ async function run(mutation) {
   };
 }
 
+function describe(run) {
+  return JSON.stringify({
+    code: run.code,
+    directory: run.directory,
+    error: run.result.error,
+    failedCases: run.result.cases?.filter(test => !test.passed) || [],
+    stderr: run.errors,
+  });
+}
+
+function failedBeforeMutation(run) {
+  return run.result.mutationApplied === 0
+    && run.result.error
+    && run.result.error !== 'Mutation was not applied';
+}
+
 try {
   const baseline = await run();
   const failedCases = baseline.result.cases?.filter(test => !test.passed) || [];
@@ -69,10 +85,14 @@ try {
   console.log('PASS unmodified server and browser baseline');
   for (const [fault, name] of faults) {
     if (selectedCase && selectedCase !== name) continue;
-    const mutant = await run(fault);
-    assert.equal(mutant.code, 1, fault + ' survived or the runner crashed');
-    assert(mutant.result.mutationApplied > 0, fault + ' never reached the served application');
-    assert.equal(mutant.result.error, 'Browser regression checks failed', 'An unrelated failure must not count as a killed mutant');
+    let mutant = await run(fault);
+    if (failedBeforeMutation(mutant)) {
+      console.warn('RETRY ' + fault + ' after pre-application failure: ' + describe(mutant));
+      mutant = await run(fault);
+    }
+    assert.equal(mutant.code, 1, fault + ' survived or the runner crashed: ' + describe(mutant));
+    assert(mutant.result.mutationApplied > 0, fault + ' never reached the served application: ' + describe(mutant));
+    assert.equal(mutant.result.error, 'Browser regression checks failed', 'An unrelated failure must not count as a killed mutant: ' + describe(mutant));
     assert(mutant.result.cases.some(c => c.name === name && c.passed === false), fault + ' escaped its behavioral test');
     manifest.mutants.push({fault, caughtBy: name, killed: true, artifacts: mutant.directory});
     console.log('KILLED ' + fault + ' by ' + name);
