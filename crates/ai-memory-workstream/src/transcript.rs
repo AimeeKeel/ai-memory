@@ -3874,7 +3874,8 @@ fn names_session(path: &Path, id: &str) -> bool {
 /// The folder Claude Code keeps a project's transcripts in: the cwd with
 /// every character outside `[A-Za-z0-9]` replaced by `-`, so `/a/b.c_d` is
 /// `-a-b-c-d` and `C:\\Users\\me` is `C--Users-me`.
-fn claude_project_dir_name(cwd: &Path) -> String {
+#[must_use]
+pub fn claude_project_dir_name(cwd: &Path) -> String {
     cwd.to_string_lossy()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })

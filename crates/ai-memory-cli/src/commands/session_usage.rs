@@ -540,9 +540,8 @@ pub fn locate_codex_rollout(codex_home: &Path, session_id: &str) -> Option<PathB
 /// `session-end` payload already carries `transcript_path` directly, so
 /// this is only needed for a *different*, earlier session). Claude Code
 /// stores each session at `<claude_config_dir>/projects/<flattened
-/// cwd>/<session_id>.jsonl`, flattening `cwd` by turning every `/`, `\`,
-/// and `:` into `-` — verified against real transcript directories on a
-/// live install (`C:\Users\...\ai-memory` → `C--Users-...-ai-memory`).
+/// cwd>/<session_id>.jsonl`, flattening `cwd` by turning every character
+/// outside `[A-Za-z0-9]` into `-`.
 #[must_use]
 pub fn locate_claude_code_transcript(
     claude_config_dir: &Path,
@@ -556,16 +555,7 @@ pub fn locate_claude_code_transcript(
     {
         return None;
     }
-    let flattened: String = cwd
-        .chars()
-        .map(|c| {
-            if matches!(c, '/' | '\\' | ':') {
-                '-'
-            } else {
-                c
-            }
-        })
-        .collect();
+    let flattened = ai_memory_workstream::claude_project_dir_name(Path::new(cwd));
     let path = claude_config_dir
         .join("projects")
         .join(flattened)
@@ -1015,34 +1005,30 @@ mod tests {
     }
 
     #[test]
-    fn locate_claude_code_transcript_flattens_windows_and_posix_cwd() {
+    fn locate_claude_code_transcript_uses_claudes_project_folder_rule() {
         let tmp = tempfile::tempdir().unwrap();
-        let windows_dir = tmp
-            .path()
-            .join("projects")
-            .join("C--Users-alice-Projects-app");
-        std::fs::create_dir_all(&windows_dir).unwrap();
-        let windows_target = windows_dir.join("9fc72c68-53ac-4d50-82aa-135f7ab03b7d.jsonl");
-        std::fs::write(&windows_target, "").unwrap();
-        let found = locate_claude_code_transcript(
-            tmp.path(),
-            r"C:\Users\alice\Projects\app",
-            "9fc72c68-53ac-4d50-82aa-135f7ab03b7d",
-        )
-        .unwrap();
-        assert_eq!(found, windows_target);
+        let session_id = "9fc72c68-53ac-4d50-82aa-135f7ab03b7d";
+        for (cwd, folder) in [
+            (
+                "/home/me/src/github.com/acme/api",
+                "-home-me-src-github-com-acme-api",
+            ),
+            ("/home/me/my_app", "-home-me-my-app"),
+            ("/home/me/my repo", "-home-me-my-repo"),
+            ("/home/me/café", "-home-me-caf-"),
+            (r"C:\Users\me\my.repo", "C--Users-me-my-repo"),
+        ] {
+            let project_dir = tmp.path().join("projects").join(folder);
+            std::fs::create_dir_all(&project_dir).unwrap();
+            let target = project_dir.join(format!("{session_id}.jsonl"));
+            std::fs::write(&target, "").unwrap();
 
-        let posix_dir = tmp.path().join("projects").join("-home-alice-proj");
-        std::fs::create_dir_all(&posix_dir).unwrap();
-        let posix_target = posix_dir.join("deadbeef-0000-0000-0000-000000000000.jsonl");
-        std::fs::write(&posix_target, "").unwrap();
-        let found = locate_claude_code_transcript(
-            tmp.path(),
-            "/home/alice/proj",
-            "deadbeef-0000-0000-0000-000000000000",
-        )
-        .unwrap();
-        assert_eq!(found, posix_target);
+            assert_eq!(
+                locate_claude_code_transcript(tmp.path(), cwd, session_id),
+                Some(target),
+                "{cwd}"
+            );
+        }
     }
 
     #[test]
