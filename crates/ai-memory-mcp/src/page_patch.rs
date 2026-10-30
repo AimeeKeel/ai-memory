@@ -312,8 +312,11 @@ fn heading(line: &str) -> Option<(u8, String)> {
         return None;
     }
     let mut title = trimmed[hashes..].trim().to_owned();
-    if let Some(without_closing) = title.strip_suffix('#') {
-        title = without_closing.trim_end_matches('#').trim_end().to_owned();
+    // A trailing `#` run closes the heading only after a space or tab
+    // (CommonMark), so `## C#` keeps its `#`.
+    let without_closing = title.trim_end_matches('#');
+    if without_closing.is_empty() || without_closing.ends_with([' ', '\t']) {
+        title = without_closing.trim_end().to_owned();
     }
     (!title.is_empty()).then_some((hashes as u8, title))
 }
