@@ -216,7 +216,7 @@ The defaults named `DEFAULT_AUTO_IMPROVE_*` are constants in `ai-memory-consolid
 
 | Key | Default | Env equivalent | Purpose |
 | --- | --- | --- | --- |
-| `enabled` | `false` | `AI_MEMORY_AUTO_IMPROVE__EVAL__ENABLED` | Turn on the external eval command gate. |
+| `enabled` | `false` | `AI_MEMORY_AUTO_IMPROVE__EVAL__ENABLED` | Turn on the proposal evaluation gate. |
 | `command` | empty | `AI_MEMORY_AUTO_IMPROVE__EVAL__COMMAND` | Executable plus whitespace-separated arguments, run directly without a shell. |
 | `builtin` | empty | `AI_MEMORY_AUTO_IMPROVE__EVAL__BUILTIN` | Scorer run in process instead of `command`. The only value is `structure`. Set `builtin` or `command`, not both. |
 | `timeout_secs` | `120` | `AI_MEMORY_AUTO_IMPROVE__EVAL__TIMEOUT_SECS` | Timeout per proposal eval command. |

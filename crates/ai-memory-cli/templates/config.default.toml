@@ -518,13 +518,14 @@ pending_path = "_pending/auto-improve"
 # max_rejection_context = 50
 # rejection_context_days = 180
 
-# Optional executable evaluation gate for selected proposal targets. Disabled by
-# default; operators supply the command and scoring policy. The command is run
-# directly (not through a shell), split on whitespace, with JSON on stdin. Use a
-# wrapper script for paths with spaces, custom environment, or multiple commands.
-# It must print JSON such as { "score_before": 0.72, "score_after": 0.76, "passed": true }.
-# Or set builtin = "structure" to run the built-in structural checks in process
-# instead; builtin and command are mutually exclusive.
+# Optional evaluation gate for selected proposal targets. Disabled by default;
+# choose either the built-in structural scorer or an external command. A command
+# is run directly (not through a shell), split on whitespace, with JSON on stdin.
+# Use a wrapper script for paths with spaces, custom environment, or multiple
+# commands. It must print JSON such as
+# { "score_before": 0.72, "score_after": 0.76, "passed": true }.
+# Set builtin = "structure" to run the built-in checks in process instead;
+# builtin and command are mutually exclusive.
 [auto_improve.eval]
 enabled = false
 command = ""
