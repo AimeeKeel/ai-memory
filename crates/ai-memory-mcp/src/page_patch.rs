@@ -500,4 +500,34 @@ mod tests {
             "# T\n## Log\none\nnext\n## Tail\ntwo\n## Fresh\nnew\n"
         );
     }
+
+    #[test]
+    fn a_trailing_hash_closes_a_heading_only_after_a_space() {
+        let body = "# T\n## Notes on C#\nold\n## Tail ##\nend\n";
+        let anchors: Vec<_> = section_hashes(body)
+            .0
+            .into_iter()
+            .map(|section| section.anchor)
+            .collect();
+        assert_eq!(anchors, ["T", "Notes on C#", "Tail"]);
+        let patched = apply(
+            body,
+            &[
+                PagePatchEdit::Append {
+                    target: AppendTarget::Section,
+                    anchor: Some("Notes on C#".into()),
+                    content: "more".into(),
+                },
+                PagePatchEdit::AddSection {
+                    anchor: "## F#".into(),
+                    content: "new".into(),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            patched,
+            "# T\n## Notes on C#\nold\nmore\n## Tail ##\nend\n## F#\nnew\n"
+        );
+    }
 }
