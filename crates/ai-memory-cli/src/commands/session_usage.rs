@@ -1016,6 +1016,7 @@ mod tests {
             ("/home/me/my_app", "-home-me-my-app"),
             ("/home/me/my repo", "-home-me-my-repo"),
             ("/home/me/café", "-home-me-caf-"),
+            ("/home/me/😀proj", "-home-me---proj"),
             (r"C:\Users\me\my.repo", "C--Users-me-my-repo"),
         ] {
             let project_dir = tmp.path().join("projects").join(folder);

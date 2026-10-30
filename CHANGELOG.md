@@ -13,6 +13,9 @@ version in [`docs/changelog/`](docs/changelog/):
 
 ### Fixed
 
+- Matched Claude Code's UTF-16 project-folder encoding for astral characters
+  and its hashed 200-character limit, so transcript discovery and token-usage
+  backfill find sessions from emoji and very long checkout paths (#1864).
 - Claude Code backfill-close now finds transcripts for project paths that
   contain dots, underscores, spaces, or non-ASCII characters, so an abandoned
   session's token usage is retained when its synthetic `session-end` is

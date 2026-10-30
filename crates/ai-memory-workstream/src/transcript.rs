@@ -3871,15 +3871,44 @@ fn names_session(path: &Path, id: &str) -> bool {
         .any(|component| component.as_os_str().to_string_lossy().contains(id))
 }
 
-/// The folder Claude Code keeps a project's transcripts in: the cwd with
-/// every character outside `[A-Za-z0-9]` replaced by `-`, so `/a/b.c_d` is
-/// `-a-b-c-d` and `C:\\Users\\me` is `C--Users-me`.
+/// The folder Claude Code keeps a project's transcripts in.
+///
+/// Claude replaces each non-ASCII-alphanumeric UTF-16 code unit with `-`.
+/// Names longer than 200 units are truncated and suffixed with the base-36
+/// absolute value of Claude's wrapping 31-based hash of the original cwd.
 #[must_use]
 pub fn claude_project_dir_name(cwd: &Path) -> String {
-    cwd.to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
+    let cwd = cwd.to_string_lossy();
+    let mut name = String::with_capacity(cwd.len());
+    for character in cwd.chars() {
+        if character.is_ascii_alphanumeric() {
+            name.push(character);
+        } else {
+            name.extend(std::iter::repeat_n('-', character.len_utf16()));
+        }
+    }
+
+    if name.len() <= 200 {
+        return name;
+    }
+
+    let hash = cwd.encode_utf16().fold(0_i32, |hash, unit| {
+        hash.wrapping_mul(31).wrapping_add(i32::from(unit))
+    });
+    format!("{}-{}", &name[..200], base36(hash.unsigned_abs()))
+}
+
+fn base36(mut value: u32) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut reversed = Vec::with_capacity(7);
+    loop {
+        reversed.push(char::from(DIGITS[(value % 36) as usize]));
+        value /= 36;
+        if value == 0 {
+            break;
+        }
+    }
+    reversed.into_iter().rev().collect()
 }
 
 fn session_path_matches(
@@ -7835,6 +7864,42 @@ mod tests {
         ] {
             assert_eq!(claude_project_dir_name(Path::new(cwd)), folder, "{cwd}");
         }
+    }
+
+    #[test]
+    fn claude_project_dir_name_matches_utf16_and_long_path_rules() {
+        let long_ascii = format!(
+            "/home/me/{}/{}/{}",
+            "a".repeat(70),
+            "b".repeat(70),
+            "c".repeat(70)
+        );
+        let long_unicode = format!(
+            "/home/me/café/{}/{}/{}/😀",
+            "a".repeat(70),
+            "b".repeat(70),
+            "c".repeat(70)
+        );
+        let min_hash = format!(
+            "/home/me/{}/{}/{}/xhzwmkfb",
+            "a".repeat(70),
+            "b".repeat(70),
+            "c".repeat(70)
+        );
+
+        for (cwd, suffix) in [
+            (long_ascii.as_str(), "gbinw6"),
+            (long_unicode.as_str(), "11e44m"),
+            (min_hash.as_str(), "zik0zk"),
+        ] {
+            let folder = claude_project_dir_name(Path::new(cwd));
+            assert_eq!(folder.len(), 207, "{cwd}");
+            assert_eq!(&folder[200..], format!("-{suffix}"), "{cwd}");
+        }
+        assert_eq!(
+            claude_project_dir_name(Path::new("/home/me/😀proj")),
+            "-home-me---proj"
+        );
     }
 
     /// #1167: a cwd with `.` or `_` maps to a folder the old `/`-only rule
