@@ -6492,10 +6492,12 @@ async fn prepare_project_merge(
             .await
             .map_err(|error| internal_err(error.to_string()))?
             .ok_or_else(|| {
-                internal_err(format!(
-                    "source page '{}' disappeared while preparing merge",
-                    path.as_str()
-                ))
+                (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": "project pages changed while the merge was being prepared"
+                    })),
+                )
             })?;
         let target_page_id = state
             .reader
