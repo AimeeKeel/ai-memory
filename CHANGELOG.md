@@ -17,6 +17,10 @@ version in [`docs/changelog/`](docs/changelog/):
   contain dots, underscores, spaces, or non-ASCII characters, so an abandoned
   session's token usage is retained when its synthetic `session-end` is
   captured (#1858).
+- Documented four keys added in 3.3.0 that the shipped `config.default.toml`
+  and `docs/config-properties.md` left out: `rerank_timeout_secs`,
+  `[run] exit_prompt`, `[query_answer] max_context_tokens` and
+  `[auto_improve.eval] builtin` (#1861).
 
 ## [3.3.0] - 2026-10-29
 
