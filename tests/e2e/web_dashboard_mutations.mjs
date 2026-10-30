@@ -44,12 +44,26 @@ async function run(mutation) {
   clearTimeout(timer);
   const directory = output.match(/^Artifacts: (.+)$/m)?.[1];
   assert(directory, 'Browser runner did not produce a report: ' + errors.slice(-500));
-  return {code, directory, result: JSON.parse(fs.readFileSync(path.join(directory, 'report.json'), 'utf8'))};
+  return {
+    code,
+    directory,
+    errors: errors.trim().slice(-2000),
+    result: JSON.parse(fs.readFileSync(path.join(directory, 'report.json'), 'utf8')),
+  };
 }
 
 try {
   const baseline = await run();
-  assert.equal(baseline.code, 0, 'Baseline must pass; inspect ' + baseline.directory);
+  const failedCases = baseline.result.cases?.filter(test => !test.passed) || [];
+  assert.equal(
+    baseline.code,
+    0,
+    'Baseline must pass; inspect ' + baseline.directory + ': ' + JSON.stringify({
+      error: baseline.result.error,
+      failedCases,
+      stderr: baseline.errors,
+    }),
+  );
   assert((selectedCase ? baseline.result.cases.length === 1 : baseline.result.cases.length >= 17) && baseline.result.cases.every(c => c.passed));
   manifest.baseline = baseline.directory;
   console.log('PASS unmodified server and browser baseline');
